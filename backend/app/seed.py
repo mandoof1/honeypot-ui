@@ -89,9 +89,8 @@ MITRE_TACTICS = {
 
 
 async def seed_database():
+    from app.core.database import async_session_factory
     async with async_session_factory() as db:
-        await init_db()
-
         existing = await db.execute(select(User).where(User.email == "admin@honeysentinel.io"))
         if existing.scalar_one_or_none():
             print("Database already seeded.")

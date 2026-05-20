@@ -41,6 +41,20 @@ async def rate_limit_handler(request, exc):
 @app.on_event("startup")
 async def startup():
     await init_db()
+    await _auto_seed()
+
+
+async def _auto_seed():
+    from app.models import User
+    from app.core.security import get_password_hash
+    from sqlalchemy import select
+    from app.core.database import async_session_factory
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(User).where(User.email == "admin@honeysentinel.io"))
+        if not result.scalar_one_or_none():
+            from app.seed import seed_database
+            await seed_database()
 
 
 @app.get("/health")
