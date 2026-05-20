@@ -1,0 +1,48 @@
+services:
+  - type: web
+    name: honeysentinel-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: |
+      pip install -r backend/requirements.txt
+      python -m spacy download en_core_web_sm
+      mkdir -p backend/models backend/data
+      python -c "
+      import sys
+      sys.path.insert(0, 'backend')
+      from app.ai.classifier import classifier
+      from app.ai.anomaly_detector import anomaly_detector
+      classifier._ensure_loaded()
+      anomaly_detector._ensure_loaded()
+      print('AI models initialized')
+      "
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: honeysentinel-db
+          property: connectionString
+      - key: DATABASE_URL_SYNC
+        fromDatabase:
+          name: honeysentinel-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: SPACY_MODEL
+        value: en_core_web_sm
+      - key: MODEL_PATH_RF
+        value: ./models/random_forest_model.pkl
+      - key: MODEL_PATH_IF
+        value: ./models/isolation_forest_model.pkl
+
+databases:
+  - name: honeysentinel-db
+    databaseName: honeysentinel
+    user: honeysentinel
+    plan: free
+    region: oregon

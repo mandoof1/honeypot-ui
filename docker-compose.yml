@@ -1,0 +1,102 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: honeysentinel-db
+    environment:
+      POSTGRES_USER: honeypot
+      POSTGRES_PASSWORD: honeypot
+      POSTGRES_DB: honeysentinel
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honeypot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: honeysentinel-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q green"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: honeysentinel-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: honeysentinel-backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://honeypot:honeypot@postgres:5432/honeysentinel
+      - DATABASE_URL_SYNC=postgresql+psycopg2://honeypot:honeypot@postgres:5432/honeysentinel
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - SECRET_KEY=change-this-to-a-secure-random-string-in-production
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+      - COWRIE_API_URL=http://cowrie:9090
+      - DIONAEA_API_URL=http://dionaea:8080
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - model_data:/app/models
+    command: >
+      sh -c "
+        python -m spacy download en_core_web_sm &&
+        python -c 'from app.seed import seed_database; import asyncio; asyncio.run(seed_database())' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: honeysentinel-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  pgdata:
+  esdata:
+  model_data:
