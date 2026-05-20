@@ -9,8 +9,15 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://honeypot:honeypot@localhost:5432/honeysentinel"
-    DATABASE_URL_SYNC: str = "postgresql+psycopg2://honeypot:honeypot@localhost:5432/honeysentinel"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://honeypot:honeypot@localhost:5432/honeysentinel")
+    DATABASE_URL_SYNC: str = os.getenv("DATABASE_URL_SYNC", "postgresql+psycopg2://honeypot:honeypot@localhost:5432/honeysentinel")
+
+    def model_post_init(self, __context):
+        # Auto-convert Neon/Render DB URLs to async/sync drivers
+        if self.DATABASE_URL.startswith("postgresql://"):
+            self.DATABASE_URL = self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if self.DATABASE_URL_SYNC.startswith("postgresql://"):
+            self.DATABASE_URL_SYNC = self.DATABASE_URL_SYNC.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     # JWT
     SECRET_KEY: str = os.getenv("SECRET_KEY", "super-secret-key-change-in-production")
