@@ -29,28 +29,37 @@ async def init_db():
     import os
     import traceback
 
-    logger.info("Running database migrations...")
+    logger.info("Running database migrations via Alembic...")
     try:
         from alembic.config import Config
         from alembic import command
 
-        alembic_cfg = Config(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "alembic.ini")
-        )
-        alembic_cfg.set_main_option(
-            "script_location",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "alembic")
-        )
+        # Build path to alembic.ini relative to this file
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        alembic_ini = os.path.join(backend_dir, "alembic.ini")
+        alembic_dir = os.path.join(backend_dir, "alembic")
+
+        logger.info(f"alembic.ini path: {alembic_ini}")
+        logger.info(f"alembic dir: {alembic_dir}")
+        logger.info(f"DATABASE_URL_SYNC: {settings.DATABASE_URL_SYNC[:40]}...")
+
+        alembic_cfg = Config(alembic_ini)
+        alembic_cfg.set_main_option("script_location", alembic_dir)
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: command.upgrade(alembic_cfg, "head"))
-        logger.info("Migrations complete.")
+        logger.info("Alembic migrations complete.")
 
     except Exception as e:
-        logger.error(f"Migration failed: {e}")
+        logger.error(f"Alembic migration failed: {e}")
         logger.error(traceback.format_exc())
-        # Fall back to create_all so the app still starts
-        logger.warning("Falling back to create_all...")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("create_all complete.")
+        logger.warning("Falling back to SQLAlchemy create_all...")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("create_all fallback complete.")
+        except Exception as e2:
+            logger.error(f"create_all also failed: {e2}")
+            logger.error(traceback.format_exc())
+            raise

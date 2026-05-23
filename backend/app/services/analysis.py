@@ -13,7 +13,7 @@ from app.models import (
     AlertStatus,
 )
 from app.schemas import DashboardStats, SessionFilter
-from app.ai import classifier, nlp_engine, anomaly_detector, attacker_profiler, mitre_mapper
+# AI modules imported lazily below
 from app.services.geoip import geoip_service
 from app.services.alerting import alerting_service
 from app.services.report_generator import report_generator
@@ -29,6 +29,7 @@ class AnalysisPipeline:
         session_data: Dict,
         node_id: int,
     ) -> Dict:
+        from app.ai import classifier, nlp_engine, anomaly_detector, attacker_profiler, mitre_mapper
         attacker_ip = session_data.get("attacker_ip", "")
         commands = session_data.get("commands", [])
         packets = session_data.get("packets", [])
