@@ -2,12 +2,16 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import get_settings
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False, pool_pre_ping=True)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# backend/ directory (two levels up from app/core/database.py)
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class Base(DeclarativeBase):
@@ -26,22 +30,17 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     import asyncio
-    import os
     import traceback
 
-    logger.info("Running database migrations via Alembic...")
+    logger.info(f"BACKEND_DIR resolved to: {BACKEND_DIR}")
+    alembic_ini = os.path.join(BACKEND_DIR, "alembic.ini")
+    alembic_dir = os.path.join(BACKEND_DIR, "alembic")
+    logger.info(f"alembic.ini: {alembic_ini} exists={os.path.exists(alembic_ini)}")
+    logger.info(f"alembic dir: {alembic_dir} exists={os.path.exists(alembic_dir)}")
+
     try:
         from alembic.config import Config
         from alembic import command
-
-        # Build path to alembic.ini relative to this file
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        alembic_ini = os.path.join(backend_dir, "alembic.ini")
-        alembic_dir = os.path.join(backend_dir, "alembic")
-
-        logger.info(f"alembic.ini path: {alembic_ini}")
-        logger.info(f"alembic dir: {alembic_dir}")
-        logger.info(f"DATABASE_URL_SYNC: {settings.DATABASE_URL_SYNC[:40]}...")
 
         alembic_cfg = Config(alembic_ini)
         alembic_cfg.set_main_option("script_location", alembic_dir)
@@ -52,14 +51,9 @@ async def init_db():
         logger.info("Alembic migrations complete.")
 
     except Exception as e:
-        logger.error(f"Alembic migration failed: {e}")
+        logger.error(f"Alembic failed: {e}")
         logger.error(traceback.format_exc())
-        logger.warning("Falling back to SQLAlchemy create_all...")
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            logger.info("create_all fallback complete.")
-        except Exception as e2:
-            logger.error(f"create_all also failed: {e2}")
-            logger.error(traceback.format_exc())
-            raise
+        logger.warning("Falling back to create_all via async engine...")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("create_all complete.")
