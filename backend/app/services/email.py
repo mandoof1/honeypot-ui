@@ -54,20 +54,27 @@ class EmailService:
             return False
 
     def _send_via_smtp(self, to_email: str, subject: str, html: str, text: str) -> bool:
-        settings = self._settings
-        if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+        import os
+        smtp_user = os.environ.get("SMTP_USER", "")
+        smtp_password = os.environ.get("SMTP_PASSWORD", "")
+        smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+        smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+        from_addr = os.environ.get("ALERT_EMAIL_FROM", "") or smtp_user
+
+        if not smtp_user or not smtp_password:
+            logger.warning(f"SMTP not configured. SMTP_USER={smtp_user!r}")
             return False
         try:
             msg = MIMEMultipart("alternative")
-            msg["From"] = settings.ALERT_EMAIL_FROM or settings.SMTP_USER
+            msg["From"] = from_addr
             msg["To"] = to_email
             msg["Subject"] = subject
             msg.attach(MIMEText(text, "plain"))
             msg.attach(MIMEText(html, "html"))
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
                 server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(msg["From"], [to_email], msg.as_string())
+                server.login(smtp_user, smtp_password)
+                server.sendmail(from_addr, [to_email], msg.as_string())
             logger.info(f"SMTP email sent to {to_email}")
             return True
         except Exception as e:
