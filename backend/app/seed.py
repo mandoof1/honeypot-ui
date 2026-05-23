@@ -127,14 +127,16 @@ async def seed_database():
         db.add_all(nodes)
         await db.flush()
 
-        threshold = AlertThreshold(
-            name="Default High Severity",
-            min_severity=AttackSeverity.MEDIUM,
-            anomaly_score_threshold=0.7,
-            email_enabled=True,
-            webhook_enabled=False,
-        )
-        db.add(threshold)
+        existing_threshold = await db.execute(select(AlertThreshold).where(AlertThreshold.name == "Default High Severity"))
+        if not existing_threshold.scalar_one_or_none():
+            threshold = AlertThreshold(
+                name="Default High Severity",
+                min_severity=AttackSeverity.MEDIUM,
+                anomaly_score_threshold=0.7,
+                email_enabled=True,
+                webhook_enabled=False,
+            )
+            db.add(threshold)
 
         now = datetime.now(timezone.utc)
         sessions_data = []
