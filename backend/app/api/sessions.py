@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from typing import Optional
@@ -12,6 +13,47 @@ from app.services.analysis import analysis_pipeline
 from app.services.report_generator import report_generator
 
 router = APIRouter()
+
+HONEYPOT_SERVICE_TOKEN = "honeypot-ingest-token-change-in-production"
+
+
+def verify_honeypot_token(request: Request):
+    token = request.headers.get("X-Honeypot-Token", "")
+    if token != HONEYPOT_SERVICE_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid honeypot token")
+    return True
+
+
+@router.post("/ingest-internal")
+async def ingest_session_from_honeypot(
+    request: Request,
+    session_data: dict,
+    node_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+):
+    verify_honeypot_token(request)
+
+    node_result = await db.execute(select(HoneypotNode).where(HoneypotNode.id == node_id))
+    node = node_result.scalar_one_or_none()
+    if not node:
+        raise HTTPException(status_code=404, detail="Honeypot node not found")
+
+    result = await analysis_pipeline.process_session(db, session_data, node_id)
+
+    audit = AuditLog(
+        user_id=None,
+        action="session_ingested_honeypot",
+        resource_type="session",
+        resource_id=result["session_id"],
+        details={
+            "category": result["ai_classification"]["category"],
+            "source": "honeypot_engine",
+        },
+    )
+    db.add(audit)
+    await db.commit()
+
+    return result
 
 
 @router.get("/", response_model=SessionListResponse)

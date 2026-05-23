@@ -1,0 +1,89 @@
+{
+  "session_id": "869c4ad5-a173-48a2-80fd-f8018304c75d",
+  "protocol": "ssh",
+  "source_ip": "192.168.1.100",
+  "source_port": 54321,
+  "start_time": "2026-05-21T12:03:03.272446+00:00",
+  "end_time": "2026-05-21T12:03:03.273168+00:00",
+  "duration_seconds": 0.0,
+  "commands": [
+    {
+      "timestamp": 1779364983.272491,
+      "command": "whoami",
+      "output": "root\n",
+      "exit_code": 0
+    },
+    {
+      "timestamp": 1779364983.2724984,
+      "command": "cat /etc/passwd",
+      "output": "root:x:0:0:...\n",
+      "exit_code": 0
+    },
+    {
+      "timestamp": 1779364983.272598,
+      "command": "whoami",
+      "output": "root\n",
+      "exit_code": 0
+    },
+    {
+      "timestamp": 1779364983.2726278,
+      "command": "LIST",
+      "output": "150 Here comes the directory listing.\ndrwxr-xr-x    2 0        0            4096 Jan 15 10:30 pub\ndrwxr-xr-x    2 0        0            4096 Jan 15 10:30 incoming\n-rw-r--r--    1 0        0             120 Jan 15 10:30 readme.txt\n-rw-r--r--    1 0        0            2048 Jan 15 10:30 config.bak\n226 Directory send OK.\n",
+      "exit_code": 0
+    }
+  ],
+  "files_uploaded": [],
+  "files_downloaded": [],
+  "network_events": [
+    {
+      "timestamp": 1779364983.2725127,
+      "event_type": "ssh_banner_sent",
+      "banner": "SSH-2.0-OpenSSH_8.9p1"
+    },
+    {
+      "timestamp": 1779364983.2726429,
+      "event_type": "http_request",
+      "method": "GET",
+      "path": "/",
+      "headers": {
+        "Host": "example.com"
+      },
+      "body_preview": ""
+    },
+    {
+      "timestamp": 1779364983.2726727,
+      "event_type": "http_request",
+      "method": "GET",
+      "path": "/nonexistent.php",
+      "headers": {
+        "Host": "example.com"
+      },
+      "body_preview": ""
+    }
+  ],
+  "keystrokes": [
+    {
+      "timestamp": 1779364983.2725098,
+      "key": "w"
+    }
+  ],
+  "authentication_attempts": [
+    {
+      "timestamp": 1779364983.272503,
+      "username": "root",
+      "password": "toor",
+      "success": false
+    },
+    {
+      "timestamp": 1779364983.2725065,
+      "username": "root",
+      "password": "root",
+      "success": true
+    }
+  ],
+  "metadata": {
+    "test": true
+  },
+  "threat_profile": "script_kiddie",
+  "anomaly_score": 0.75
+}

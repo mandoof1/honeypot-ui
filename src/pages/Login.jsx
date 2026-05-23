@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ShieldAlert, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { ShieldAlert, Eye, EyeOff, AlertCircle, Mail } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { api } from '../services/api'
 
 export default function Login() {
   const { login } = useAuth()
@@ -10,6 +11,9 @@ export default function Login() {
   const [errors, setErrors] = useState({})
   const [showPw, setShowPw] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [unverifiedEmail, setUnverifiedEmail] = useState('')
+  const [resendMsg, setResendMsg] = useState('')
+  const [resendCooldown, setResendCooldown] = useState(0)
 
   const validate = () => {
     const e = {}
@@ -25,13 +29,41 @@ export default function Login() {
     const errs = validate()
     if (Object.keys(errs).length) { setErrors(errs); return }
     setLoading(true)
+    setUnverifiedEmail('')
+    setResendMsg('')
     try {
       await login(form.email, form.password)
       navigate('/')
     } catch (err) {
-      setErrors({ email: err.message || 'Invalid credentials' })
+      const msg = err.message || 'Invalid credentials'
+      if (msg.includes('not verified')) {
+        setUnverifiedEmail(form.email)
+        setErrors({})
+      } else {
+        setErrors({ email: msg })
+      }
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleResendOtp = async () => {
+    if (resendCooldown > 0 || !unverifiedEmail) return
+    setLoading(true)
+    try {
+      await api.auth.resendOtp({ email: unverifiedEmail })
+      setResendMsg('A new verification code has been sent.')
+    } catch (err) {
+      setErrors({ email: err.message || 'Failed to resend' })
+    } finally {
+      setLoading(false)
+      setResendCooldown(60)
+      const timer = setInterval(() => {
+        setResendCooldown((prev) => {
+          if (prev <= 1) { clearInterval(timer); return 0 }
+          return prev - 1
+        })
+      }, 1000)
     }
   }
 
@@ -40,6 +72,8 @@ export default function Login() {
     onChange: (ev) => {
       setForm({ ...form, [key]: ev.target.value })
       if (errors[key]) setErrors({ ...errors, [key]: null })
+      setUnverifiedEmail('')
+      setResendMsg('')
     },
   })
 
@@ -47,8 +81,8 @@ export default function Login() {
     <div className="min-h-screen grid-bg flex items-center justify-center px-4">
       <div className="w-full max-w-md animate-slide-up">
         <div className="flex items-center gap-3 mb-10 justify-center">
-          <ShieldAlert className="text-accent-cyan w-8 h-8 text-glow-cyan" />
-          <span className="font-mono text-xl font-semibold tracking-widest uppercase text-accent-cyan text-glow-cyan">
+          <ShieldAlert className="text-accent-cyan w-8 h-8" />
+          <span className="font-mono text-xl font-semibold tracking-widest uppercase text-accent-cyan">
             HoneySentinel
           </span>
         </div>
@@ -58,6 +92,36 @@ export default function Login() {
           <p className="text-sm text-gray-500 mb-8 font-mono">
             Authenticated access only — credentials are verified.
           </p>
+
+          {unverifiedEmail && (
+            <div className="mb-5 bg-accent-orange/10 border border-accent-orange/30 rounded-lg p-4">
+              <div className="flex items-start gap-2">
+                <Mail className="w-4 h-4 text-accent-orange mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-xs font-mono text-accent-orange font-semibold">Email not verified</p>
+                  <p className="text-xs font-mono text-gray-400 mt-1">
+                    Please check your inbox for the verification code.
+                  </p>
+                  {resendCooldown > 0 ? (
+                    <p className="text-xs font-mono text-gray-600 mt-2">
+                      Resend available in {resendCooldown}s
+                    </p>
+                  ) : (
+                    <button
+                      onClick={handleResendOtp}
+                      disabled={loading}
+                      className="mt-2 text-xs font-mono text-accent-blue hover:underline disabled:opacity-50"
+                    >
+                      Resend verification code
+                    </button>
+                  )}
+                  {resendMsg && (
+                    <p className="text-xs font-mono text-accent-green mt-2">{resendMsg}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} noValidate className="space-y-5">
             <div>
@@ -88,7 +152,7 @@ export default function Login() {
                 <input
                   type={showPw ? 'text' : 'password'}
                   autoComplete="current-password"
-                  placeholder="••••••••••"
+                  placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                   className={`w-full bg-surface-700 border rounded-lg px-4 py-2.5 pr-10 text-sm text-white placeholder-gray-600 font-mono outline-none transition-all focus:ring-1 focus:ring-accent-blue ${
                     errors.password ? 'border-accent-red' : 'border-border focus:border-accent-blue'
                   }`}

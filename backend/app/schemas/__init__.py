@@ -39,6 +39,7 @@ class AttackCategory(str, Enum):
 class AttackerProfile(str, Enum):
     SCRIPT_KIDDIE = "script_kiddie"
     AUTOMATED_BOT = "automated_bot"
+    SKILLED_ATTACKER = "skilled_attacker"
     APT = "apt"
     UNKNOWN = "unknown"
 
@@ -80,11 +81,39 @@ class UserResponse(BaseModel):
     name: Optional[str]
     role: UserRole
     is_active: bool
+    is_verified: bool
     created_at: datetime
     last_login: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+
+class OTPVerifyRequest(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(..., min_length=6, max_length=6)
+    purpose: str = "email_verification"
+
+
+class OTPResendRequest(BaseModel):
+    email: EmailStr
+    purpose: str = "email_verification"
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=8)
+
+
+class RegisterResponse(BaseModel):
+    message: str
+    email: str
+    requires_verification: bool
 
 
 class PasswordChange(BaseModel):

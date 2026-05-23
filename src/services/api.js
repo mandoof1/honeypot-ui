@@ -45,6 +45,26 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    verifyOtp: (data) =>
+      request("/auth/verify-otp", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    resendOtp: (data) =>
+      request("/auth/resend-otp", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    requestPasswordReset: (email) =>
+      request("/auth/request-password-reset", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+    resetPassword: (data) =>
+      request("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     me: () => request("/auth/me"),
   },
 
@@ -130,5 +150,33 @@ export const api = {
       });
       return request(`/export/?${qs.toString()}`);
     },
+  },
+
+  honeypot: {
+    status: () => request("/honeypot/status"),
+    securityStatus: () => request("/honeypot/security-status"),
+    updateMode: (mode) =>
+      request("/honeypot/mode", {
+        method: "PATCH",
+        body: JSON.stringify({ mode }),
+      }),
+    updateProtocols: (protocols) =>
+      request("/honeypot/protocols", {
+        method: "PATCH",
+        body: JSON.stringify({ protocols }),
+      }),
+    blockIP: (ip) =>
+      request("/honeypot/block-ip", {
+        method: "POST",
+        body: JSON.stringify({ ip }),
+      }),
+    unblockIP: (ip) =>
+      request("/honeypot/unblock-ip", {
+        method: "POST",
+        body: JSON.stringify({ ip }),
+      }),
+    blockedIPs: () => request("/honeypot/blocked-ips"),
+    threatActors: () => request("/honeypot/threat-actors"),
+    activeSessions: () => request("/honeypot/sessions/active"),
   },
 };

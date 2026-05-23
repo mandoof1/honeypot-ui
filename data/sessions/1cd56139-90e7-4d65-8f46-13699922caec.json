@@ -1,0 +1,44 @@
+{
+  "session_id": "1cd56139-90e7-4d65-8f46-13699922caec",
+  "protocol": "ssh",
+  "source_ip": "10.0.0.99",
+  "source_port": 12345,
+  "start_time": "2026-05-21T12:05:59.972531+00:00",
+  "end_time": "2026-05-21T12:05:59.972965+00:00",
+  "duration_seconds": 0.0,
+  "commands": [
+    {
+      "timestamp": 1779365159.9726617,
+      "command": "whoami",
+      "output": "root\n",
+      "exit_code": 0
+    },
+    {
+      "timestamp": 1779365159.9726772,
+      "command": "uname -a",
+      "output": "Linux honeypot 5.15.0-91-generic\n",
+      "exit_code": 0
+    }
+  ],
+  "files_uploaded": [],
+  "files_downloaded": [],
+  "network_events": [
+    {
+      "timestamp": 1779365159.972694,
+      "event_type": "ssh_banner",
+      "banner": "SSH-2.0-OpenSSH_8.9p1"
+    }
+  ],
+  "keystrokes": [],
+  "authentication_attempts": [
+    {
+      "timestamp": 1779365159.9726865,
+      "username": "root",
+      "password": "root",
+      "success": true
+    }
+  ],
+  "metadata": {},
+  "threat_profile": "script_kiddie",
+  "anomaly_score": 0.0
+}

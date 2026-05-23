@@ -39,6 +39,57 @@ services:
         value: ./models/random_forest_model.pkl
       - key: MODEL_PATH_IF
         value: ./models/isolation_forest_model.pkl
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        value: ""
+      - key: SMTP_PASSWORD
+        value: ""
+      - key: ALERT_EMAIL_FROM
+        value: ""
+      - key: HONEYPOT_INGEST_TOKEN
+        generateValue: true
+
+  - type: web
+    name: honeysentinel-honeypot
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: |
+      pip install -r honeypot/requirements.txt
+      mkdir -p honeypot/data/sessions honeypot/data/uploads honeypot/data/logs
+    startCommand: cd honeypot && python -m honeypot.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: BACKEND_API_URL
+        fromService:
+          name: honeysentinel-api
+          type: pserv
+          property: host
+          envVarKey: BACKEND_HOST
+      - key: HONEYPOT_INGEST_TOKEN
+        fromService:
+          name: honeysentinel-api
+          type: pserv
+          property: envVar
+          envVarKey: HONEYPOT_INGEST_TOKEN
+      - key: HONEYPOT_BIND_ADDRESS
+        value: 0.0.0.0
+      - key: HONEYPOT_SSH_PORT
+        value: 2222
+      - key: HONEYPOT_FTP_PORT
+        value: 2121
+      - key: HONEYPOT_HTTP_PORT
+        value: 8080
+      - key: HONEYPOT_OPERATIONAL_MODE
+        value: active
+      - key: HONEYPOT_ANTI_FINGERPRINT
+        value: "true"
+      - key: HONEYPOT_ADAPTIVE_RESPONSE
+        value: "true"
 
 databases:
   - name: honeysentinel-db

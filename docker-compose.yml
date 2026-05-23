@@ -12,6 +12,8 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U honeypot"]
       interval: 5s
@@ -29,6 +31,8 @@ services:
       - "9200:9200"
     volumes:
       - esdata:/usr/share/elasticsearch/data
+    networks:
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q green"]
       interval: 10s
@@ -40,6 +44,8 @@ services:
     container_name: honeysentinel-redis
     ports:
       - "6379:6379"
+    networks:
+      - internal
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -60,8 +66,13 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - SECRET_KEY=change-this-to-a-secure-random-string-in-production
       - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
-      - COWRIE_API_URL=http://cowrie:9090
-      - DIONAEA_API_URL=http://dionaea:8080
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_PASSWORD=
+      - ALERT_EMAIL_FROM=
+      - COWRIE_API_URL=http://honeypot:2222
+      - DIONAEA_API_URL=http://honeypot:8080
     ports:
       - "8000:8000"
     depends_on:
@@ -71,6 +82,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - internal
+      - honeypot_isolated
     volumes:
       - ./backend:/app
       - model_data:/app/models
@@ -80,6 +94,59 @@ services:
         python -c 'from app.seed import seed_database; import asyncio; asyncio.run(seed_database())' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
+
+  honeypot:
+    build:
+      context: ./honeypot
+      dockerfile: Dockerfile
+    container_name: honeysentinel-honeypot
+    environment:
+      - HONEYPOT_CONTAINER=true
+      - HONEYPOT_BIND_ADDRESS=0.0.0.0
+      - HONEYPOT_SSH_PORT=2222
+      - HONEYPOT_FTP_PORT=2121
+      - HONEYPOT_HTTP_PORT=8080
+      - HONEYPOT_HTTPS_PORT=8443
+      - HONEYPOT_OPERATIONAL_MODE=active
+      - HONEYPOT_MAX_CONN_PER_IP=5
+      - HONEYPOT_CONN_TIMEOUT=300
+      - HONEYPOT_RATE_LIMIT=60
+      - HONEYPOT_ANTI_FINGERPRINT=true
+      - HONEYPOT_BANNER_ROTATION=3600
+      - HONEYPOT_RESPONSE_DELAY_MIN=0.05
+      - HONEYPOT_RESPONSE_DELAY_MAX=0.5
+      - HONEYPOT_ENABLE_ISOLATION=true
+      - HONEYPOT_DOCKER_NETWORK=honeypot_isolated
+      - HONEYPOT_ADAPTIVE_RESPONSE=true
+      - HONEYPOT_PROFILE_UPDATE=60
+      - HONEYPOT_CAPTURE_DIR=/app/data/sessions
+      - HONEYPOT_FILE_CAPTURE_DIR=/app/data/uploads
+      - HONEYPOT_LOG_DIR=/app/data/logs
+      - BACKEND_API_URL=http://backend:8000/api/v1
+      - HONEYPOT_INGEST_TOKEN=honeypot-ingest-token-change-in-production
+    ports:
+      - "2222:2222"
+      - "2121:2121"
+      - "8080:8080"
+      - "8443:8443"
+    depends_on:
+      - backend
+    networks:
+      - honeypot_isolated
+    volumes:
+      - ./honeypot:/app
+      - honeypot_data:/app/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100M
+      - /var/run:noexec,nosuid,size=10M
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
   frontend:
     build:
@@ -92,11 +159,25 @@ services:
       - "5173:5173"
     depends_on:
       - backend
+    networks:
+      - internal
     volumes:
       - .:/app
       - /app/node_modules
+
+networks:
+  internal:
+    driver: bridge
+    internal: false
+  honeypot_isolated:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
 
 volumes:
   pgdata:
   esdata:
   model_data:
+  honeypot_data:

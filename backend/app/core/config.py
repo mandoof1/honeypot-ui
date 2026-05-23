@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # Honeypot
     COWRIE_API_URL: str = "http://localhost:9090"
     DIONAEA_API_URL: str = "http://localhost:8080"
+    HONEYPOT_API_URL: str = "http://honeypot:2222"
 
     # AI Model paths
     MODEL_PATH_RF: str = "./models/random_forest_model.pkl"

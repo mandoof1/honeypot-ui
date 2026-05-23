@@ -42,6 +42,7 @@ class AttackCategory(str, enum.Enum):
 class AttackerProfile(str, enum.Enum):
     SCRIPT_KIDDIE = "script_kiddie"
     AUTOMATED_BOT = "automated_bot"
+    SKILLED_ATTACKER = "skilled_attacker"
     APT = "apt"
     UNKNOWN = "unknown"
 
@@ -62,12 +63,14 @@ class User(Base):
     name = Column(String(255), nullable=True)
     role = Column(SAEnum(UserRole), default=UserRole.ANALYST, nullable=False)
     is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime(timezone=True), nullable=True)
 
     alerts = relationship("Alert", back_populates="user", foreign_keys="Alert.assigned_to_id")
     audit_logs = relationship("AuditLog", back_populates="user")
+    otp_verifications = relationship("OTPVerification", back_populates="user")
 
 
 class HoneypotNode(Base):
@@ -201,3 +204,20 @@ class AlertThreshold(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class OTPVerification(Base):
+    __tablename__ = "otp_verifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    otp_code = Column(String(6), nullable=False)
+    purpose = Column(String(50), nullable=False, default="email_verification")
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    ip_address = Column(String(45), nullable=True)
+
+    user = relationship("User", back_populates="otp_verifications")

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Shield, AlertTriangle, Activity, Globe, ArrowUpRight, Wifi } from 'lucide-react'
+import { Shield, AlertTriangle, Activity, Globe, ArrowUpRight, Wifi, Terminal, Server, Lock } from 'lucide-react'
 import { api } from '../services/api'
 
 const SEVERITY_COLORS = {
@@ -76,18 +76,21 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null)
   const [liveEvents, setLiveEvents] = useState([])
   const [alerts, setAlerts] = useState([])
+  const [honeypotStatus, setHoneypotStatus] = useState(null)
   const [loading, setLoading] = useState(true)
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsData, eventsData, alertsData] = await Promise.all([
+      const [statsData, eventsData, alertsData, hpStatus] = await Promise.all([
         api.dashboard.stats(),
         api.dashboard.liveEvents(20),
         api.alerts.list({ page: 1, page_size: 8, status: 'new' }),
+        api.honeypot.status().catch(() => null),
       ])
       setStats(statsData)
       setLiveEvents(eventsData)
       setAlerts(alertsData.alerts || [])
+      setHoneypotStatus(hpStatus)
     } catch (err) {
       console.error('Dashboard fetch error:', err)
     } finally {
@@ -191,6 +194,78 @@ export default function Dashboard() {
           )
         })}
       </div>
+
+      {honeypotStatus && (
+        <div className="bg-surface-800 border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="font-mono text-sm font-semibold text-white uppercase tracking-wider">
+                Honeypot Engine Status
+              </h2>
+              <p className="text-xs font-mono text-gray-500 mt-0.5">
+                Emulation services &amp; security posture
+              </p>
+            </div>
+            <span className={`flex items-center gap-1.5 text-xs font-mono ${honeypotStatus.running ? 'text-accent-green' : 'text-accent-red'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${honeypotStatus.running ? 'bg-accent-green' : 'bg-accent-red'} animate-pulse`} />
+              {honeypotStatus.running ? 'Running' : 'Offline'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="bg-surface-700 rounded-lg p-3 border border-border/50">
+              <div className="flex items-center gap-2 mb-2">
+                <Terminal className="w-3.5 h-3.5 text-accent-cyan" />
+                <span className="text-[10px] font-mono text-gray-400 uppercase">Mode</span>
+              </div>
+              <p className="font-mono text-sm font-semibold text-white capitalize">
+                {honeypotStatus.mode}
+              </p>
+            </div>
+
+            <div className="bg-surface-700 rounded-lg p-3 border border-border/50">
+              <div className="flex items-center gap-2 mb-2">
+                <Server className="w-3.5 h-3.5 text-accent-blue" />
+                <span className="text-[10px] font-mono text-gray-400 uppercase">Protocols</span>
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                {honeypotStatus.protocols.map(p => (
+                  <span key={p} className="text-[10px] font-mono bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/30 rounded px-1.5 py-0.5 uppercase">
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-surface-700 rounded-lg p-3 border border-border/50">
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="w-3.5 h-3.5 text-accent-orange" />
+                <span className="text-[10px] font-mono text-gray-400 uppercase">Active</span>
+              </div>
+              <p className="font-mono text-sm font-semibold text-accent-orange">
+                {honeypotStatus.active_sessions} sessions
+              </p>
+            </div>
+
+            <div className="bg-surface-700 rounded-lg p-3 border border-border/50">
+              <div className="flex items-center gap-2 mb-2">
+                <Lock className="w-3.5 h-3.5 text-accent-green" />
+                <span className="text-[10px] font-mono text-gray-400 uppercase">Isolation</span>
+              </div>
+              <p className="font-mono text-sm font-semibold text-accent-green">
+                {honeypotStatus.isolation?.overall_secure ? 'Secure' : 'Warning'}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex gap-4 text-xs font-mono text-gray-500">
+            <span>Blocked IPs: <span className="text-white">{honeypotStatus.blocked_ips}</span></span>
+            <span>Total Sessions: <span className="text-white">{honeypotStatus.total_sessions}</span></span>
+            <span>Anti-fingerprint: <span className={honeypotStatus.anti_fingerprinting ? 'text-accent-green' : 'text-accent-red'}>{honeypotStatus.anti_fingerprinting ? 'ON' : 'OFF'}</span></span>
+            <span>Adaptive: <span className={honeypotStatus.adaptive_response ? 'text-accent-green' : 'text-accent-red'}>{honeypotStatus.adaptive_response ? 'ON' : 'OFF'}</span></span>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
         <div className="xl:col-span-3 bg-surface-800 border border-border rounded-xl p-5">

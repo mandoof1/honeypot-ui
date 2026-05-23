@@ -118,6 +118,7 @@ async def seed_database():
         await db.flush()
 
         nodes = [
+            HoneypotNode(name="Honeypot-Engine-Main", protocol="multi", ip_address="0.0.0.0", port=0, mode=HoneypotMode.ACTIVE, location_lat=40.7128, location_lon=-74.0060),
             HoneypotNode(name="Cowrie-SSH-01", protocol="ssh", ip_address="10.0.1.10", port=22, mode=HoneypotMode.ACTIVE, location_lat=40.7128, location_lon=-74.0060),
             HoneypotNode(name="Cowrie-SSH-02", protocol="ssh", ip_address="10.0.1.11", port=22, mode=HoneypotMode.ACTIVE, location_lat=51.5074, location_lon=-0.1278),
             HoneypotNode(name="Dionaea-HTTP-01", protocol="http", ip_address="10.0.2.10", port=80, mode=HoneypotMode.ACTIVE, location_lat=35.6762, location_lon=139.6503),

@@ -46,15 +46,22 @@ ATTACK_INTENTS = {
 class NLPEngine:
     def __init__(self):
         self.nlp: Optional[spacy.language.Language] = None
-        self._load_model()
+        self._loaded = False
 
-    def _load_model(self):
+    def _ensure_loaded(self):
+        if self._loaded:
+            return
         try:
             self.nlp = spacy.load(settings.SPACY_MODEL)
+            self._loaded = True
         except OSError:
             import subprocess
-            subprocess.run(["python", "-m", "spacy", "download", settings.SPACY_MODEL], check=True)
+            subprocess.run(["python3", "-m", "spacy", "download", settings.SPACY_MODEL], check=True)
             self.nlp = spacy.load(settings.SPACY_MODEL)
+            self._loaded = True
+
+    def _load_model(self):
+        self._ensure_loaded()
 
     def analyze_commands(self, commands: List[str]) -> Dict:
         detected_tools: List[Dict] = []
