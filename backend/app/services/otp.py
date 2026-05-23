@@ -39,6 +39,7 @@ class OTPService:
         db.add(otp_record)
         await db.commit()
 
+        print(f">>> OTP sending to {user.email} purpose={purpose} code={otp_code}", flush=True)
         if purpose == "email_verification":
             sent = email_service.send_otp_email(user.email, otp_code, user.name or "")
         elif purpose == "password_reset":
@@ -46,6 +47,7 @@ class OTPService:
         else:
             sent = email_service.send_otp_email(user.email, otp_code, user.name or "")
 
+        print(f">>> OTP send result: {sent}", flush=True)
         if not sent:
             logger.error(f"Failed to send OTP for user {user.id}")
 
