@@ -82,14 +82,18 @@ class EmailService:
             return False
 
     def _send(self, to_email: str, subject: str, html: str, text: str) -> bool:
+        import os
+        print(f">>> EMAIL _send called: RESEND_API_KEY set={bool(os.environ.get('RESEND_API_KEY'))}, SMTP_USER={os.environ.get('SMTP_USER', 'NOT SET')!r}", flush=True)
         # Try Resend first, fall back to SMTP, fall back to logging
-        if self._send_via_resend(to_email, subject, html, text):
-            logger.info(f"Email sent via Resend to {to_email}")
+        resend_result = self._send_via_resend(to_email, subject, html, text)
+        print(f">>> Resend result: {resend_result}", flush=True)
+        if resend_result:
             return True
-        if self._send_via_smtp(to_email, subject, html, text):
+        smtp_result = self._send_via_smtp(to_email, subject, html, text)
+        print(f">>> SMTP result: {smtp_result}", flush=True)
+        if smtp_result:
             return True
-        # Last resort — log so admin can see OTP in Render logs
-        logger.warning(f"No email provider configured. OTP for {to_email} — check logs: subject='{subject}'")
+        print(f">>> WARNING: No email provider worked for {to_email}", flush=True)
         return True  # Return True so registration doesn't fail
 
     def send_otp_email(self, to_email: str, otp_code: str, user_name: str = "") -> bool:
