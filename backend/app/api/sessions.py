@@ -70,7 +70,6 @@ async def list_sessions(
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    current_user: dict = Depends(get_current_user),
 ):
     query = select(HoneypotSession).options()
     count_query = select(func.count(HoneypotSession.id))
