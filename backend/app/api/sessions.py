@@ -14,7 +14,8 @@ from app.services.report_generator import report_generator
 
 router = APIRouter()
 
-HONEYPOT_SERVICE_TOKEN = "honeypot-ingest-token-change-in-production"
+import os
+HONEYPOT_SERVICE_TOKEN = os.environ.get("HONEYPOT_INGEST_TOKEN", "honeypot-ingest-token-change-in-production")
 
 
 def verify_honeypot_token(request: Request):
@@ -68,6 +69,7 @@ async def list_sessions(
     is_anomalous: Optional[bool] = None,
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
     current_user: dict = Depends(get_current_user),
 ):
     query = select(HoneypotSession).options()

@@ -24,7 +24,11 @@ try:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+        "https://honeypot-ui-psi.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*", "ngrok-skip-browser-warning"],
@@ -42,7 +46,15 @@ try:
     @app.on_event("startup")
     async def startup():
         try:
-            print(">>> startup: calling init_db", flush=True)
+            # Warn about insecure defaults
+        import os
+        if os.environ.get("SECRET_KEY", "") in ("", "super-secret-key-change-in-production"):
+            print(">>> SECURITY WARNING: SECRET_KEY is not set or using default value!", flush=True)
+        if os.environ.get("ENCRYPTION_KEY", "") in ("", "0123456789abcdef0123456789abcdef"):
+            print(">>> SECURITY WARNING: ENCRYPTION_KEY is not set or using default value!", flush=True)
+        if os.environ.get("HONEYPOT_INGEST_TOKEN", "") in ("", "honeypot-ingest-token-change-in-production"):
+            print(">>> SECURITY WARNING: HONEYPOT_INGEST_TOKEN is not set or using default value!", flush=True)
+        print(">>> startup: calling init_db", flush=True)
             await init_db()
             print(">>> startup: init_db done", flush=True)
             await _auto_seed()

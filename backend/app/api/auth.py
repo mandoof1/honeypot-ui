@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
@@ -14,12 +16,14 @@ from app.schemas import (
 from app.services.otp import otp_service
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
-    user_data: UserCreate,
     request: Request,
+    user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
 ):
     existing = await db.execute(select(User).where(User.email == user_data.email))
@@ -59,9 +63,10 @@ async def register(
 
 
 @router.post("/verify-otp")
+@limiter.limit("10/minute")
 async def verify_otp(
-    data: OTPVerifyRequest,
     request: Request,
+    data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.email == data.email))
@@ -95,9 +100,10 @@ async def verify_otp(
 
 
 @router.post("/resend-otp")
+@limiter.limit("3/minute")
 async def resend_otp(
-    data: OTPResendRequest,
     request: Request,
+    data: OTPResendRequest,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.email == data.email))
@@ -118,9 +124,10 @@ async def resend_otp(
 
 
 @router.post("/request-password-reset")
+@limiter.limit("3/minute")
 async def request_password_reset(
-    data: PasswordResetRequest,
     request: Request,
+    data: PasswordResetRequest,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.email == data.email))
@@ -135,9 +142,10 @@ async def request_password_reset(
 
 
 @router.post("/reset-password")
+@limiter.limit("5/minute")
 async def reset_password(
-    data: PasswordResetConfirm,
     request: Request,
+    data: PasswordResetConfirm,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.email == data.email))
@@ -166,7 +174,12 @@ async def reset_password(
 
 
 @router.post("/login", response_model=Token)
-async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(
+    request: Request,
+    credentials: UserLogin,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
 
@@ -183,7 +196,6 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
         )
 
     user.last_login = datetime.now(timezone.utc)
-    await db.commit()
 
     audit = AuditLog(
         user_id=user.id,
@@ -209,7 +221,12 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(token_data: dict, db: AsyncSession = Depends(get_db)):
+@limiter.limit("20/minute")
+async def refresh_token(
+    request: Request,
+    token_data: dict,
+    db: AsyncSession = Depends(get_db),
+):
     from jose import JWTError
     from app.core.config import get_settings
     settings = get_settings()
@@ -231,13 +248,13 @@ async def refresh_token(token_data: dict, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token(
         data={"sub": str(user.id), "email": user.email, "role": user.role.value}
     )
-    refresh_token = create_refresh_token(
+    new_refresh_token = create_refresh_token(
         data={"sub": str(user.id), "email": user.email, "role": user.role.value}
     )
 
     return {
         "access_token": access_token,
-        "refresh_token": refresh_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer",
     }
 

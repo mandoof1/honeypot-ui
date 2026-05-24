@@ -96,25 +96,19 @@ async def seed_database():
             print("Database already seeded.")
             return
 
+        import os, secrets
+        admin_pass = os.environ.get("ADMIN_SEED_PASSWORD", secrets.token_urlsafe(24))
+        print(f">>> SEED: admin@honeysentinel.io password = {admin_pass}", flush=True)
+
         admin = User(
             email="admin@honeysentinel.io",
-            hashed_password=get_password_hash("admin123"),
+            hashed_password=get_password_hash(admin_pass),
             name="Security Admin",
             role=UserRole.ADMIN,
+            is_active=True,
+            is_verified=True,
         )
-        analyst = User(
-            email="analyst@soc.internal",
-            hashed_password=get_password_hash("analyst123"),
-            name="SOC Analyst",
-            role=UserRole.ANALYST,
-        )
-        viewer = User(
-            email="viewer@honeysentinel.io",
-            hashed_password=get_password_hash("viewer123"),
-            name="Read Only Viewer",
-            role=UserRole.VIEWER,
-        )
-        db.add_all([admin, analyst, viewer])
+        db.add(admin)
         await db.flush()
 
         nodes = [
