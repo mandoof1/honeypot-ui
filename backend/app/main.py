@@ -46,15 +46,14 @@ try:
     @app.on_event("startup")
     async def startup():
         try:
-            # Warn about insecure defaults
-        import os
-        if os.environ.get("SECRET_KEY", "") in ("", "super-secret-key-change-in-production"):
-            print(">>> SECURITY WARNING: SECRET_KEY is not set or using default value!", flush=True)
-        if os.environ.get("ENCRYPTION_KEY", "") in ("", "0123456789abcdef0123456789abcdef"):
-            print(">>> SECURITY WARNING: ENCRYPTION_KEY is not set or using default value!", flush=True)
-        if os.environ.get("HONEYPOT_INGEST_TOKEN", "") in ("", "honeypot-ingest-token-change-in-production"):
-            print(">>> SECURITY WARNING: HONEYPOT_INGEST_TOKEN is not set or using default value!", flush=True)
-        print(">>> startup: calling init_db", flush=True)
+            import os
+            if os.environ.get("SECRET_KEY", "") in ("", "super-secret-key-change-in-production"):
+                print(">>> SECURITY WARNING: SECRET_KEY is not set!", flush=True)
+            if os.environ.get("ENCRYPTION_KEY", "") in ("", "0123456789abcdef0123456789abcdef"):
+                print(">>> SECURITY WARNING: ENCRYPTION_KEY is not set!", flush=True)
+            if os.environ.get("HONEYPOT_INGEST_TOKEN", "") in ("", "honeypot-ingest-token-change-in-production"):
+                print(">>> SECURITY WARNING: HONEYPOT_INGEST_TOKEN is not set!", flush=True)
+            print(">>> startup: calling init_db", flush=True)
             await init_db()
             print(">>> startup: init_db done", flush=True)
             await _auto_seed()
