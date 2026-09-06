@@ -97,7 +97,7 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
     def connection_lost(self, exc: Optional[Exception]) -> None:
         if self.state.session_id:
             # connection_lost is synchronous; hand the close off to the loop.
-            asyncio.create_task(session_manager.end_session(self.state.session_id))
+            session_manager.end_session_soon(self.state.session_id)
             shell_states.drop(self.state.session_id)
 
     async def begin_auth(self, username: str) -> bool:

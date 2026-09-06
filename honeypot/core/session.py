@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import time
+import tempfile
+from itertools import islice
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +15,7 @@ from typing import Any, Optional
 import httpx
 
 from honeypot.core.config import config
+from honeypot.core.outbox import DeliveryOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,8 @@ class SessionRecord:
     metadata: dict = field(default_factory=dict)
     threat_profile: Optional[str] = None
     anomaly_score: float = 0.0
+    capture_dropped: dict[str, int] = field(default_factory=dict)
+    keystrokes_observed: int = 0
 
     @property
     def duration(self) -> float:
@@ -59,14 +64,22 @@ class SessionRecord:
     MAX_OUTPUT_CHARS = 4096
     MAX_CREDENTIALS = 200
     MAX_EVENTS = 200
+    MAX_COMMAND_CHARS = 4096
+    MAX_KEYSTROKES = 1024
+    MAX_FILES = 50
+
+    def dropped(self, kind: str, count: int = 1):
+        self.capture_dropped[kind] = self.capture_dropped.get(kind, 0) + count
 
     def to_backend_payload(self, node_id: int = 1) -> dict[str, Any]:
         command_strings = [c["command"] for c in self.commands]
         return {
+            "capture_id": self.session_id,
             "protocol": self.protocol,
             "attacker_ip": self.source_ip,
             "attacker_port": self.source_port,
             "started_at": self.start_datetime,
+            "ended_at": self.end_datetime,
             "status": "completed",
             "duration_seconds": round(self.duration, 2),
             "commands": command_strings,
@@ -108,7 +121,8 @@ class SessionRecord:
                 }
                 for a in self.authentication_attempts[: self.MAX_CREDENTIALS]
             ],
-            "keystroke_count": len(self.keystrokes),
+            "keystroke_count": max(self.keystrokes_observed, len(self.keystrokes)),
+            "capture_dropped": dict(self.capture_dropped),
             # Retrieval and execution events — where a dropper's C2 URL is.
             "events": [
                 {k: v for k, v in e.items() if k != "timestamp"} | {"at": e["timestamp"]}
@@ -142,29 +156,33 @@ class SessionRecord:
             "metadata": self.metadata,
             "threat_profile": self.threat_profile,
             "anomaly_score": self.anomaly_score,
+            "capture_dropped": self.capture_dropped,
+            "keystrokes_observed": self.keystrokes_observed,
         }
 
 
 class SessionManager:
     #: Uploads are attacker-controlled; cap what a single session can persist.
     MAX_UPLOAD_BYTES = 16 * 1024 * 1024
-    #: Finished sessions are retained only for the status endpoint.
-    MAX_RETAINED_SESSIONS = 1000
-
     def __init__(self):
         self._sessions: dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
-        self._node_id: int = 1
+        self._node_id: Optional[int] = None
+        self._next_registration = 0.0
         self._total_sessions: int = 0
-        # asyncio only holds a weak reference to tasks, so a fire-and-forget
-        # ingest could be garbage collected mid-flight.
+        self.outbox = DeliveryOutbox(
+            Path(config.session_capture_dir) / "delivery.sqlite3",
+            config.backend_api_url, config.ingest_token,
+        )
+        self.capture_errors = 0
+        self._finishing: dict[str, asyncio.Task] = {}
         self._background: set[asyncio.Task] = set()
         Path(config.session_capture_dir).mkdir(parents=True, exist_ok=True)
         Path(config.file_capture_dir).mkdir(parents=True, exist_ok=True)
         Path(config.log_dir).mkdir(parents=True, exist_ok=True)
 
     @property
-    def node_id(self) -> int:
+    def node_id(self) -> Optional[int]:
         return self._node_id
 
     async def set_node_id(self, node_id: int):
@@ -189,7 +207,6 @@ class SessionManager:
         async with self._lock:
             self._sessions[session_id] = session
             self._total_sessions += 1
-            self._evict_finished_locked()
         logger.info(f"New session {session_id} from {source_ip}:{source_port} ({protocol})")
         return session_id
 
@@ -199,48 +216,63 @@ class SessionManager:
 
     async def end_session(self, session_id: str) -> Optional[SessionRecord]:
         async with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None or session.end_time is not None:
-                # Already ended; do not persist or ingest the session twice.
-                return session
-            session.end_time = time.time()
+            if session_id in self._finishing:
+                task = self._finishing[session_id]
+            else:
+                session = self._sessions.get(session_id)
+                if session is None:
+                    return None
+                session.end_time = time.time()
+                task = asyncio.create_task(self._finish_session(session))
+                self._finishing[session_id] = task
+                task.add_done_callback(lambda done: self._finishing.pop(session_id, None))
+        # A disconnect or cancelled protocol handler must not interrupt the
+        # disk transaction. Shutdown explicitly joins these retained tasks.
+        return await asyncio.shield(task)
 
-        await self._persist_session(session)
-        self._spawn(self._send_to_backend(session))
-        return session
-
-    def _spawn(self, coro):
-        task = asyncio.create_task(coro)
+    def end_session_soon(self, session_id: str):
+        task = asyncio.create_task(self.end_session(session_id))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
-        return task
 
-    def _evict_finished_locked(self):
-        """Drop the oldest finished sessions once the cache is oversized.
+    async def _finish_session(self, session: SessionRecord):
+        session_id = session.session_id
 
-        Without this the process retained every session it ever handled, which
-        is an unbounded memory leak on a service exposed to the internet.
-        """
-        if len(self._sessions) <= self.MAX_RETAINED_SESSIONS:
-            return
-        finished = sorted(
-            (s for s in self._sessions.values() if s.end_time is not None),
-            key=lambda s: s.end_time or 0,
-        )
-        overflow = len(self._sessions) - self.MAX_RETAINED_SESSIONS
-        for session in finished[:overflow]:
-            self._sessions.pop(session.session_id, None)
+        try:
+            # Persist the immutable delivery before any network attempt.
+            await self.outbox.enqueue(session.to_backend_payload(), self._node_id)
+        except Exception:
+            self.capture_errors += 1
+            logger.exception("Could not queue capture %s; check capture volume", session_id)
+            # Retain the raw archive even when queue storage fails.
+        try:
+            await self._persist_session(session)
+        except OSError:
+            self.capture_errors += 1
+            logger.exception("Could not archive capture %s; check capture volume", session_id)
+        async with self._lock:
+            # Counts have their own counter; status only needs active records.
+            # Keeping 1,000 full completed transcripts could retain gigabytes.
+            self._sessions.pop(session_id, None)
+        return session
 
     async def record_command(
         self, session_id: str, command: str, output: str = "", exit_code: int = 0
     ):
         session = await self.get_session(session_id)
-        if session:
+        if session and session.end_time is None:
+            if len(session.commands) >= session.MAX_TRANSCRIPT_ENTRIES:
+                session.dropped("commands")
+                return
+            if len(command) > session.MAX_COMMAND_CHARS:
+                session.dropped("command_characters", len(command) - session.MAX_COMMAND_CHARS)
+            if len(output) > session.MAX_OUTPUT_CHARS:
+                session.dropped("output_characters", len(output) - session.MAX_OUTPUT_CHARS)
             session.commands.append(
                 {
                     "timestamp": time.time(),
-                    "command": command,
-                    "output": output,
+                    "command": command[:session.MAX_COMMAND_CHARS],
+                    "output": output[:session.MAX_OUTPUT_CHARS],
                     "exit_code": exit_code,
                 }
             )
@@ -249,8 +281,10 @@ class SessionManager:
         self, session_id: str, filename: str, content: bytes, remote_path: str = ""
     ):
         session = await self.get_session(session_id)
-        if session:
-            if len(content) > self.MAX_UPLOAD_BYTES:
+        if session and session.end_time is None:
+            if (len(session.files_uploaded) >= session.MAX_FILES
+                    or sum(f["size"] for f in session.files_uploaded) + len(content) > self.MAX_UPLOAD_BYTES):
+                session.dropped("uploads")
                 logger.warning(
                     f"Discarding {len(content)} byte upload from session "
                     f"{session_id}: exceeds {self.MAX_UPLOAD_BYTES} byte cap"
@@ -260,13 +294,14 @@ class SessionManager:
             # Name the file after its own digest so an attacker-supplied
             # filename can never influence where it lands on disk.
             file_path = os.path.join(config.file_capture_dir, file_hash)
-            with open(file_path, "wb") as f:
+            fd = os.open(file_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
                 f.write(content)
             session.files_uploaded.append(
                 {
                     "timestamp": time.time(),
-                    "filename": filename,
-                    "remote_path": remote_path or filename,
+                    "filename": filename[:512],
+                    "remote_path": (remote_path or filename)[:1024],
                     "size": len(content),
                     "sha256": file_hash,
                     "stored_path": file_path,
@@ -277,13 +312,16 @@ class SessionManager:
         self, session_id: str, filename: str, content: bytes, remote_path: str = ""
     ):
         session = await self.get_session(session_id)
-        if session:
+        if session and session.end_time is None:
+            if len(session.files_downloaded) >= session.MAX_FILES:
+                session.dropped("downloads")
+                return
             file_hash = hashlib.sha256(content).hexdigest()
             session.files_downloaded.append(
                 {
                     "timestamp": time.time(),
-                    "filename": filename,
-                    "remote_path": remote_path or filename,
+                    "filename": filename[:512],
+                    "remote_path": (remote_path or filename)[:1024],
                     "size": len(content),
                     "sha256": file_hash,
                 }
@@ -293,28 +331,65 @@ class SessionManager:
         self, session_id: str, event_type: str, details: dict
     ):
         session = await self.get_session(session_id)
-        if session:
+        if session and session.end_time is None:
+            if len(session.network_events) >= session.MAX_EVENTS:
+                session.dropped("events")
+                return
+            # Preserve nested HTTP headers, with a shared character/node
+            # budget so nested dictionaries cannot multiply the memory cap.
+            budget = [8192, 64]
+
+            def bounded_value(value, depth=0):
+                if budget[0] <= 0 or budget[1] <= 0 or depth > 2:
+                    session.dropped("event_fields")
+                    return None
+                budget[1] -= 1
+                if isinstance(value, str):
+                    kept = value[:min(4096, budget[0])]
+                    budget[0] -= len(kept)
+                    if len(kept) < len(value):
+                        session.dropped("event_characters", len(value) - len(kept))
+                    return kept
+                if isinstance(value, dict):
+                    if len(value) > 32:
+                        session.dropped("event_fields", len(value) - 32)
+                    return {str(k)[:64]: bounded_value(v, depth + 1) for k, v in islice(value.items(), 32)}
+                if isinstance(value, (int, float, bool)) or value is None:
+                    return value
+                session.dropped("event_fields")
+                return None
+
+            bounded = bounded_value(details)
             session.network_events.append(
-                {"timestamp": time.time(), "event_type": event_type, **details}
+                {**bounded, "timestamp": time.time(), "event_type": event_type[:64]}
             )
 
     async def record_keystroke(self, session_id: str, keystroke: str):
         session = await self.get_session(session_id)
-        if session:
+        if session and session.end_time is None:
+            session.keystrokes_observed += 1
+            if len(session.keystrokes) >= session.MAX_KEYSTROKES:
+                session.dropped("keystrokes")
+                return
             session.keystrokes.append(
-                {"timestamp": time.time(), "key": keystroke}
+                {"timestamp": time.time(), "key": keystroke[:16]}
             )
 
     async def record_auth_attempt(
         self, session_id: str, username: str, password: str, success: bool
     ):
         session = await self.get_session(session_id)
-        if session:
+        if session and session.end_time is None:
+            if len(session.authentication_attempts) >= session.MAX_CREDENTIALS:
+                session.dropped("credentials")
+                return
+            if len(username) > 128 or len(password) > 128:
+                session.dropped("credential_characters", max(0, len(username) - 128) + max(0, len(password) - 128))
             session.authentication_attempts.append(
                 {
                     "timestamp": time.time(),
-                    "username": username,
-                    "password": password,
+                    "username": username[:128],
+                    "password": password[:128],
                     "success": success,
                 }
             )
@@ -330,49 +405,30 @@ class SessionManager:
             session.anomaly_score = score
 
     async def _persist_session(self, session: SessionRecord):
-        capture_file = os.path.join(
-            config.session_capture_dir, f"{session.session_id}.json"
-        )
-        with open(capture_file, "w") as f:
-            json.dump(session.to_dict(), f, indent=2)
-        logger.info(f"Session persisted: {capture_file}")
+        def write():
+            capture_dir = Path(config.session_capture_dir)
+            fd, temporary = tempfile.mkstemp(dir=capture_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(session.to_dict(), f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, capture_dir / f"{session.session_id}.json")
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        await asyncio.to_thread(write)
 
-    async def _send_to_backend(self, session: SessionRecord):
-        payload = session.to_backend_payload(self._node_id)
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{config.backend_api_url}/sessions/ingest-internal",
-                    json=payload,
-                    params={"node_id": self._node_id},
-                    headers={"X-Honeypot-Token": config.ingest_token},
-                    timeout=15,
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    logger.info(
-                        f"Session {session.session_id} ingested to backend. "
-                        f"Classification: {result.get('ai_classification', {}).get('category', 'unknown')}"
-                    )
-                else:
-                    logger.error(
-                        f"Failed to ingest session {session.session_id}: "
-                        f"HTTP {response.status_code} - {response.text}"
-                    )
-        except httpx.ConnectError:
-            logger.warning(
-                f"Backend unavailable, session {session.session_id} saved locally only"
-            )
-        except Exception as e:
-            logger.error(f"Error sending session to backend: {e}")
-
-    async def register_node(self) -> int:
+    async def register_node(self) -> Optional[int]:
         """Claim a node id from the backend using the shared ingest token.
 
         The previous implementation POSTed to the admin-only ``/nodes/``
         endpoint with no credentials, so it always failed and silently fell
         back to node id 1.
         """
+        if self._node_id is not None or time.monotonic() < self._next_registration:
+            return self._node_id
+        self._next_registration = time.monotonic() + 30
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -388,16 +444,17 @@ class SessionManager:
                     timeout=10,
                 )
                 if response.status_code in (200, 201):
-                    self._node_id = response.json()["id"]
+                    node_id = response.json()["id"]
+                    if type(node_id) is not int or node_id < 1:
+                        raise ValueError("Invalid node registration receipt")
+                    self._node_id = node_id
                     logger.info(f"Registered as honeypot node {self._node_id}")
                     return self._node_id
                 logger.warning(
-                    f"Node registration rejected: HTTP {response.status_code} "
-                    f"- {response.text[:200]}"
+                    f"Node registration rejected: HTTP {response.status_code}"
                 )
         except Exception as e:
             logger.warning(f"Could not register honeypot node: {e}")
-        self._node_id = 1
         return self._node_id
 
     async def get_active_sessions(self) -> list[SessionRecord]:
@@ -411,10 +468,11 @@ class SessionManager:
             return self._total_sessions
 
     async def drain(self):
-        """Wait for in-flight backend ingests before shutting down."""
-        pending = list(self._background)
+        """Stop delivery; unacknowledged captures resume on next startup."""
+        pending = list(self._background) + list(self._finishing.values())
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        await self.outbox.stop()
 
 
 session_manager = SessionManager()

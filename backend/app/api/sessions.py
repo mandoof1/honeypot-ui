@@ -16,13 +16,21 @@ from app.schemas import (
     SessionCredentialsResponse,
     TranscriptEntry,
     CapturedCredential,
+    RelatedActivityResponse,
 )
 from app.api.export import FILE_EXTENSIONS, MEDIA_TYPES, _render
 from app.services.session_filters import session_filters
-from app.services.analysis import analysis_pipeline
+from app.services.ingest import ingest_once
+from app.services.related_activity import related_activity
 from app.services import enrichment
 
 router = APIRouter()
+
+
+@router.get("/ingest-capabilities", dependencies=[Depends(verify_honeypot_token)])
+async def ingest_capabilities():
+    """Engines must verify this before enabling automatic retries."""
+    return {"version": 1, "idempotent_capture": True}
 
 
 @router.post("/ingest-internal", dependencies=[Depends(verify_honeypot_token)])
@@ -37,7 +45,9 @@ async def ingest_session_from_honeypot(
     if not node:
         raise HTTPException(status_code=404, detail="Honeypot node not found")
 
-    result = await analysis_pipeline.process_session(db, session_data, node_id)
+    result = await ingest_once(db, session_data, node_id)
+    if result["duplicate"]:
+        return result
 
     audit = AuditLog(
         user_id=None,
@@ -115,6 +125,28 @@ async def get_session_by_uuid(
     return HoneypotSessionResponse.from_model(session)
 
 
+@router.get("/{session_id}/related", response_model=RelatedActivityResponse)
+async def get_related_activity(
+    session_id: int,
+    window_days: int = Query(7, ge=1, le=30),
+    limit: int = Query(20, ge=1, le=50),
+    exclude_scanners: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Newest sessions sharing an exact source IP, URL, domain or file hash.
+
+    The time window extends before and after the selected session. Relations
+    explain observed overlap, not proof of a common attacker or campaign.
+    """
+    anchor = (await db.execute(select(HoneypotSession).where(
+        HoneypotSession.id == session_id,
+    ))).scalar_one_or_none()
+    if anchor is None:
+        raise HTTPException(404, "Session not found")
+    return await related_activity(db, anchor, window_days, limit, exclude_scanners)
+
+
 @router.get("/{session_id}/transcript", response_model=SessionTranscriptResponse)
 async def get_session_transcript(
     session_id: int,
@@ -178,7 +210,9 @@ async def get_session_transcript(
         session_uuid=session.session_uuid,
         available=bool(entries),
         entries=[TranscriptEntry(**e) for e in entries if isinstance(e, dict)],
-        truncated=len(entries) >= 500,
+        truncated=(any((session.capture_dropped or {}).get(k, 0) for k in (
+            "commands", "command_characters", "output_characters",
+        )) if session.capture_dropped is not None else len(entries) >= 500),
     )
 
 
@@ -243,7 +277,9 @@ async def ingest_session(
     if not node:
         raise HTTPException(status_code=404, detail="Honeypot node not found")
 
-    result = await analysis_pipeline.process_session(db, session_data, node_id)
+    result = await ingest_once(db, session_data, node_id)
+    if result["duplicate"]:
+        return result
 
     audit = AuditLog(
         user_id=current_user["id"],

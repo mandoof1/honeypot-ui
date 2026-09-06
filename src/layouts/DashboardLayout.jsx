@@ -80,6 +80,16 @@ function EngineReadout({ engine, nodeCount }) {
           </span>
         )}
       </div>
+      {engine?.reachable && engine.delivery && (
+        <div className="mt-2 text-[11px] text-paper-3" aria-label="Capture delivery">
+          <p>{typeof engine.delivery.pending !== 'number' ? 'Delivery status unavailable'
+            : engine.delivery.pending === 0 ? 'All queued captures delivered'
+              : `${engine.delivery.pending} capture${engine.delivery.pending === 1 ? '' : 's'} awaiting delivery`}</p>
+          {engine.delivery.retrying > 0 && <p className="mt-1 text-s3">{engine.delivery.retrying} awaiting retry</p>}
+          {engine.delivery.capture_errors > 0 && <p className="mt-1 text-s4">Capture storage errors — check engine logs</p>}
+          {engine.delivery.last_error && <p className="mt-1 break-words text-s3">{engine.delivery.last_error}</p>}
+        </div>
+      )}
     </div>
   )
 }

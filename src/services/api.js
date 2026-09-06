@@ -191,6 +191,7 @@ export const api = {
   sessions: {
     list: (params = {}, options = {}) => request(`/sessions/?${toQuery(params)}`, options),
     get: (id, options = {}) => request(`/sessions/${id}`, options),
+    related: (id, params = {}, options = {}) => request(`/sessions/${id}/related?${toQuery(params)}`, options),
     getByUuid: (uuid) => request(`/sessions/uuid/${uuid}`),
     transcript: (id) => request(`/sessions/${id}/transcript`),
     // Admin only, and the read is audit-logged server side.

@@ -181,6 +181,11 @@ map shows fewer markers. To enable geolocation:
 
 ## Verifying the deployment
 
+For the capture-delivery upgrade, deploy the backend and Alembic revision **007**
+before the engine and frontend. Preserve the engine's capture volume: its
+`sessions/delivery.sqlite3` queue holds completed evidence awaiting a receipt.
+See [recovery, limits and rollback](docs/CAPTURE_AND_CORRELATION.md).
+
 ```bash
 # API is up
 curl https://your-api.onrender.com/health
@@ -206,6 +211,9 @@ A healthy response has `"reachable": true` and `"running": true`. If
 |---|---|
 | Backend exits with "Refusing to start" | A secret is still a placeholder and `ENVIRONMENT` is not `development`. Set real values. |
 | Ingest returns 401 | `HONEYPOT_INGEST_TOKEN` differs between backend and engine. |
+| Captures awaiting delivery | Check `delivery.last_error` in engine status; the queue retries automatically. |
+| Idempotent ingest unavailable | Upgrade the API through revision 007 and check its URL and ingest token. The engine retains queued captures. |
+| Capture storage errors | Check space and permissions on the persistent capture volume; raw archives may need manual recovery. |
 | `/honeypot/*` returns 502 "rejected the control token" | Same mismatch, on the control API side. |
 | CORS errors in the browser | The frontend origin is missing from `CORS_ORIGINS`. |
 | Rate limits trigger far too early | Behind a proxy without `TRUST_PROXY_HEADERS=true`, so every client shares the proxy's IP. |

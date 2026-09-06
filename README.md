@@ -23,10 +23,12 @@ and a workspace for investigating suspicious activity.
 |---|---|
 | **Capture** | SSH, FTP, HTTP and HTTPS emulators record interactions and attempted credentials. |
 | **Investigate** | Search sessions, filter by protocol and time, inspect transcripts, and review ATT&CK mappings. |
+| **Connect** | Find related sessions through shared source IPs, URLs, domains and file hashes, with a reason for each match. |
+| **Recover** | Queue completed captures across API outages and restarts, retry without duplicate sessions, and monitor delivery health. |
 | **Understand** | Classification, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
 | **Respond** | Triage alerts, manage nodes, review indicators, and control the honeypot through role-restricted actions. |
 | **Share** | Copy an investigation link or export matching sessions as CSV, JSON, CEF, or STIX. |
-| **Trace** | Captured evidence is encrypted at rest; privileged operations and evidence access are audit-logged where implemented. |
+| **Trace** | Backend commands, transcripts and credentials are encrypted at rest; privileged operations and evidence access are audit-logged where implemented. Engine capture files require protected storage. |
 
 ## Quick start
 
@@ -95,6 +97,10 @@ views without deleting their recorded activity.
 
 ## Architecture
 
+**Related activity and delivery recovery:** see the [feature and operations guide](docs/CAPTURE_AND_CORRELATION.md)
+for evidence matching, capture limits, queue monitoring and upgrade order.
+The session detail panel reports omitted evidence when capture limits are reached.
+
 ```mermaid
 flowchart LR
     Traffic[Incoming connections] --> Engine[Protocol emulators]
@@ -150,8 +156,9 @@ when your backend is elsewhere. Frontend-only startup does not create an API or 
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/pip install -r backend/requirements-test.txt
+.venv/bin/pip install -r backend/requirements-test.txt -r honeypot/requirements.txt
 .venv/bin/python -m pytest backend/tests -q
+.venv/bin/python -m pytest honeypot/tests -q
 ```
 
 Tests use isolated SQLite and do not require production credentials or a live engine.

@@ -98,6 +98,9 @@ class AnalysisPipeline:
         db: AsyncSession,
         session_data: Dict,
         node_id: int,
+        *,
+        capture_uuid: Optional[str] = None,
+        ingest_digest: Optional[str] = None,
     ) -> Dict:
         # NFR-2 commits the classification path to under 200 ms. Nothing
         # measured it, so the requirement could not be evaluated at all —
@@ -190,6 +193,9 @@ class AnalysisPipeline:
         )
 
         db_session = HoneypotSession(
+            **({"session_uuid": capture_uuid} if capture_uuid else {}),
+            ingest_digest=ingest_digest,
+            capture_dropped=session_data.get("capture_dropped"),
             node_id=node_id,
             protocol=str(session_data.get("protocol") or "unknown")[:20],
             attacker_ip=attacker_ip,
@@ -203,7 +209,7 @@ class AnalysisPipeline:
                 SessionStatus, session_data.get("status"), SessionStatus.COMPLETED
             ),
             started_at=_parse_timestamp(session_data.get("started_at"), _now),
-            ended_at=_now,
+            ended_at=_parse_timestamp(session_data.get("ended_at"), _now),
             duration_seconds=duration,
             attack_category=_coerce_enum(
                 AttackCategory, ai_result.get("category"), AttackCategory.BENIGN

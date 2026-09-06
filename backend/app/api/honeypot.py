@@ -25,6 +25,16 @@ ENGINE_TIMEOUT = 5.0
 VALID_PROTOCOLS = {"ssh", "ftp", "http", "https"}
 
 
+class CaptureDeliveryStatus(BaseModel):
+    available: bool = True
+    pending: Optional[int] = None
+    retrying: int = 0
+    oldest_pending_seconds: Optional[int] = None
+    max_attempts: int = 0
+    capture_errors: int = 0
+    last_error: Optional[str] = None
+
+
 class HoneypotStatusResponse(BaseModel):
     reachable: bool
     running: bool = False
@@ -37,6 +47,7 @@ class HoneypotStatusResponse(BaseModel):
     adaptive_response: bool = False
     isolation: dict = Field(default_factory=dict)
     node_id: Optional[int] = None
+    delivery: Optional[CaptureDeliveryStatus] = None
     #: Populated when the engine could not be reached.
     detail: Optional[str] = None
 

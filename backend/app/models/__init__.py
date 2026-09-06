@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum, JSON, Index
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
 from sqlalchemy.orm import relationship
 import enum
@@ -146,9 +146,12 @@ class HoneypotNode(Base):
 
 class HoneypotSession(Base):
     __tablename__ = "honeypot_sessions"
+    __table_args__ = (Index("ix_sessions_started_id", "started_at", "id"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_uuid = Column(String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True)
+    ingest_digest = Column(String(64), nullable=True)
+    capture_dropped = Column(_jsonb(), nullable=True)
     node_id = Column(Integer, ForeignKey("honeypot_nodes.id"), nullable=False)
     #: Protocol the session was captured on. The engine reports this, but it
     #: was previously discarded and every export claimed "ssh".
@@ -248,6 +251,7 @@ class HoneypotSession(Base):
 
 class IndicatorOfCompromise(Base):
     __tablename__ = "indicators_of_compromise"
+    __table_args__ = (Index("ix_ioc_session_type_value", "session_id", "ioc_type", "value"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("honeypot_sessions.id"), nullable=False)

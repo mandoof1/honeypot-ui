@@ -1,6 +1,7 @@
 import { ExternalLink, X } from 'lucide-react'
 import { CategoryTag } from './Severity'
 import { PROFILE_LABEL } from '../lib/severity'
+import RelatedActivity from './RelatedActivity'
 import SessionTranscript, {
   CredentialsBlock,
   RetrievalBlock,
@@ -141,6 +142,24 @@ export default function SessionDetail({ session, onClose }) {
         </Fact>
         <Fact label="Commands">{session.command_count ?? 0}</Fact>
       </dl>
+
+      {Object.keys(session.capture_dropped || {}).length > 0 && (
+        <Block title="Capture limits reached">
+          <p className="text-[12px] leading-relaxed text-paper-2">
+            This session exceeded capture limits. Retained evidence is incomplete.
+          </p>
+          <dl className="mt-2 space-y-1 text-[12px] text-paper-3">
+            {Object.entries(session.capture_dropped).map(([kind, count]) => (
+              <div key={kind} className="flex justify-between gap-3">
+                <dt className="capitalize">{kind.replaceAll('_', ' ')} omitted</dt>
+                <dd className="readout">{count.toLocaleString()}</dd>
+              </div>
+            ))}
+          </dl>
+        </Block>
+      )}
+
+      <RelatedActivity key={`r${session.id}`} sessionId={session.id} />
 
       <Block title="Model verdict" note={MODEL_SOURCE_NOTE[session.model_source]}>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3">

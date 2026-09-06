@@ -90,6 +90,7 @@ class HoneypotService:
                 logger.error(f"Failed to start {name} honeypot: {e}")
 
         await session_manager.register_node()
+        await session_manager.outbox.start(session_manager.register_node)
 
         self._control_api = build_control_api(self)
         await self._control_api.start()
@@ -165,6 +166,10 @@ class HoneypotService:
             "node_id": session_manager.node_id,
             "anti_fingerprinting": config.enable_anti_fingerprinting,
             "adaptive_response": config.adaptive_response,
+            "delivery": {
+                **await session_manager.outbox.stats(),
+                "capture_errors": session_manager.capture_errors,
+            },
         }
 
 

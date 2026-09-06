@@ -2,7 +2,8 @@
 # surface is kept deliberately minimal. httpx is used to ship captured
 # sessions to the backend, cryptography to serve the HTTPS emulator.
 httpx==0.28.1
-cryptography==44.0.0
+# AsyncSSH 2.24 requires cryptography >= 48.0.1.
+cryptography==48.0.1
 
 # Real SSH transport for the SSH emulator. There is no way to speak the
 # protocol without one, and hand-rolling key exchange on the internet-facing

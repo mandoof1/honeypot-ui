@@ -3,8 +3,17 @@ import { test, expect } from '@playwright/test'
 const session = {
   id: 1, session_uuid: 'test-session-1', attacker_ip: '192.0.2.10',
   protocol: 'ssh', status: 'completed', started_at: '2026-01-01T10:00:00Z',
+  duration_seconds: 60,
   attack_category: 'reconnaissance', is_anomalous: true, geo: { country: 'AE' },
   detected_tools: [], detected_intents: [], mitre_techniques: [], mitre_tactics: [],
+}
+
+const relatedSession = { ...session, id: 22, session_uuid: 'related-session-22', attacker_ip: '192.0.2.22', protocol: 'http' }
+
+const relatedActivity = {
+  session_id: 1, truncated: false, indicators_truncated: false,
+  matches: [{ session: relatedSession, same_source_ip: false,
+    shared_indicators: [{ type: 'url', value: 'http://payload.example/stage.sh' }], shared_indicator_count: 1 }],
 }
 
 test.beforeEach(async ({ page }) => {
@@ -23,6 +32,88 @@ test.beforeEach(async ({ page }) => {
     }
     await route.fulfill({ json: body })
   })
+})
+
+test('related activity explains evidence and preserves filters through pivots and Back', async ({ page }, testInfo) => {
+  let lists = 0
+  page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/sessions/')) lists += 1 })
+  await page.route('**/sessions/1/related?**', (route) => route.fulfill({ json: relatedActivity }))
+  await page.route('**/sessions/22', (route) => route.fulfill({ json: relatedSession }))
+  await page.goto('/sessions?protocol=ssh&session=1')
+  await page.getByRole('button', { name: 'Find related activity' }).click()
+  const region = page.getByRole('region', { name: 'Related activity' })
+  await expect(region.getByText('http://payload.example/stage.sh')).toBeVisible()
+  await expect(region.getByText(/does not establish a common attacker/)).toBeVisible()
+  const initialLists = lists
+  await region.getByRole('link', { name: /192\.0\.2\.22/ }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('related-activity.png'), fullPage: true })
+  await region.getByRole('link', { name: /192\.0\.2\.22/ }).click()
+  await expect(page).toHaveURL(/protocol=ssh&session=22/)
+  await expect(page.getByRole('heading', { name: '192.0.2.22', exact: true })).toBeVisible()
+  expect(lists).toBe(initialLists)
+  await page.goBack()
+  await expect(page).toHaveURL(/protocol=ssh&session=1/)
+  await expect(page.getByRole('heading', { name: '192.0.2.10', exact: true })).toBeVisible()
+  expect(lists).toBe(initialLists)
+})
+
+test('related search cancels stale windows and supports scanner filtering', async ({ page }) => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  await page.route('**/sessions/1/related?**', async (route) => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get('window_days') === '7') await gate
+    await route.fulfill({ json: params.get('window_days') === '7' ? relatedActivity : { ...relatedActivity, matches: [] } })
+  })
+  await page.goto('/sessions?session=1')
+  const started = page.waitForRequest('**/sessions/1/related?**')
+  await page.getByRole('button', { name: 'Find related activity' }).click()
+  await started
+  try {
+    await page.getByRole('combobox', { name: 'Related activity time window' }).selectOption('1')
+    await expect(page.getByText('No related sessions in this time window.')).toBeVisible()
+  } finally { release() }
+  const filtered = page.waitForRequest((request) => request.url().includes('/related?') && new URL(request.url()).searchParams.get('exclude_scanners') === 'true')
+  await page.getByRole('checkbox', { name: 'Hide research scanners', exact: true }).check()
+  await filtered
+  await expect(page.getByText('No related sessions in this time window.')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Related activity' }).getByRole('link')).toHaveCount(0)
+})
+
+test('related failures can be retried without losing session evidence', async ({ page }) => {
+  let calls = 0
+  await page.route('**/sessions/1/related?**', (route) => {
+    calls += 1
+    return route.fulfill(calls === 1 ? { status: 503, json: { detail: 'Temporarily unavailable' } } : { json: { ...relatedActivity, truncated: true, indicators_truncated: true } })
+  })
+  await page.goto('/sessions?session=1')
+  await page.getByRole('button', { name: 'Find related activity' }).click()
+  await expect(page.getByRole('alert')).toContainText('Temporarily unavailable')
+  await expect(page.getByRole('heading', { name: '192.0.2.10', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Retry related activity' }).click()
+  await expect(page.getByRole('link', { name: /192\.0\.2\.22/ })).toBeVisible()
+  await expect(page.getByText(/Showing the newest 20 matches/)).toBeVisible()
+  await expect(page.getByText(/first 100 distinct URL/)).toBeVisible()
+})
+
+test('capture omissions and delivery backlog remain visible', async ({ page }, testInfo) => {
+  await page.route('**/sessions/?**', (route) => route.fulfill({ json: {
+    sessions: [{ ...session, capture_dropped: { commands: 14, credentials: 2 } }], total: 1,
+  } }))
+  await page.route('**/honeypot/status', (route) => route.fulfill({ json: {
+    reachable: true, running: true, protocols: ['ssh'],
+    delivery: { pending: 3, retrying: 2, capture_errors: 1, last_error: 'Ingest HTTP 503' },
+  } }))
+  await page.goto('/sessions?session=1')
+  await expect(page.getByRole('heading', { name: 'Capture limits reached' })).toBeVisible()
+  await expect(page.getByText('Retained evidence is incomplete.', { exact: false }).last()).toBeVisible()
+  if (testInfo.project.name === 'mobile') {
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open menu' }).click()
+  }
+  await expect(page.getByText('3 captures awaiting delivery')).toBeVisible()
+  await expect(page.getByText('2 awaiting retry')).toBeVisible()
+  await expect(page.getByText('Capture storage errors — check engine logs')).toBeVisible()
 })
 
 test('restores filters from links and exports the same investigation', async ({ page }) => {

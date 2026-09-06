@@ -203,11 +203,13 @@ Bearer <access_token>`.
 | GET | `/api/v1/dashboard/live-events` | any | Recent sessions for the map |
 | GET | `/api/v1/sessions/` | any | List sessions (filter + paginate; `exclude_scanners` hides research scanners) |
 | GET | `/api/v1/sessions/{id}` | any | Session detail |
+| GET | `/api/v1/sessions/{id}/related` | any | Related sessions with shared evidence, time window and explicit result limits |
 | GET | `/api/v1/sessions/{id}/transcript` | any | Commands and what the honeypot appeared to reply |
 | GET | `/api/v1/sessions/{id}/credentials` | admin | Credentials tried — audit-logged on read |
 | POST | `/api/v1/sessions/{id}/export` | analyst | Export one session |
 | POST | `/api/v1/sessions/ingest` | analyst | Manual ingest |
 | POST | `/api/v1/sessions/ingest-internal` | token | Engine ingest |
+| GET | `/api/v1/sessions/ingest-capabilities` | token | Verify support for idempotent capture delivery |
 | GET | `/api/v1/alerts/` | any | List alerts |
 | GET | `/api/v1/alerts/stats` | any | Alert counts by status/severity |
 | PATCH | `/api/v1/alerts/{id}` | analyst | Triage an alert |
@@ -266,4 +268,3 @@ scripts/          GeoLite2 fetch
 ## License
 
 MIT — see [LICENSE](../LICENSE).
-
