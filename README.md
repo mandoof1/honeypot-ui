@@ -4,6 +4,8 @@
 
 ### Capture the interaction. Understand the behavior. Follow the evidence.
 
+![HoneySentinel — Investigation Workspace](docs/images/honeysentinel-banner.svg)
+
 An AI-assisted honeypot platform with protocol emulation, encrypted session evidence,
 and a workspace for investigating suspicious activity.
 
