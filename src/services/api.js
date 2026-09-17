@@ -212,6 +212,14 @@ export const api = {
     feed: (params = {}) => download(`/iocs/feed?${toQuery(params)}`),
   },
 
+  payloads: {
+    list: (params = {}, options = {}) => request(`/payloads/?${toQuery(params)}`, options),
+    get: (sha256, options = {}) => request(`/payloads/${sha256}`, options),
+    stats: () => request('/payloads/stats'),
+    // Raw sample bytes, admin only and audit-logged server side.
+    download: (sha256) => download(`/payloads/${sha256}/download`),
+  },
+
   nodes: {
     list: (activeOnly = false) => request(`/nodes/?active_only=${activeOnly}`),
     get: (id) => request(`/nodes/${id}`),
