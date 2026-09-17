@@ -15,6 +15,95 @@ from honeypot.adaptive.response import adaptive_engine
 logger = logging.getLogger(__name__)
 
 
+#: How long to wait for the client to open the data connection, and for a
+#: transfer to finish once it has.
+DATA_CONNECT_TIMEOUT = 30
+DATA_TRANSFER_TIMEOUT = 300
+
+
+def _normalise_ip(address: str) -> str:
+    return address[7:] if address.startswith("::ffff:") else address
+
+
+def _pasv_ports() -> list[int]:
+    """The configured passive range, e.g. ``50000-50019``."""
+    low, _, high = config.ftp_pasv_ports.partition("-")
+    try:
+        start, end = int(low), int(high or low)
+    except ValueError:
+        return []
+    ports = list(range(max(1024, start), min(65535, end) + 1))
+    random.shuffle(ports)
+    return ports
+
+
+class PassiveDataChannel:
+    """One single-use passive data socket.
+
+    The emulator used to answer PASV with a port nothing listened on and
+    reply "226 Transfer complete" to STOR without reading a byte, so no FTP
+    upload was ever captured — and any real client that tried to transfer
+    found a dead socket, which is a fingerprint in itself.
+
+    This listens for exactly one connection, and only from the address that
+    owns the control connection, which is what vsftpd does by default
+    (``pasv_promiscuous=NO``). A connection from anywhere else is closed: it
+    is either a port-theft attempt or a scanner, and never the client.
+    """
+
+    def __init__(self, allowed_ip: str) -> None:
+        self.allowed_ip = _normalise_ip(allowed_ip)
+        self.port: Optional[int] = None
+        self._server: Optional[asyncio.AbstractServer] = None
+        self._connected: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._finished = asyncio.Event()
+        self.rejected = 0
+
+    async def open(self) -> Optional[int]:
+        for port in _pasv_ports():
+            try:
+                self._server = await asyncio.start_server(
+                    self._on_connect, config.bind_address, port
+                )
+            except OSError:
+                continue
+            self.port = port
+            return port
+        return None
+
+    async def _on_connect(self, reader, writer) -> None:
+        peer = writer.get_extra_info("peername")
+        if (
+            not peer
+            or _normalise_ip(peer[0]) != self.allowed_ip
+            or self._connected.done()
+        ):
+            self.rejected += 1
+            writer.close()
+            return
+        self._connected.set_result((reader, writer))
+        # Hold the handler open until the transfer is done, so the stream is
+        # never closed underneath it.
+        await self._finished.wait()
+
+    async def accept(self):
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(self._connected), timeout=DATA_CONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            return None
+
+    async def close(self) -> None:
+        self._finished.set()
+        if self._connected.done() and not self._connected.cancelled():
+            _, writer = self._connected.result()
+            writer.close()
+        if self._server is not None:
+            self._server.close()
+            self._server = None
+
+
 class FTPSessionState:
     def __init__(self):
         self.username: Optional[str] = None
@@ -24,6 +113,10 @@ class FTPSessionState:
         self.passive_mode = False
         self.transfer_type = "I"
         self.data_port: Optional[int] = None
+        self.data_channel: Optional[PassiveDataChannel] = None
+        #: Files uploaded this session: path -> (sha256, size). Kept per
+        #: session so one attacker never sees another's uploads.
+        self.uploaded: dict[str, tuple[str, int]] = {}
 
 
 class FTPHoneypot(BaseEmulator):
@@ -106,6 +199,8 @@ class FTPHoneypot(BaseEmulator):
         except Exception as e:
             logger.error(f"FTP session error: {e}")
         finally:
+            if state.data_channel is not None:
+                await state.data_channel.close()
             await session_manager.end_session(session_id)
             writer.close()
             try:
@@ -162,13 +257,15 @@ class FTPHoneypot(BaseEmulator):
             "CDUP": lambda: self._cmd_cdup(state),
             "XCUP": lambda: self._cmd_cdup(state),
             "TYPE": lambda: self._cmd_type(arg, state),
-            "PASV": lambda: self._cmd_pasv(local_ip),
-            "EPSV": lambda: "229 Entering Extended Passive Mode (|||50000|)\r\n",
+            "PASV": lambda: self._cmd_pasv(local_ip, state, source_ip),
+            "EPSV": lambda: self._cmd_epsv(state, source_ip),
             "PORT": lambda: self._cmd_port(arg, state),
-            "LIST": lambda: self._cmd_list(session_id, arg, state),
-            "NLST": lambda: self._cmd_nlst(arg, state),
-            "RETR": lambda: self._cmd_retr(session_id, arg, state),
-            "STOR": lambda: self._cmd_stor(session_id, arg, state, reader),
+            "EPRT": lambda: self._cmd_port(arg, state),
+            "LIST": lambda: self._cmd_list(session_id, arg, state, writer),
+            "NLST": lambda: self._cmd_nlst(arg, state, writer),
+            "RETR": lambda: self._cmd_retr(session_id, arg, state, writer),
+            "STOR": lambda: self._cmd_stor(session_id, arg, state, writer),
+            "STOU": lambda: self._cmd_stor(session_id, arg, state, writer),
             "DELE": lambda: self._cmd_dele(arg),
             "RMD": lambda: self._cmd_rmd(arg),
             "MKD": lambda: self._cmd_mkd(arg),
@@ -178,7 +275,7 @@ class FTPHoneypot(BaseEmulator):
             "SIZE": lambda: self._cmd_size(arg, state),
             "MDTM": lambda: self._cmd_mdtm(arg, state),
             "REST": lambda: f"350 Restart position accepted ({arg}).\r\n",
-            "APPE": lambda: self._cmd_stor(session_id, arg, state, reader),
+            "APPE": lambda: self._cmd_stor(session_id, arg, state, writer),
             "STAT": lambda: self._cmd_stat(state),
             "HELP": lambda: (
                 "214-The following commands are recognized:\r\n"
@@ -260,112 +357,200 @@ class FTPHoneypot(BaseEmulator):
         state.transfer_type = arg.upper() if arg else "I"
         return f"200 Switching to {'Binary' if state.transfer_type == 'I' else 'ASCII'} mode.\r\n"
 
-    def _cmd_pasv(self, local_ip: str) -> str:
-        # PASV must advertise the address the *server* listens on. IPv6 peers
-        # cannot be expressed in the classic PASV quad form, so refuse instead
-        # of emitting a malformed reply.
-        port = random.randint(50000, 50100)
-        p1, p2 = port // 256, port % 256
-        octets = local_ip.split(".")
+    async def _open_data_channel(
+        self, state: FTPSessionState, source_ip: str
+    ) -> Optional[int]:
+        if state.data_channel is not None:
+            await state.data_channel.close()
+        state.data_channel = PassiveDataChannel(source_ip)
+        port = await state.data_channel.open()
+        if port is None:
+            state.data_channel = None
+        return port
+
+    async def _cmd_pasv(
+        self, local_ip: str, state: FTPSessionState, source_ip: str
+    ) -> str:
+        # PASV must advertise the address clients can reach. Behind NAT that
+        # is not the socket's own address, so it is configurable. IPv6 cannot
+        # be expressed in the PASV quad form at all.
+        address = config.ftp_pasv_address or local_ip
+        octets = address.split(".")
         if len(octets) != 4:
             return "425 Use EPSV instead.\r\n"
+        port = await self._open_data_channel(state, source_ip)
+        if port is None:
+            return "425 Could not open passive connection.\r\n"
+        state.passive_mode = True
         return (
             f"227 Entering Passive Mode ({octets[0]},{octets[1]},"
-            f"{octets[2]},{octets[3]},{p1},{p2}).\r\n"
+            f"{octets[2]},{octets[3]},{port // 256},{port % 256}).\r\n"
         )
+
+    async def _cmd_epsv(self, state: FTPSessionState, source_ip: str) -> str:
+        port = await self._open_data_channel(state, source_ip)
+        if port is None:
+            return "425 Could not open passive connection.\r\n"
+        state.passive_mode = True
+        return f"229 Entering Extended Passive Mode (|||{port}|)\r\n"
 
     def _cmd_port(self, arg: str, state: FTPSessionState) -> str:
-        try:
-            parts = arg.split(",")
-            if len(parts) == 6:
-                state.data_port = int(parts[4]) * 256 + int(parts[5])
-                return "200 PORT command successful.\r\n"
-        except (ValueError, IndexError):
-            pass
-        return "501 Syntax error.\r\n"
+        # Active mode means the server connects out to an address the client
+        # names. For a honeypot that is an outbound connection to the attacker
+        # — or, with FTP bounce, to anyone — and the engine makes none. vsftpd
+        # configured with port_enable=NO answers exactly this.
+        return "500 Illegal PORT command.\r\n"
 
-    async def _cmd_list(self, session_id: str, arg: str, state: FTPSessionState) -> str:
+    async def _with_data_connection(self, state, writer, preamble):
+        """Send the 150, then wait for the client's data connection."""
+        channel = state.data_channel
+        state.data_channel = None
+        if channel is None:
+            return None, "425 Use PORT or PASV first.\r\n"
+        await self._send_response(writer, preamble)
+        connection = await channel.accept()
+        if connection is None:
+            await channel.close()
+            return None, "425 Failed to establish connection.\r\n"
+        return (channel, connection), None
+
+    def _listing(self, arg: str, state: FTPSessionState, names_only: bool) -> str:
         path = state.cwd
         if arg and not arg.startswith("-"):
-            if arg.startswith("/"):
-                path = arg
-            else:
-                path = os.path.join(state.cwd, arg)
+            path = arg if arg.startswith("/") else os.path.join(state.cwd, arg)
+        path = os.path.normpath(path)
 
-        entries = self._fake_fs.get(path, [])
-        if not entries:
-            return "150 Here comes the directory listing.\r\n226 Transfer complete.\r\n"
-
-        listing = "150 Here comes the directory listing.\r\n"
-        for entry in entries:
+        entries = list(self._fake_fs.get(path, []))
+        uploaded = {
+            os.path.basename(p): size
+            for p, (_, size) in state.uploaded.items()
+            if os.path.dirname(p) == path
+        }
+        lines = []
+        for entry in entries + sorted(set(uploaded) - set(entries)):
+            if names_only:
+                lines.append(f"{entry}\r\n")
+                continue
             full_path = os.path.join(path, entry)
-            is_dir = full_path in self._fake_fs
-            if is_dir:
-                listing += (
-                    f"drwxr-xr-x    2 0        0            4096 "
-                    f"Jan 15 10:30 {entry}\r\n"
-                )
+            if full_path in self._fake_fs:
+                lines.append(f"drwxr-xr-x    2 0        0            4096 Jan 15 10:30 {entry}\r\n")
             else:
-                size = random.randint(100, 100000)
-                listing += (
-                    f"-rw-r--r--    1 0        0            {size:>6} "
-                    f"Jan 15 10:30 {entry}\r\n"
-                )
-        listing += "226 Directory send OK.\r\n"
+                size = uploaded.get(entry) or random.randint(100, 100000)
+                lines.append(f"-rw-r--r--    1 0        0        {size:>8} Jan 15 10:30 {entry}\r\n")
+        return "".join(lines)
 
+    async def _send_data(self, state, writer, preamble: str, data: bytes, done: str) -> str:
+        opened, error = await self._with_data_connection(state, writer, preamble)
+        if error:
+            return error
+        channel, (_, data_writer) = opened
+        try:
+            data_writer.write(data)
+            await asyncio.wait_for(data_writer.drain(), timeout=DATA_TRANSFER_TIMEOUT)
+        except (ConnectionError, asyncio.TimeoutError):
+            pass
+        finally:
+            await channel.close()
+        return done
+
+    async def _cmd_list(
+        self, session_id: str, arg: str, state: FTPSessionState, writer
+    ) -> str:
+        listing = self._listing(arg, state, names_only=False)
         await session_manager.record_command(session_id, "LIST", listing)
-        return listing
-
-    def _cmd_nlst(self, arg: str, state: FTPSessionState) -> str:
-        path = state.cwd
-        if arg and not arg.startswith("-"):
-            if arg.startswith("/"):
-                path = arg
-            else:
-                path = os.path.join(state.cwd, arg)
-
-        entries = self._fake_fs.get(path, [])
-        result = "150 Here comes the directory listing.\r\n"
-        for entry in entries:
-            result += f"{entry}\r\n"
-        result += "226 Transfer complete.\r\n"
-        return result
-
-    async def _cmd_retr(self, session_id: str, arg: str, state: FTPSessionState) -> str:
-        if not arg:
-            return "501 Syntax error.\r\n"
-
-        await session_manager.record_network_event(
-            session_id, "ftp_download_attempt", {
-                "filename": arg,
-                "path": os.path.join(state.cwd, arg),
-            }
+        return await self._send_data(
+            state, writer, "150 Here comes the directory listing.\r\n",
+            listing.encode(), "226 Directory send OK.\r\n",
         )
 
-        return (
-            f"150 Opening BINARY mode data connection for {arg} "
-            f"({random.randint(100, 50000)} bytes).\r\n"
-            f"226 Transfer complete.\r\n"
+    async def _cmd_nlst(self, arg: str, state: FTPSessionState, writer) -> str:
+        return await self._send_data(
+            state, writer, "150 Here comes the directory listing.\r\n",
+            self._listing(arg, state, names_only=True).encode(),
+            "226 Directory send OK.\r\n",
         )
 
-    async def _cmd_stor(
-        self,
-        session_id: str,
-        arg: str,
-        state: FTPSessionState,
-        reader: asyncio.StreamReader,
+    async def _cmd_retr(
+        self, session_id: str, arg: str, state: FTPSessionState, writer
     ) -> str:
         if not arg:
             return "501 Syntax error.\r\n"
+        path = os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
 
         await session_manager.record_network_event(
-            session_id, "ftp_upload_attempt", {
-                "filename": arg,
-                "path": os.path.join(state.cwd, arg),
-            }
+            session_id, "ftp_download_attempt", {"filename": arg[:255], "path": path[:500]}
         )
 
-        return f"150 Ok to send data.\r\n226 Transfer complete.\r\n"
+        if path in state.uploaded:
+            # Their own upload comes back byte for byte, as it would.
+            sha, _ = state.uploaded[path]
+            try:
+                with open(os.path.join(config.file_capture_dir, sha), "rb") as handle:
+                    data = handle.read()
+            except OSError:
+                return "550 Failed to open file.\r\n"
+        elif os.path.basename(path) in self._fake_fs.get(os.path.dirname(path), []):
+            data = random.randbytes(random.randint(512, 4096))
+        else:
+            return "550 Failed to open file.\r\n"
+
+        return await self._send_data(
+            state, writer,
+            f"150 Opening BINARY mode data connection for {os.path.basename(path)} "
+            f"({len(data)} bytes).\r\n",
+            data, "226 Transfer complete.\r\n",
+        )
+
+    async def _cmd_stor(
+        self, session_id: str, arg: str, state: FTPSessionState, writer
+    ) -> str:
+        if not arg:
+            return "501 Syntax error.\r\n"
+        path = os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
+
+        opened, error = await self._with_data_connection(state, writer, "150 Ok to send data.\r\n")
+        if error:
+            return error
+        channel, (data_reader, _) = opened
+
+        cap = session_manager.MAX_UPLOAD_BYTES
+        received = bytearray()
+        oversize = False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DATA_TRANSFER_TIMEOUT
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                chunk = await asyncio.wait_for(data_reader.read(65536), timeout=remaining)
+                if not chunk:
+                    break
+                if len(received) + len(chunk) > cap:
+                    oversize = True
+                    break
+                received += chunk
+        except (ConnectionError, asyncio.TimeoutError):
+            pass
+        finally:
+            await channel.close()
+
+        await session_manager.record_network_event(
+            session_id, "ftp_upload", {
+                "filename": arg[:255], "path": path[:500],
+                "bytes": len(received), "oversize": oversize,
+            }
+        )
+        if oversize:
+            return "552 Requested file action aborted. Exceeded storage allocation.\r\n"
+
+        sha = await session_manager.record_file_upload(
+            session_id, os.path.basename(path) or arg, bytes(received),
+            remote_path=path, source="ftp_stor",
+        )
+        if sha:
+            state.uploaded[path] = (sha, len(received))
+        return "226 Transfer complete.\r\n"
 
     def _cmd_dele(self, arg: str) -> str:
         return f"250 DELE command successful.\r\n"

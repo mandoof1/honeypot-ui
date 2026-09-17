@@ -53,6 +53,11 @@ class HoneypotConfig:
 
     ssh_port: int = int(os.getenv("HONEYPOT_SSH_PORT", "2222"))
     ftp_port: int = int(os.getenv("HONEYPOT_FTP_PORT", "2121"))
+    #: Passive-mode data ports, which must be published alongside the control
+    #: port, and the address PASV advertises. Behind NAT or Docker the socket's
+    #: own address is unreachable, so set this to the public one.
+    ftp_pasv_ports: str = os.getenv("HONEYPOT_FTP_PASV_PORTS", "50000-50019")
+    ftp_pasv_address: str = os.getenv("HONEYPOT_FTP_PASV_ADDRESS", "")
     http_port: int = int(os.getenv("HONEYPOT_HTTP_PORT", "8080"))
     https_port: int = int(os.getenv("HONEYPOT_HTTPS_PORT", "8443"))
 
