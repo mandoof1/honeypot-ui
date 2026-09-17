@@ -102,6 +102,20 @@ class Settings(BaseSettings):
     CHIMERA_MODEL: str = "chimera-14b-v2"
     CHIMERA_TIMEOUT: float = 90.0
 
+    # Captured payload analysis. Files an attacker uploads are stored
+    # encrypted and reverse engineered statically — nothing is executed, and
+    # no URL or host found inside a sample is ever contacted.
+    PAYLOAD_ANALYSIS_ENABLED: bool = True
+    #: Largest sample whose bytes are kept. Larger ones keep their hashes.
+    PAYLOAD_MAX_STORE_BYTES: int = 10 * 1024 * 1024
+    #: The analyser runs in a separate process under these limits, because
+    #: every parser in it is being fed input chosen by an attacker.
+    PAYLOAD_ANALYSIS_TIMEOUT: float = 60.0
+    #: Virtual address-space cap for the analysis subprocess. numpy and the
+    #: parser libraries reserve a lot of it, so this is floored at 1024 MiB in
+    #: the worker regardless of what is set here.
+    PAYLOAD_ANALYSIS_MEMORY_MB: int = 2048
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value):
