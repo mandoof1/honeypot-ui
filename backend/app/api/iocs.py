@@ -29,7 +29,8 @@ router = APIRouter()
 
 #: Indicator types the pipeline emits. Anything else is a bug upstream, and
 #: rejecting an unknown filter is more useful than silently returning nothing.
-KNOWN_TYPES = {"ip", "domain", "url", "filename", "file_hash", "tool", "host", "file"}
+KNOWN_TYPES = {"ip", "domain", "url", "filename", "file_hash", "tool", "host",
+               "file", "wallet", "ssh_key", "c2_channel"}
 
 #: Cap on a single page. Analysts pulling a feed want the whole set, and the
 #: export route below exists for that, so the paged view stays modest.
