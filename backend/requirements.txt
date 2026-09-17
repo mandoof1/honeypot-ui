@@ -25,3 +25,9 @@ slowapi==0.1.9
 pandas==2.2.3
 geoip2==4.8.1
 
+# Static payload analysis (app/payloads). Parse ELF and PE binaries by their
+# structure; imported at startup through the ingest path, so the app will not
+# boot without them.
+pyelftools==0.33
+pefile==2024.8.26
+
