@@ -73,6 +73,15 @@ class HoneypotConfig:
     file_capture_dir: str = os.getenv(
         "HONEYPOT_FILE_CAPTURE_DIR", "./data/uploads"
     )
+    #: Largest captured file whose bytes are sent to the backend for analysis,
+    #: and the most one session may send in total. Larger files still arrive
+    #: as hashes and metadata, and remain in the capture directory.
+    upload_forward_max_bytes: int = int(
+        os.getenv("HONEYPOT_UPLOAD_FORWARD_MAX_BYTES", str(8 * 1024 * 1024))
+    )
+    upload_forward_session_bytes: int = int(
+        os.getenv("HONEYPOT_UPLOAD_FORWARD_SESSION_BYTES", str(24 * 1024 * 1024))
+    )
     log_dir: str = os.getenv("HONEYPOT_LOG_DIR", "./data/logs")
 
     enable_anti_fingerprinting: bool = os.getenv(

@@ -29,6 +29,8 @@ from typing import Optional
 
 import asyncssh
 
+from honeypot.capture.shell_capture import capture_command, flush_session_files
+from honeypot.capture.shell_writes import needs_continuation
 from honeypot.core.config import config
 from honeypot.core.session import session_manager
 from honeypot.core.shell_state import shell_states
@@ -53,7 +55,11 @@ FAKE_USERS = {
     "postgres": "postgres",
 }
 
-MAX_COMMAND_LENGTH = 4096
+#: Longest command line accepted. This was 4096, which cut base64 one-liners
+#: off mid-payload: the part of the line that mattered most was the part
+#: thrown away. An exec request has to fit in one SSH packet anyway, so this
+#: mainly bounds what an interactive session can accumulate.
+MAX_COMMAND_LENGTH = 256 * 1024
 MAX_AUTH_ATTEMPTS = 6
 
 #: Attempts after which any password is accepted, so a brute-forcer that
@@ -79,6 +85,11 @@ class _SessionState:
         self.auth_attempts = 0
 
 
+async def _close_session(session_id: str, shell) -> None:
+    await flush_session_files(session_id, shell)
+    await session_manager.end_session(session_id)
+
+
 class _HoneypotSSHServer(asyncssh.SSHServer):
     """Per-connection handler: capture the peer, then the auth attempts."""
 
@@ -97,8 +108,11 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
     def connection_lost(self, exc: Optional[Exception]) -> None:
         if self.state.session_id:
             # connection_lost is synchronous; hand the close off to the loop.
-            asyncio.create_task(session_manager.end_session(self.state.session_id))
-            shell_states.drop(self.state.session_id)
+            # The shell state is taken *now*, before anything else can drop
+            # it: it holds the content of every file the session wrote, and
+            # the session must not be finalised until those are recorded.
+            shell = shell_states.pop(self.state.session_id)
+            asyncio.create_task(_close_session(self.state.session_id, shell))
 
     async def begin_auth(self, username: str) -> bool:
         """Open the session here — the first point with a username and a loop.
@@ -378,6 +392,10 @@ class SSHHoneypot(BaseEmulator):
         process.stdout.write((await self._prompt(state)).encode())
 
         buffer = ""
+        #: Lines of a heredoc still waiting for their delimiter.
+        pending = ""
+        #: Without a terminal the input is a script, where tabs are content.
+        keep_tabs = process.get_terminal_type() is None
         while not process.stdin.at_eof():
             try:
                 data = await asyncio.wait_for(process.stdin.read(1024), timeout=300)
@@ -395,8 +413,23 @@ class SSHHoneypot(BaseEmulator):
 
                 if char in ("\r", "\n"):
                     process.stdout.write(b"\r\n")
-                    command = buffer.strip()
-                    buffer = ""
+                    if pending:
+                        # Inside a heredoc: the line is content, whitespace
+                        # and all, until the delimiter closes it.
+                        pending += buffer + "\n"
+                        buffer = ""
+                        if needs_continuation(pending) and len(pending) < MAX_COMMAND_LENGTH:
+                            process.stdout.write(b"> ")
+                            continue
+                        command, pending = pending.rstrip("\n"), ""
+                    else:
+                        command = buffer.strip()
+                        buffer = ""
+                        if command and needs_continuation(command):
+                            # bash keeps reading until the heredoc closes.
+                            pending = command + "\n"
+                            process.stdout.write(b"> ")
+                            continue
                     if not command:
                         process.stdout.write((await self._prompt(state)).encode())
                         continue
@@ -416,7 +449,7 @@ class SSHHoneypot(BaseEmulator):
                 elif char == "\x04":  # Ctrl-D
                     return
 
-                elif ord(char) >= 32:
+                elif ord(char) >= 32 or (char == "\t" and keep_tabs):
                     if len(buffer) < MAX_COMMAND_LENGTH:
                         buffer += char
                         # Echo locally: the client is in raw mode and shows
@@ -439,6 +472,11 @@ class SSHHoneypot(BaseEmulator):
         """
         await adaptive_engine.profile_actor(
             state.session_id, server.source_ip, {"command": command}
+        )
+        # Capture runs on the raw command, before anything lowercases it, and
+        # in passive mode too: recording what an attacker wrote is observation.
+        await capture_command(
+            state.session_id, command, "/root" if state.is_root else "/home/user"
         )
         payload = {
             "command": command,
