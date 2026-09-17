@@ -69,15 +69,34 @@ a honeypot that silently drops traffic cannot be audited. Point
 `SCANNER_LIST_PATH` at a [MISP warninglist](https://github.com/MISP/misp-warninglists)
 export to replace the built-in seed list.
 
-Raw commands, the command/output transcript, and captured credentials are
-encrypted with AES-256-GCM before they are stored.
+Raw commands, the command/output transcript, captured credentials, and any
+uploaded files are encrypted with AES-256-GCM before they are stored.
 
-A **second stage runs asynchronously**, after the response has been returned.
-If `CHIMERA_URL` points at a local endpoint serving the project's fine-tuned
-model, it reads the stored transcript and returns intent, objectives, ATT&CK
-techniques and indicators, merged onto the session. The split exists because
-NFR-2 budgets 200 ms for classification and a 14B model answers in seconds; a
-slow or absent model degrades the depth of analysis, never the capture.
+**Two stages run asynchronously**, after the response has been returned, for
+the same reason: NFR-2 budgets 200 ms for classification, so anything slower
+than that runs out of the ingest path, and a slow or absent stage degrades the
+depth of analysis, never the capture.
+
+- **Semantic analysis (Chimera).** If `CHIMERA_URL` points at a local endpoint
+  serving the project's fine-tuned model, it reads the stored transcript and
+  returns intent, objectives, ATT&CK techniques and indicators, merged onto the
+  session. A 14B model answers in seconds, two orders of magnitude over the
+  budget, which is why it is out of band.
+
+- **Payload analysis.** Files an attacker uploads — through the SSH shell
+  (echo/base64/printf loaders and heredocs), a pipe into an interpreter, SFTP,
+  SCP, FTP `STOR`, or an HTTP body — are captured *inbound*, so the engine
+  makes no outbound connection to obtain them. Each unique file (by SHA-256) is
+  then reverse-engineered **statically** in a sandboxed subprocess: file type
+  from magic bytes, ELF/PE internals and capabilities, script behaviours,
+  archive contents, and the indicators left inside it (C2 addresses, wallets,
+  mining pools, operator channels, embedded keys), plus a heuristic
+  malware-family hint shown always with its evidence. **Nothing in a sample is
+  ever executed, and no host or URL found inside one is ever contacted** —
+  doing so would announce the analysis and create exactly the egress the engine
+  exists to avoid. Indicators recovered from a payload are attributed back to
+  every session that dropped it. Point analysis is on by default and gated by
+  `PAYLOAD_ANALYSIS_ENABLED`.
 
 ---
 
@@ -101,9 +120,20 @@ figure the trainer produces.
 
 **Nothing has been trained yet, and nothing has captured real traffic yet.**
 The pipeline above is implemented and tested end to end, but no honeypot node
-has run against the internet, so the behavioural clusters are unfitted and no
-session has passed through the second stage. Treat every number the API
-currently returns as structural, not empirical.
+has run against the internet, so the behavioural clusters are unfitted, no
+session has passed through the semantic stage, and no real payload has been
+captured or analysed. Treat every number the API currently returns as
+structural, not empirical.
+
+**Payload analysis is static and heuristic, not a sandbox and not antivirus.**
+It reads a file's bytes and reports what they show; it never runs the sample,
+so it sees nothing that only happens at runtime (a packer that unpacks in
+memory, a domain built at execution). The family label is a hint from a small
+rule set over strings and behaviours, shown with its evidence and a bounded
+confidence — it is a starting point for an analyst, and its absence means
+nothing. Every parser runs on attacker-chosen input, so it is sandboxed in a
+resource-limited subprocess; a sample that trips a limit is marked failed and
+the rest of the session is unaffected.
 
 **Isolation is verified, not enforced by this code.** The real controls are
 the container runtime's (`cap_drop: ALL`, `read_only`, `no-new-privileges`,
@@ -148,11 +178,13 @@ and an attacker who explores beyond the emulated commands will notice.
 | Email OTP | 6 digits from `secrets`, stored as an HMAC digest, 5-attempt limit, 10-minute expiry |
 | Multi-factor auth | TOTP (RFC 6238); enrolment requires a valid code before activation, single-use recovery codes |
 | Database transport | TLS required outside development (`DATABASE_SSL` to override) |
-| Encryption at rest | AES-256-GCM, unique nonce per record, over captured commands, payloads and authenticator secrets |
+| Encryption at rest | AES-256-GCM, unique nonce per record, over captured commands, payloads, uploaded files and authenticator secrets |
 | Service-to-service | Shared `HONEYPOT_INGEST_TOKEN`, compared in constant time |
 | Rate limiting | Per-IP via slowapi; 5/min register, 10/min login, 3/min OTP resend |
 | Secrets | The app **refuses to start** in a non-development environment if any secret is still a placeholder |
 | Transport | Security headers on every response; CORS restricted to configured origins |
+| Payload analysis | Uploaded files are analysed statically in a subprocess under CPU, memory and file-size limits; nothing is executed and no indicator inside a sample is contacted |
+| Sample download | Raw captured malware is admin-only, served `application/octet-stream` with `nosniff`, and audit-logged |
 | Audit | Every privileged action written to `audit_logs` |
 
 ---
@@ -173,6 +205,8 @@ ones that matter most:
 | `GEOIP_DB_PATH` | MaxMind GeoLite2 database |
 | `SEED_ON_STARTUP` | Load the demo dataset into an empty database |
 | `RUN_MIGRATIONS_ON_STARTUP` | Disable to run `alembic upgrade head` as a release step |
+| `CHIMERA_URL` | Local OpenAI-compatible endpoint for semantic stage-2 analysis; unset disables it |
+| `PAYLOAD_ANALYSIS_ENABLED` | Reverse-engineer uploaded files in the detached stage (default on) |
 
 Generate each secret separately:
 
@@ -214,6 +248,10 @@ Bearer <access_token>`.
 | GET | `/api/v1/iocs/` | any | Indicators, grouped by value and ranked by how many sessions saw each |
 | GET | `/api/v1/iocs/session/{id}` | any | Indicators from one session |
 | GET | `/api/v1/iocs/feed` | any | Plain-text blocklist, one value per line |
+| GET | `/api/v1/payloads/` | any | Captured samples, unique by hash, filter + paginate |
+| GET | `/api/v1/payloads/stats` | any | Sample counts by kind and family |
+| GET | `/api/v1/payloads/{sha256}` | any | One sample's full analysis and the sessions it appeared in |
+| GET | `/api/v1/payloads/{sha256}/download` | admin | Raw sample bytes — audit-logged |
 | GET | `/api/v1/nodes/` | any | List nodes |
 | POST | `/api/v1/nodes/` | admin | Create a node |
 | POST | `/api/v1/nodes/register-internal` | token | Engine self-registration |
@@ -233,13 +271,15 @@ Bearer <access_token>`.
 backend/          FastAPI application
   app/api/        route handlers
   app/ai/         classifier, de-obfuscation, NLP, clustering, ATT&CK, LLM client
+  app/payloads/   static reverse-engineering of uploaded files, sandboxed
   app/core/       config, database, security, encryption, TOTP, rate limiting
-  app/services/   analysis pipeline, async enrichment, alerting, email, geoip
+  app/services/   analysis pipeline, async enrichment, payload analysis, alerting, artifacts
   alembic/        migrations
   ml/             classifier training + evaluation, cluster fitting
   tests/          pytest suite
 honeypot/         standalone capture engine (minimal dependencies)
   emulators/      SSH (real transport), FTP, HTTP/HTTPS
+  capture/        shell-write interpreter, SFTP/SCP endpoint, HTTP upload parsing
   core/           config, session manager, response modes, control API, TLS
   security/       rate limiting, egress filtering, isolation verification
   adaptive/       banner rotation, actor profiling

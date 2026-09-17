@@ -21,9 +21,10 @@ and a workspace for investigating suspicious activity.
 
 | Workflow | Capabilities |
 |---|---|
-| **Capture** | SSH, FTP, HTTP and HTTPS emulators record interactions and attempted credentials. |
+| **Capture** | SSH, FTP, HTTP and HTTPS emulators record interactions, attempted credentials, and files attackers upload. |
 | **Investigate** | Search sessions, filter by protocol and time, inspect transcripts, and review ATT&CK mappings. |
 | **Understand** | Classification, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
+| **Reverse-engineer** | Uploaded files are analysed statically — never run — for type, capabilities, embedded indicators, and a malware-family hint. |
 | **Respond** | Triage alerts, manage nodes, review indicators, and control the honeypot through role-restricted actions. |
 | **Share** | Copy an investigation link or export matching sessions as CSV, JSON, CEF, or STIX. |
 | **Trace** | Captured evidence is encrypted at rest; privileged operations and evidence access are audit-logged where implemented. |
@@ -102,7 +103,8 @@ flowchart LR
     API <--> DB[(PostgreSQL)]
     UI[React investigation console] <-->|JWT and role checks| API
     API --> Analysis[Classification / NLP / anomaly detection]
-    API -. Optional asynchronous stage .-> LLM[Local LLM endpoint]
+    API -. Async: transcript .-> LLM[Local LLM endpoint]
+    API -. Async: uploaded files .-> Payload[Sandboxed static analysis]
 ```
 
 | Layer | Stack |
@@ -110,7 +112,7 @@ flowchart LR
 | Console | React 19 · Vite 8 · Tailwind CSS 4 · Leaflet |
 | API | Python 3.12 · FastAPI · SQLAlchemy 2 · Pydantic |
 | Storage | PostgreSQL 16 · Alembic migrations |
-| Analysis | scikit-learn · spaCy · optional local LLM |
+| Analysis | scikit-learn · spaCy · optional local LLM · static payload analysis (pyelftools, pefile) |
 | Engine | asyncio · AsyncSSH · protocol emulators |
 
 The engine runs on an internal Docker network with dropped capabilities and a read-only
@@ -126,6 +128,8 @@ This is a capstone platform, **not a validated production detection system**.
 - Geolocation requires a MaxMind database. Missing data stays unknown.
 - Behavioral clustering needs a fitted model; LLM enrichment needs a configured endpoint.
 - In-memory rate limiting applies per process. Multiple workers need a shared limiter.
+- Payload analysis is static and heuristic — it never runs a sample, so it misses
+  runtime-only behaviour, and its malware-family label is a hint with evidence, not a verdict.
 - Emulated services remain distinguishable from real systems through some behaviors.
 
 See the [technical reference](docs/TECHNICAL_REFERENCE.md) for the analysis pipeline,
