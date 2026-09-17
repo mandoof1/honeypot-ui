@@ -58,6 +58,12 @@ class HoneypotConfig:
 
     bind_address: str = os.getenv("HONEYPOT_BIND_ADDRESS", "0.0.0.0")
 
+    #: Largest HTTP request body read, and so the largest file an HTTP upload
+    #: can deliver.
+    http_max_body_bytes: int = int(
+        os.getenv("HONEYPOT_HTTP_MAX_BODY_BYTES", str(8 * 1024 * 1024))
+    )
+
     #: Which OpenSSH release the SSH emulator imitates — banner and transport
     #: proposal together. See honeypot/adaptive/ssh_profile.py; the profile
     #: exists because the two used to be chosen independently, which is

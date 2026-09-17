@@ -5,6 +5,7 @@ import time
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from honeypot.capture.http_uploads import extract_files
 from honeypot.core.config import config
 from honeypot.core.tls import build_tls_context
 from honeypot.core.session import session_manager
@@ -19,7 +20,10 @@ logger = logging.getLogger(__name__)
 class HTTPHoneypot(BaseEmulator):
     MAX_REQUEST_LINE = 8192
     MAX_HEADER_COUNT = 100
-    MAX_BODY_BYTES = 1024 * 1024
+    #: Raised from 1 MiB, which refused most compiled payloads with a 413
+    #: before a byte was read. Bounded per request; the per-IP connection and
+    #: rate limits bound how many of these one source can hold open.
+    MAX_BODY_BYTES = config.http_max_body_bytes
 
     def __init__(self, use_tls: bool = False):
         protocol = "https" if use_tls else "http"
@@ -112,14 +116,23 @@ class HTTPHoneypot(BaseEmulator):
                         break
 
                     body = ""
+                    body_bytes = b""
                     if content_length > 0:
+                        # Allow time proportional to the size, within bounds:
+                        # a fixed 30 s dropped large uploads on slow links.
                         body_bytes = await asyncio.wait_for(
-                            reader.readexactly(content_length), timeout=30
+                            reader.readexactly(content_length),
+                            timeout=min(300, max(30, content_length / 32_768)),
                         )
+                        # The decoded form feeds the text matching below; the
+                        # raw bytes are what gets captured. Decoding with
+                        # replacement characters used to be the only copy,
+                        # which destroyed every binary upload on arrival.
                         body = body_bytes.decode("utf-8", errors="replace")
 
                     response = await self._handle_request(
-                        session_id, request_str, headers, body, source_ip, writer
+                        session_id, request_str, headers, body, source_ip, writer,
+                        body_bytes,
                     )
                     await self._send_response(writer, response)
 
@@ -172,6 +185,7 @@ class HTTPHoneypot(BaseEmulator):
         body: str,
         source_ip: str,
         writer: asyncio.StreamWriter,
+        body_bytes: bytes = b"",
     ) -> str:
         parts = request_line.split()
         if len(parts) < 2:
@@ -182,6 +196,16 @@ class HTTPHoneypot(BaseEmulator):
         parsed = urlparse(full_path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        for upload in extract_files(method, path, headers, body_bytes):
+            await session_manager.record_file_upload(
+                session_id,
+                upload.filename,
+                upload.content,
+                remote_path=path,
+                source=upload.source,
+                methods=[upload.field] if upload.field else [],
+            )
 
         await session_manager.record_network_event(
             session_id,
