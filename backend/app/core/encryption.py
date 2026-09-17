@@ -81,3 +81,29 @@ def decrypt_data(encrypted_data: str) -> str:
         raise ValueError(
             "Could not decrypt stored data; ENCRYPTION_KEY may have changed"
         ) from exc
+
+
+def encrypt_bytes(data: bytes) -> str:
+    """Encrypt binary content, such as a captured payload sample.
+
+    ``encrypt_data`` takes text, so a binary would need base64 before
+    encryption and again after — roughly 1.8x its size at rest. This seals the
+    bytes directly, in the same ``v2:`` format.
+    """
+    nonce = os.urandom(_NONCE_BYTES)
+    sealed = AESGCM(_key()).encrypt(nonce, data, None)
+    return _PREFIX + base64.b64encode(nonce + sealed).decode()
+
+
+def decrypt_bytes(encrypted_data: str) -> bytes:
+    if not encrypted_data.startswith(_PREFIX):
+        raise ValueError("Not an AES-256-GCM blob")
+    raw = base64.b64decode(encrypted_data[len(_PREFIX):])
+    nonce, sealed = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
+    try:
+        return AESGCM(_key()).decrypt(nonce, sealed, None)
+    except InvalidTag as exc:
+        raise ValueError(
+            "Could not decrypt stored data; ENCRYPTION_KEY may have "
+            "changed, or the record was tampered with"
+        ) from exc

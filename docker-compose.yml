@@ -82,6 +82,11 @@ services:
       HONEYPOT_ENABLE_ISOLATION: "true"
       HONEYPOT_DOCKER_NETWORK: honeypot_isolated
       HONEYPOT_ADAPTIVE_RESPONSE: "true"
+      # A small passive range so FTP uploads (STOR) work; the port the server
+      # advertises must be reachable from the client, which behind Docker's NAT
+      # is the published host port, not the container address.
+      HONEYPOT_FTP_PASV_PORTS: "50000-50009"
+      HONEYPOT_FTP_PASV_ADDRESS: ${HONEYPOT_FTP_PASV_ADDRESS:-127.0.0.1}
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
       HONEYPOT_LOG_DIR: /app/data/logs
@@ -93,6 +98,8 @@ services:
       - "2121:2121"
       - "8080:8080"
       - "8443:8443"
+      # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.
+      - "50000-50009:50000-50009"
       # The control API is NOT published: it is reachable only from the
       # backend over the internal network.
     depends_on:

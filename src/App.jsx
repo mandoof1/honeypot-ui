@@ -14,6 +14,7 @@ const LiveMap = lazy(() => import('./pages/LiveMap'))
 const SessionLogs = lazy(() => import('./pages/SessionLogs'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const Indicators = lazy(() => import('./pages/Indicators'))
+const Payloads = lazy(() => import('./pages/Payloads'))
 const Settings = lazy(() => import('./pages/Settings'))
 
 function AuthRoutes() {
@@ -46,6 +47,7 @@ function AuthRoutes() {
         <Route path="/sessions" element={<SessionLogs />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/indicators" element={<Indicators />} />
+        <Route path="/payloads" element={<Payloads />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

@@ -20,7 +20,7 @@ from app.schemas import (
 from app.api.export import FILE_EXTENSIONS, MEDIA_TYPES, _render
 from app.services.session_filters import session_filters
 from app.services.analysis import analysis_pipeline
-from app.services import enrichment
+from app.services import artifacts, enrichment, payload_enrichment
 
 router = APIRouter()
 
@@ -39,6 +39,13 @@ async def ingest_session_from_honeypot(
 
     result = await analysis_pipeline.process_session(db, session_data, node_id)
 
+    # Record uploaded files in the ingest transaction — storing bytes and
+    # linking them, no analysis — so it stays within the latency budget. The
+    # sample ids that need reverse-engineering are returned for stage 2.
+    pending_samples = await artifacts.record_uploads(
+        db, result["session_id"], session_data.get("uploads") or []
+    )
+
     audit = AuditLog(
         user_id=None,
         action="session_ingested_honeypot",
@@ -47,16 +54,20 @@ async def ingest_session_from_honeypot(
         details={
             "category": result["ai_classification"]["category"],
             "source": "honeypot_engine",
+            "uploads": len(session_data.get("uploads") or []),
         },
     )
     db.add(audit)
     await db.commit()
 
-    # Stage 2 runs detached, after the response. It reads the stored
-    # transcript and asks Chimera what the attacker was attempting; a slow or
-    # absent model degrades the depth of analysis, never the capture.
+    # Two detached stages run after the response, for the same reason: a slow
+    # model or a slow parser degrades the depth of analysis, never the capture.
+    # Chimera reads the transcript; payload analysis reverse-engineers the
+    # files the session uploaded, in a sandboxed subprocess.
     enrichment.schedule(result["session_id"])
+    payload_enrichment.schedule(pending_samples)
 
+    result["uploads_recorded"] = len(session_data.get("uploads") or [])
     return result
 
 

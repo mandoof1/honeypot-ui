@@ -33,6 +33,10 @@ services:
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
       HONEYPOT_LOG_DIR: /app/data/logs
+      HONEYPOT_FTP_PASV_PORTS: "50000-50009"
+      # Set to this VM's public address in .env, or passive FTP transfers
+      # (STOR/RETR) advertise an unreachable one and fail.
+      HONEYPOT_FTP_PASV_ADDRESS: ${HONEYPOT_FTP_PASV_ADDRESS:-}
 
     ports:
       # Emulated services, deliberately published so they can be probed.
@@ -40,6 +44,8 @@ services:
       - "2121:2121"
       - "8080:8080"
       - "8443:8443"
+      # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.
+      - "50000-50009:50000-50009"
       # The control API is bound to loopback only. It is authenticated by a
       # shared token alone, so it must never face the internet; tunnel to it
       # if the backend needs to reach it.

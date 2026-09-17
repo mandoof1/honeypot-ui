@@ -161,6 +161,8 @@ def test_expected_tables_are_created(upgrade_sql):
         "audit_logs",
         "otp_verifications",
         "alert_thresholds",
+        "payload_samples",
+        "session_artifacts",
     ):
         assert f"CREATE TABLE {table} " in upgrade_sql
 

@@ -244,6 +244,11 @@ class HoneypotSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    artifacts = relationship(
+        "SessionArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class IndicatorOfCompromise(Base):
@@ -259,6 +264,69 @@ class IndicatorOfCompromise(Base):
     tags = Column(_jsonb(), nullable=True)
 
     session = relationship("HoneypotSession", back_populates="iocs")
+
+
+class PayloadSample(Base):
+    """One unique file an attacker uploaded, analysed once however often it recurs.
+
+    Keyed by SHA-256 rather than stored per session: the same loader dropped
+    by forty addresses is one sample seen forty times, and that recurrence is
+    the finding. Analysis is expensive and deterministic, so it runs once per
+    sample, not once per session.
+    """
+
+    __tablename__ = "payload_samples"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sha256 = Column(String(64), nullable=False, unique=True, index=True)
+    sha1 = Column(String(40), nullable=False)
+    md5 = Column(String(32), nullable=False)
+    size = Column(Integer, nullable=False)
+    #: AES-256-GCM, like every other attacker-supplied byte this system keeps.
+    #: Null when only the hash arrived — over the engine's forwarding budget,
+    #: or over PAYLOAD_MAX_STORE_BYTES here.
+    content_encrypted = Column(Text, nullable=True)
+    #: The analyser's broad class — elf, pe, script, archive, … — and a
+    #: family *hint*, which is a heuristic match shown with its evidence,
+    #: never a verdict.
+    file_kind = Column(String(32), nullable=True, index=True)
+    file_type = Column(String(128), nullable=True)
+    family = Column(String(64), nullable=True, index=True)
+    #: pending, complete, failed or metadata_only.
+    analysis_status = Column(String(16), nullable=False, default="pending")
+    analysis_error = Column(String(500), nullable=True)
+    analysis = Column(_jsonb(), nullable=True)
+    analyser_version = Column(String(16), nullable=True)
+    analysed_at = Column(DateTime(timezone=True), nullable=True)
+    first_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    artifacts = relationship("SessionArtifact", back_populates="sample")
+
+
+class SessionArtifact(Base):
+    """A sample's appearance in one session: where it landed and how it arrived."""
+
+    __tablename__ = "session_artifacts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("honeypot_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sample_id = Column(Integer, ForeignKey("payload_samples.id"), nullable=False, index=True)
+    #: Attacker-supplied; display labels only, never used as paths.
+    filename = Column(String(255), nullable=False)
+    remote_path = Column(String(500), nullable=True)
+    #: ssh_shell, ssh_piped, sftp, scp, ftp_stor, http_multipart, http_put, …
+    source = Column(String(32), nullable=False)
+    #: How a shell-written file was produced: echo, base64, heredoc, …
+    methods = Column(_jsonb(), nullable=True)
+    captured_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    #: Whether this session has had the sample's indicators written to it.
+    iocs_recorded = Column(Boolean, nullable=False, default=False)
+
+    session = relationship("HoneypotSession", back_populates="artifacts")
+    sample = relationship("PayloadSample", back_populates="artifacts")
 
 
 class Alert(Base):

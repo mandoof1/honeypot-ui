@@ -53,10 +53,21 @@ class HoneypotConfig:
 
     ssh_port: int = int(os.getenv("HONEYPOT_SSH_PORT", "2222"))
     ftp_port: int = int(os.getenv("HONEYPOT_FTP_PORT", "2121"))
+    #: Passive-mode data ports, which must be published alongside the control
+    #: port, and the address PASV advertises. Behind NAT or Docker the socket's
+    #: own address is unreachable, so set this to the public one.
+    ftp_pasv_ports: str = os.getenv("HONEYPOT_FTP_PASV_PORTS", "50000-50019")
+    ftp_pasv_address: str = os.getenv("HONEYPOT_FTP_PASV_ADDRESS", "")
     http_port: int = int(os.getenv("HONEYPOT_HTTP_PORT", "8080"))
     https_port: int = int(os.getenv("HONEYPOT_HTTPS_PORT", "8443"))
 
     bind_address: str = os.getenv("HONEYPOT_BIND_ADDRESS", "0.0.0.0")
+
+    #: Largest HTTP request body read, and so the largest file an HTTP upload
+    #: can deliver.
+    http_max_body_bytes: int = int(
+        os.getenv("HONEYPOT_HTTP_MAX_BODY_BYTES", str(8 * 1024 * 1024))
+    )
 
     #: Which OpenSSH release the SSH emulator imitates — banner and transport
     #: proposal together. See honeypot/adaptive/ssh_profile.py; the profile
@@ -72,6 +83,15 @@ class HoneypotConfig:
     )
     file_capture_dir: str = os.getenv(
         "HONEYPOT_FILE_CAPTURE_DIR", "./data/uploads"
+    )
+    #: Largest captured file whose bytes are sent to the backend for analysis,
+    #: and the most one session may send in total. Larger files still arrive
+    #: as hashes and metadata, and remain in the capture directory.
+    upload_forward_max_bytes: int = int(
+        os.getenv("HONEYPOT_UPLOAD_FORWARD_MAX_BYTES", str(8 * 1024 * 1024))
+    )
+    upload_forward_session_bytes: int = int(
+        os.getenv("HONEYPOT_UPLOAD_FORWARD_SESSION_BYTES", str(24 * 1024 * 1024))
     )
     log_dir: str = os.getenv("HONEYPOT_LOG_DIR", "./data/logs")
 

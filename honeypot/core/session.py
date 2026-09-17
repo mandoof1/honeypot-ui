@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -32,6 +33,7 @@ class SessionRecord:
     keystrokes: list[dict] = field(default_factory=list)
     authentication_attempts: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    keystroke_total: int = 0
     threat_profile: Optional[str] = None
     anomaly_score: float = 0.0
 
@@ -71,14 +73,7 @@ class SessionRecord:
             "duration_seconds": round(self.duration, 2),
             "commands": command_strings,
             "payload": self.metadata.get("payload", ""),
-            "uploads": [
-                {
-                    "filename": f["filename"],
-                    "sha256": f["sha256"],
-                    "size": f["size"],
-                }
-                for f in self.files_uploaded
-            ],
+            "uploads": self._uploads_payload(),
             "failed_logins": sum(
                 1 for a in self.authentication_attempts if not a["success"]
             ),
@@ -108,7 +103,7 @@ class SessionRecord:
                 }
                 for a in self.authentication_attempts[: self.MAX_CREDENTIALS]
             ],
-            "keystroke_count": len(self.keystrokes),
+            "keystroke_count": max(self.keystroke_total, len(self.keystrokes)),
             # Retrieval and execution events — where a dropper's C2 URL is.
             "events": [
                 {k: v for k, v in e.items() if k != "timestamp"} | {"at": e["timestamp"]}
@@ -123,6 +118,45 @@ class SessionRecord:
                 for e in self.network_events
             ],
         }
+
+    def _uploads_payload(self) -> list[dict[str, Any]]:
+        """Captured files, with their bytes where the budget allows.
+
+        The hashes alone were all the backend ever received, so nothing
+        downstream could say what a file *was*. Content is read back from the
+        capture directory rather than held in memory for the session's life,
+        and bounded per file and per session so one session cannot turn the
+        ingest request into the expensive part of the system. A file over the
+        budget still arrives as metadata, so its hash is never lost.
+        """
+        budget = config.upload_forward_session_bytes
+        forwarded: set[str] = set()
+        uploads = []
+        for f in self.files_uploaded:
+            entry = {
+                "filename": f["filename"],
+                "sha256": f["sha256"],
+                "size": f["size"],
+                "source": f.get("source", "unknown"),
+                "remote_path": f.get("remote_path", f["filename"]),
+                "captured_at": datetime.fromtimestamp(
+                    f["timestamp"], tz=timezone.utc
+                ).isoformat(),
+                "methods": f.get("methods", []),
+            }
+            sha = f["sha256"]
+            if (
+                sha not in forwarded
+                and f["size"] <= config.upload_forward_max_bytes
+                and f["size"] <= budget
+            ):
+                content = _read_capture(f.get("stored_path"), sha)
+                if content is not None:
+                    entry["content_b64"] = base64.b64encode(content).decode("ascii")
+                    budget -= len(content)
+                    forwarded.add(sha)
+            uploads.append(entry)
+        return uploads
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,9 +179,25 @@ class SessionRecord:
         }
 
 
+def _read_capture(path: Optional[str], sha256: str) -> Optional[bytes]:
+    """Read a stored capture back, refusing anything that no longer matches."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            content = handle.read(config.upload_forward_max_bytes + 1)
+    except OSError:
+        return None
+    if hashlib.sha256(content).hexdigest() != sha256:
+        return None
+    return content
+
+
 class SessionManager:
     #: Uploads are attacker-controlled; cap what a single session can persist.
     MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+    #: Files one session may deposit. Droppers write a handful.
+    MAX_UPLOADS_PER_SESSION = 64
     #: Finished sessions are retained only for the status endpoint.
     MAX_RETAINED_SESSIONS = 1000
 
@@ -246,32 +296,60 @@ class SessionManager:
             )
 
     async def record_file_upload(
-        self, session_id: str, filename: str, content: bytes, remote_path: str = ""
-    ):
+        self,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        remote_path: str = "",
+        source: str = "unknown",
+        methods: Optional[list[str]] = None,
+    ) -> Optional[str]:
+        """Store an attacker-supplied file and note it against the session.
+
+        ``source`` says which channel carried it — ``ftp_stor``,
+        ``http_multipart``, ``ssh_shell``, ``sftp`` — because the same bytes
+        mean different things arriving through a webshell upload and through
+        an echoloader. Returns the SHA-256, or None if the file was refused.
+
+        Nothing here opens, parses or executes the content. It is written
+        under its own digest and analysed later, by the backend, in a
+        resource-limited process away from the internet-facing engine.
+        """
         session = await self.get_session(session_id)
-        if session:
-            if len(content) > self.MAX_UPLOAD_BYTES:
-                logger.warning(
-                    f"Discarding {len(content)} byte upload from session "
-                    f"{session_id}: exceeds {self.MAX_UPLOAD_BYTES} byte cap"
-                )
-                return
-            file_hash = hashlib.sha256(content).hexdigest()
-            # Name the file after its own digest so an attacker-supplied
-            # filename can never influence where it lands on disk.
-            file_path = os.path.join(config.file_capture_dir, file_hash)
+        if not session or not content:
+            return None
+        if len(content) > self.MAX_UPLOAD_BYTES:
+            logger.warning(
+                f"Discarding {len(content)} byte upload from session "
+                f"{session_id}: exceeds {self.MAX_UPLOAD_BYTES} byte cap"
+            )
+            return None
+        if len(session.files_uploaded) >= self.MAX_UPLOADS_PER_SESSION:
+            logger.warning(f"Session {session_id} exceeded its upload count cap")
+            return None
+
+        file_hash = hashlib.sha256(content).hexdigest()
+        # Name the file after its own digest so an attacker-supplied
+        # filename can never influence where it lands on disk.
+        os.makedirs(config.file_capture_dir, exist_ok=True)
+        file_path = os.path.join(config.file_capture_dir, file_hash)
+        if not os.path.exists(file_path):
             with open(file_path, "wb") as f:
                 f.write(content)
-            session.files_uploaded.append(
-                {
-                    "timestamp": time.time(),
-                    "filename": filename,
-                    "remote_path": remote_path or filename,
-                    "size": len(content),
-                    "sha256": file_hash,
-                    "stored_path": file_path,
-                }
-            )
+        session.files_uploaded.append(
+            {
+                "timestamp": time.time(),
+                # Attacker-controlled strings; bounded before they go anywhere.
+                "filename": (filename or file_hash)[:255],
+                "remote_path": (remote_path or filename or "")[:500],
+                "size": len(content),
+                "sha256": file_hash,
+                "stored_path": file_path,
+                "source": source,
+                "methods": list(methods or [])[:8],
+            }
+        )
+        return file_hash
 
     async def record_file_download(
         self, session_id: str, filename: str, content: bytes, remote_path: str = ""
@@ -298,12 +376,19 @@ class SessionManager:
                 {"timestamp": time.time(), "event_type": event_type, **details}
             )
 
+    #: Keystrokes retained per session. They were recorded without limit, so a
+    #: large paste grew one list by a dict per character on the component that
+    #: faces the internet. Past the cap they are counted, not stored.
+    MAX_KEYSTROKES = 20_000
+
     async def record_keystroke(self, session_id: str, keystroke: str):
         session = await self.get_session(session_id)
         if session:
-            session.keystrokes.append(
-                {"timestamp": time.time(), "key": keystroke}
-            )
+            session.keystroke_total += 1
+            if len(session.keystrokes) < self.MAX_KEYSTROKES:
+                session.keystrokes.append(
+                    {"timestamp": time.time(), "key": keystroke}
+                )
 
     async def record_auth_attempt(
         self, session_id: str, username: str, password: str, success: bool
@@ -330,6 +415,9 @@ class SessionManager:
             session.anomaly_score = score
 
     async def _persist_session(self, session: SessionRecord):
+        # A capture directory removed after startup must not stop the session
+        # reaching the backend: this runs before the ingest is spawned.
+        os.makedirs(config.session_capture_dir, exist_ok=True)
         capture_file = os.path.join(
             config.session_capture_dir, f"{session.session_id}.json"
         )

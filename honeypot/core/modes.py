@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from honeypot.core.config import OperationalMode, config
+from honeypot.capture.shell_writes import interpret
 from honeypot.core import dropper
 from honeypot.core.shell_state import DroppedFile, resolve_path, shell_states
 from honeypot.adaptive.fingerprint import fingerprint_engine
@@ -312,9 +313,14 @@ class ModeHandler:
             )
             return result
 
-        elif cmd.startswith("echo "):
-            result = cmd[5:] + "\n"
-            return result
+        elif cmd == "echo" or cmd.startswith(("echo ", "printf ")):
+            # Answered from the raw command, not the lowercased one, by the
+            # interpreter that captures shell writes. This used to print
+            # `cmd[5:]`, so `echo "x" > f` replied `"x" > f` — quotes,
+            # redirect and all — which is a tell no real shell gives, and
+            # stopped every loader that writes its payload with echo.
+            printed = interpret(data.get("command", ""), cwd=shell.cwd).stdout
+            return printed.decode("utf-8", errors="replace") if printed else ""
 
         elif cmd.startswith("python") or cmd.startswith("perl") or cmd.startswith("ruby"):
             result = f"bash: {cmd.split()[0]}: command not found\n"
