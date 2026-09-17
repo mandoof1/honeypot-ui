@@ -9,6 +9,8 @@ of the connection and is forwarded with the session.
 import asyncio
 import base64
 import hashlib
+import os
+import uuid
 
 import asyncssh
 import pytest
@@ -134,3 +136,79 @@ async def test_echo_replies_like_bash(ssh_honeypot):
     # One connection is one session, however many commands it runs.
     payload = await _next_payload(ingested)
     assert _upload(payload, "/tmp/f")["size"] == len(b"data\n")
+
+
+async def test_sftp_put_is_captured(ssh_honeypot, tmp_path):
+    port, ingested = ssh_honeypot
+    payload = b"\x7fELF\x02\x01\x01" + bytes(range(256)) * 32
+    local = tmp_path / "local.bin"
+    local.write_bytes(payload)
+
+    async with _connect(port) as conn:
+        async with conn.start_sftp_client() as sftp:
+            await sftp.put(str(local), "/tmp/.kworker")
+            # The session is consistent with itself: the file is there.
+            assert (await sftp.stat("/tmp/.kworker")).size == len(payload)
+
+    upload = _upload(await _next_payload(ingested), "/tmp/.kworker")
+    assert upload["source"] == "sftp"
+    assert base64.b64decode(upload["content_b64"]) == payload
+
+
+async def test_scp_upload_is_captured(ssh_honeypot, tmp_path):
+    port, ingested = ssh_honeypot
+    payload = b"#!/bin/sh\necho scp stage\n"
+    local = tmp_path / "stage.sh"
+    local.write_bytes(payload)
+
+    async with _connect(port) as conn:
+        await asyncssh.scp(str(local), (conn, "/var/tmp/stage.sh"))
+
+    upload = _upload(await _next_payload(ingested), "/var/tmp/stage.sh")
+    assert upload["source"] == "scp"
+    assert base64.b64decode(upload["content_b64"]) == payload
+
+
+async def test_sftp_never_reaches_the_real_filesystem(ssh_honeypot, tmp_path):
+    port, ingested = ssh_honeypot
+    marker = tmp_path / "must-not-appear"
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("host secret")
+
+    async with _connect(port) as conn:
+        async with conn.start_sftp_client() as sftp:
+            listing = set(await sftp.listdir("/"))
+            assert "tmp" in listing and "root" in listing
+            # Nothing on the host is readable, removable or linkable.
+            with pytest.raises(asyncssh.SFTPNoSuchFile):
+                await sftp.get(str(real_file), str(tmp_path / "copy"))
+            with pytest.raises(asyncssh.SFTPError):
+                await sftp.remove("/etc/passwd")
+            with pytest.raises(asyncssh.SFTPError):
+                await sftp.symlink("/etc/shadow", "/tmp/s")
+            with pytest.raises(asyncssh.SFTPError):
+                await sftp.readlink("/proc/self/exe")
+            with pytest.raises(asyncssh.SFTPNoSuchFile):
+                await sftp.mkdir(str(marker))  # its parent is not in the decoy tree
+            decoy_dir = f"/tmp/honeypot-sftp-{uuid.uuid4().hex}"
+            await sftp.mkdir(decoy_dir)  # succeeds inside the decoy...
+            assert await sftp.isdir(decoy_dir)
+    assert not marker.exists()
+    assert not os.path.exists(decoy_dir)  # ...and exists nowhere on the host
+    assert real_file.read_text() == "host secret"
+    await _next_payload(ingested)
+
+
+async def test_interrupted_sftp_upload_is_captured_as_far_as_it_got(ssh_honeypot):
+    port, ingested = ssh_honeypot
+    partial = b"\x7fELF" + b"\x90" * 4096
+
+    conn = await _connect(port)
+    sftp = await conn.start_sftp_client()
+    handle = await sftp.open("/tmp/.partial", "wb")
+    await handle.write(partial)
+    # Drop the connection with the handle still open, as a killed client would.
+    conn.abort()
+
+    upload = _upload(await _next_payload(ingested), "/tmp/.partial")
+    assert base64.b64decode(upload["content_b64"]) == partial

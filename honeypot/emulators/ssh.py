@@ -29,6 +29,7 @@ from typing import Optional
 
 import asyncssh
 
+from honeypot.capture.sftp import DecoySFTPServer, wait_for_transfers
 from honeypot.capture.shell_capture import capture_command, flush_session_files
 from honeypot.capture.shell_writes import needs_continuation
 from honeypot.core.config import config
@@ -86,6 +87,7 @@ class _SessionState:
 
 
 async def _close_session(session_id: str, shell) -> None:
+    await wait_for_transfers(session_id)
     await flush_session_files(session_id, shell)
     await session_manager.end_session(session_id)
 
@@ -306,6 +308,11 @@ class SSHHoneypot(BaseEmulator):
             server_factory=lambda: _HoneypotSSHServer(self),
             server_host_keys=self._host_keys(),
             process_factory=self._handle_process,
+            # sftp and scp uploads land in an in-memory filesystem and are
+            # captured; see capture/sftp.py. Refusing the subsystem, as this
+            # used to, is not what a stock sshd does.
+            sftp_factory=DecoySFTPServer,
+            allow_scp=True,
             server_version=profile.version_string,
             kex_algs=profile.kex_algs,
             encryption_algs=profile.encryption_algs,
