@@ -80,6 +80,18 @@ of 0.186 and 2,393 benign flows (0.61%) flagged.
   captured honeypot traffic is an assumption until it is labelled and
   measured, and the report should say it is an assumption. Training on
   captured sessions removes the shift and is the better long-term path.
+- **Observed on the deployment.** The controlled end-to-end test
+  (`deploy/server/controlled-test.sh`) produced five sessions:
+  - three SSH logins that were refused;
+  - an SSH session with `wget`, `/etc/passwd` and a base64 file drop;
+  - an HTTP path traversal with an sqlmap user agent.
+
+  The stage-1 model labelled all five **benign**. The stage-2 NLP stage still
+  identified `sqlmap`, `wget_curl`, `enum_linux` and `data_exfil`. These are
+  short exchanges over a container network, not the long or high-volume
+  flows CIC-IDS2017's attacks consist of. That is the domain shift above in
+  practice: on honeypot traffic, the flow model's verdict should not be read
+  on its own.
 - **Class folding is a design decision.** DoS and DDoS count as
   exploitation, PortScan as reconnaissance, and Bot and Infiltration as
   exfiltration. It belongs in the report as a choice to defend.
