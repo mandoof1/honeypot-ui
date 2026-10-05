@@ -1,0 +1,145 @@
+{
+  "generated_at": "2026-10-05T18:42:04.951612+00:00",
+  "n_test": 478293,
+  "accuracy": 0.9939200448260794,
+  "precision_macro": 0.7907832005879767,
+  "recall_macro": 0.9844340738658465,
+  "f1_macro": 0.8231973459005959,
+  "per_class": {
+    "benign": {
+      "precision": 0.9987536617570816,
+      "recall": 0.9939179366225105,
+      "f1": 0.9963299316304861,
+      "support": 393452
+    },
+    "exfiltration": {
+      "precision": 0.18629866929521932,
+      "recall": 0.9521410579345088,
+      "f1": 0.31162407254740315,
+      "support": 397
+    },
+    "exploitation": {
+      "precision": 0.9923692901630197,
+      "recall": 0.992833433916717,
+      "f1": 0.9926013077810711,
+      "support": 66280
+    },
+    "reconnaissance": {
+      "precision": 0.9857111811365858,
+      "recall": 0.9988438669896499,
+      "f1": 0.9922340716434236,
+      "support": 18164
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "benign",
+      "exfiltration",
+      "exploitation",
+      "reconnaissance"
+    ],
+    "matrix": [
+      [
+        391059,
+        1651,
+        489,
+        253
+      ],
+      [
+        19,
+        378,
+        0,
+        0
+      ],
+      [
+        465,
+        0,
+        65805,
+        10
+      ],
+      [
+        4,
+        0,
+        17,
+        18143
+      ]
+    ]
+  },
+  "training": {
+    "source": "cicids2017",
+    "n_train": 1913168,
+    "test_size": 0.2,
+    "n_estimators": 200,
+    "max_depth": 20,
+    "class_weight": "balanced_subsample",
+    "class_balance": {
+      "benign": 1967257,
+      "exfiltration": 1985,
+      "exploitation": 331400,
+      "reconnaissance": 90819
+    },
+    "features": [
+      "destination_port",
+      "flow_duration",
+      "fwd_data_packets",
+      "fwd_bytes",
+      "bwd_bytes",
+      "fwd_packet_length_max",
+      "bwd_packet_length_max",
+      "flow_bytes_per_second",
+      "bwd_fwd_byte_ratio",
+      "fwd_iat_mean",
+      "fwd_iat_max",
+      "flow_iat_max"
+    ]
+  },
+  "inference_latency": {
+    "n": 2000,
+    "p50_ms": 9.268,
+    "p95_ms": 9.815,
+    "p99_ms": 10.936,
+    "max_ms": 12.695
+  },
+  "top_features": [
+    {
+      "feature": "destination_port",
+      "importance": 0.20869397247442525
+    },
+    {
+      "feature": "bwd_packet_length_max",
+      "importance": 0.12316384537935071
+    },
+    {
+      "feature": "bwd_fwd_byte_ratio",
+      "importance": 0.12264914123560604
+    },
+    {
+      "feature": "bwd_bytes",
+      "importance": 0.11991489480570652
+    },
+    {
+      "feature": "fwd_bytes",
+      "importance": 0.10093231290247096
+    },
+    {
+      "feature": "fwd_packet_length_max",
+      "importance": 0.0736718041006592
+    },
+    {
+      "feature": "flow_duration",
+      "importance": 0.054345405321535575
+    },
+    {
+      "feature": "flow_bytes_per_second",
+      "importance": 0.05425788564852299
+    },
+    {
+      "feature": "flow_iat_max",
+      "importance": 0.048555301625857535
+    },
+    {
+      "feature": "fwd_iat_max",
+      "importance": 0.04441059061406686
+    }
+  ]
+}

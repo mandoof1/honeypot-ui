@@ -8,7 +8,10 @@ import AuthShell, { Field, Notice, SubmitButton } from '../components/AuthShell'
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const [form, setForm] = useState({ email: '', password: '' })
+  const [form, setForm] = useState({ email: '', password: '', code: '' })
+  // Set once the password has been accepted and the account wants its
+  // authenticator code; the email and password are resent with it.
+  const [needsCode, setNeedsCode] = useState(false)
   const [errors, setErrors] = useState({})
   const [showPw, setShowPw] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -26,6 +29,7 @@ export default function Login() {
     if (!form.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
       e.email = 'Enter a valid email address.'
     if (!form.password) e.password = 'Enter your password.'
+    if (needsCode && !form.code.trim()) e.code = 'Enter the code from your authenticator app.'
     return e
   }
 
@@ -37,11 +41,16 @@ export default function Login() {
     setUnverifiedEmail('')
     setResendMsg('')
     try {
-      await login(form.email, form.password)
+      await login(form.email, form.password, needsCode ? form.code.replace(/\s+/g, '') : undefined)
       navigate('/')
     } catch (err) {
       const msg = err.message || 'That email and password did not match.'
-      if (msg.includes('not verified')) {
+      if (err.mfaRequired) {
+        setNeedsCode(true)
+        setErrors({})
+      } else if (needsCode && err.status === 401) {
+        setErrors({ code: msg })
+      } else if (msg.includes('not verified')) {
         setUnverifiedEmail(form.email)
         setErrors({})
       } else {
@@ -76,6 +85,8 @@ export default function Login() {
     value: form[key],
     onChange: (ev) => {
       setForm({ ...form, [key]: ev.target.value })
+      // A different account may not use MFA at all.
+      if (key !== 'code' && needsCode) setNeedsCode(false)
       if (errors[key]) setErrors({ ...errors, [key]: null })
       setUnverifiedEmail('')
       setResendMsg('')
@@ -151,8 +162,26 @@ export default function Login() {
           </div>
         </Field>
 
+        {needsCode && (
+          <Field
+            label="Authenticator code"
+            error={errors.code}
+            hint="Six digits from your app, or one of your recovery codes."
+          >
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="123 456"
+              className={`field readout tracking-[0.2em] ${errors.code ? 'field-invalid' : ''}`}
+              {...field('code')}
+            />
+          </Field>
+        )}
+
         <SubmitButton loading={loading} loadingLabel="Signing in…">
-          Sign in
+          {needsCode ? 'Verify and sign in' : 'Sign in'}
         </SubmitButton>
       </form>
 

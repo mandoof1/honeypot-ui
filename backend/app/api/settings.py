@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,6 +13,7 @@ from app.schemas import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _to_response(t: AlertThreshold) -> AlertThresholdResponse:
@@ -155,8 +158,25 @@ async def update_system_config(
         db.add(audit)
         await db.commit()
 
+    # The node rows are the record; the engine is what actually answers
+    # attackers. Saving used to change only the rows, so the dashboard could
+    # say "passive" while the engine kept emulating. Push it, and say plainly
+    # when that was not possible — the engine also adopts the stored mode
+    # whenever it registers, so an unreachable engine catches up on restart.
+    engine_applied = None
+    if config.honeypot_mode:
+        from app.api.honeypot import _engine_request
+
+        try:
+            await _engine_request("POST", "/mode", {"mode": config.honeypot_mode.value})
+            engine_applied = True
+        except HTTPException as exc:
+            engine_applied = False
+            logger.warning("Mode saved but not applied to the engine: %s", exc.detail)
+
     return {
         "status": "updated",
         "message": "System configuration updated",
         "honeypot_mode": config.honeypot_mode.value if config.honeypot_mode else None,
+        "engine_applied": engine_applied,
     }

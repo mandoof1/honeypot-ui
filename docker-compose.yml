@@ -74,7 +74,7 @@ services:
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
       HONEYPOT_CONTROL_PORT: "8000"
-      HONEYPOT_PROTOCOLS: ssh,ftp,http
+      HONEYPOT_PROTOCOLS: ssh,ftp,http,https
       HONEYPOT_OPERATIONAL_MODE: active
       HONEYPOT_MAX_CONN_PER_IP: "5"
       HONEYPOT_RATE_LIMIT: "60"
@@ -93,20 +93,27 @@ services:
       BACKEND_API_URL: http://backend:8000/api/v1
       HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:-local-dev-ingest-token}
     ports:
-      # Emulated services, deliberately published so they can be probed.
-      - "2222:2222"
-      - "2121:2121"
-      - "8080:8080"
-      - "8443:8443"
+      # Emulated services, published on loopback for local testing. (A
+      # deployment that faces the internet is deploy/server/.)
+      - "127.0.0.1:2222:2222"
+      - "127.0.0.1:2121:2121"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8443:8443"
       # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.
-      - "50000-50009:50000-50009"
+      - "127.0.0.1:50000-50009:50000-50009"
       # The control API is NOT published: it is reachable only from the
       # backend over the internal network.
     depends_on:
       backend:
         condition: service_healthy
     networks:
+      # Docker silently publishes nothing for a container whose only network
+      # is internal, so with honeypot_isolated alone none of the ports above
+      # ever answered. The ingress bridge exists only to carry them. It does
+      # route outwards; deploy/server/honeysentinel-egress.sh is the host
+      # firewall that drops the engine's egress where that matters.
       - honeypot_isolated
+      - honeypot_ingress
     volumes:
       - honeypot_data:/app/data
     cap_drop:
@@ -139,6 +146,8 @@ services:
 
 networks:
   internal:
+    driver: bridge
+  honeypot_ingress:
     driver: bridge
   honeypot_isolated:
     driver: bridge

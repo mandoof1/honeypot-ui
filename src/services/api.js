@@ -120,7 +120,12 @@ async function requestResponse(path, options = {}, { retry = true } = {}) {
     throw new ApiError('Your session has expired. Please sign in again.', 401)
   }
 
-  if (!res.ok) throw new ApiError(await readError(res), res.status)
+  if (!res.ok) {
+    const error = new ApiError(await readError(res), res.status)
+    // The password was right and the account wants its second factor.
+    error.mfaRequired = res.headers.get('X-MFA-Required') === 'totp'
+    throw error
+  }
   return res
 }
 
@@ -159,11 +164,20 @@ function toQuery(params = {}) {
 
 export const api = {
   auth: {
-    login: (email, password) =>
+    login: (email, password, totpCode) =>
       request('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(
+          totpCode ? { email, password, totp_code: totpCode } : { email, password },
+        ),
       }),
+    mfa: {
+      enroll: () => request('/auth/mfa/enroll', { method: 'POST' }),
+      confirm: (code) =>
+        request('/auth/mfa/confirm', { method: 'POST', body: JSON.stringify({ code }) }),
+      disable: (code) =>
+        request('/auth/mfa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
+    },
     register: (data) =>
       request('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
     verifyOtp: (data) =>

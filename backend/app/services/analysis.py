@@ -101,9 +101,9 @@ class AnalysisPipeline:
     ) -> Dict:
         # NFR-2 commits the classification path to under 200 ms. Nothing
         # measured it, so the requirement could not be evaluated at all —
-        # only asserted. This times the analysis span itself: feature
-        # extraction through to the severity decision, excluding the database
-        # write, which is what the requirement is actually about.
+        # only asserted. This times the analysis span: feature extraction
+        # through the verdict being committed (and any alert dispatched), so
+        # it includes the database writes as well as the models.
         started = time.perf_counter()
 
         # Import the singletons, not the modules: `from app.ai import
@@ -119,12 +119,15 @@ class AnalysisPipeline:
         commands = [
             str(c) for c in (session_data.get("commands") or [])[:MAX_COMMANDS]
         ]
-        packets = session_data.get("packets") or []
         duration = float(session_data.get("duration_seconds") or 0)
 
         geo = geoip_service.lookup(attacker_ip)
 
-        ai_result = classifier.classify_raw(packets, commands, duration)
+        # Stage 1 classifies the traffic's shape, measured at the engine's
+        # socket; the commands are stage 2's (NLP and Chimera) to read.
+        ai_result = classifier.classify_flow(
+            session_data.get("flow"), str(session_data.get("protocol") or "")
+        )
 
         nlp_result = nlp_engine.analyze_commands(commands)
 
@@ -545,6 +548,8 @@ class DashboardService:
                 "geo_lat": s.geo_lat,
                 "geo_lon": s.geo_lon,
                 "attack_category": s.attack_category.value if s.attack_category else None,
+                # The feed's hands-on marker reads this; it was never sent.
+                "attacker_profile": s.attacker_profile.value if s.attacker_profile else None,
                 "severity": self._session_severity(s),
                 "timestamp": s.started_at.isoformat(),
             })

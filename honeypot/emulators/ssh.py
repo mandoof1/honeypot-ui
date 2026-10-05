@@ -29,6 +29,7 @@ from typing import Optional
 
 import asyncssh
 
+from honeypot.capture.flow import FlowMeter
 from honeypot.capture.sftp import DecoySFTPServer, wait_for_transfers
 from honeypot.capture.shell_capture import capture_command, flush_session_files
 from honeypot.capture.shell_writes import needs_continuation
@@ -100,12 +101,16 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         self.state = _SessionState()
         self.source_ip = "0.0.0.0"
         self.source_port = 0
+        self.flow: Optional[FlowMeter] = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         peer = conn.get_extra_info("peername")
         if peer:
             self.source_ip, self.source_port = peer[0], peer[1]
         conn.set_extra_info(honeypot_server=self)
+        # Before asyncssh sends its version string, so the key exchange is
+        # counted too.
+        self.flow = FlowMeter.for_ssh(conn)
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
         if self.state.session_id:
@@ -130,7 +135,8 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
                     asyncssh.DISC_TOO_MANY_CONNECTIONS, "Too many connections"
                 )
             self.state.session_id = await session_manager.create_session(
-                "ssh", self.source_ip, self.source_port, {"protocol_version": "SSH-2.0"}
+                "ssh", self.source_ip, self.source_port, {"protocol_version": "SSH-2.0"},
+                flow=self.flow,
             )
             await session_manager.record_network_event(
                 self.state.session_id,

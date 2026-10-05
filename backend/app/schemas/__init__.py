@@ -114,6 +114,8 @@ class UserResponse(BaseModel):
     is_verified: bool
     created_at: datetime
     last_login: Optional[datetime]
+    #: Lets the UI offer enrolment or removal of an authenticator.
+    totp_enabled: bool = False
 
     class Config:
         from_attributes = True

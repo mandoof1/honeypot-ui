@@ -1,5 +1,9 @@
 # Deployment Guide
 
+> **Running everything on one machine you control?** Use
+> [`deploy/server/`](deploy/server/README.md) instead: one script sets up the
+> database, API, dashboard and engine together, behind Tailscale.
+
 Three pieces deploy independently:
 
 | Component | Where | Why |

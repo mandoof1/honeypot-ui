@@ -5,6 +5,7 @@ import os
 import random
 from typing import Optional
 
+from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
 from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
@@ -142,10 +143,30 @@ class FTPHoneypot(BaseEmulator):
     def get_banner(self) -> str:
         return fingerprint_engine.get_ftp_banner()
 
+    async def _observe_passively(self, session_id: str, reader: asyncio.StreamReader) -> None:
+        """Passive mode: record the connection, send nothing.
+
+        FTP's server speaks first, so most clients will wait for a banner
+        that never comes; whatever a client does send in the meantime is kept.
+        """
+        await session_manager.record_network_event(
+            session_id, "passive_observation", {"protocol": "ftp", "responded": False}
+        )
+        try:
+            data = await asyncio.wait_for(reader.read(4096), timeout=15)
+        except (asyncio.TimeoutError, ConnectionError):
+            data = b""
+        for line in data.decode("utf-8", errors="replace").splitlines()[:20]:
+            if line.strip():
+                await session_manager.record_command(
+                    session_id, line.strip(), output="(passive: no response sent)"
+                )
+
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
         source_ip, source_port = self._get_peer_info(writer)
+        flow = FlowMeter.for_stream(reader, writer)
         logger.info(f"FTP connection from {source_ip}:{source_port}")
 
         if not await self._check_rate_limit(source_ip):
@@ -155,11 +176,15 @@ class FTPHoneypot(BaseEmulator):
             return
 
         session_id = await session_manager.create_session(
-            "ftp", source_ip, source_port
+            "ftp", source_ip, source_port, flow=flow
         )
         state = FTPSessionState()
 
         try:
+            if mode_handler.is_passive():
+                await self._observe_passively(session_id, reader)
+                return
+
             # The rotating banner strings carry no line terminator; without
             # CRLF a real FTP client blocks forever waiting for the greeting.
             banner = self.get_banner().rstrip("\r\n") + "\r\n"
@@ -185,6 +210,17 @@ class FTPHoneypot(BaseEmulator):
                     response = await self._process_command(
                         session_id, line, state, source_ip, reader, writer
                     )
+                    verb = line.split(" ", 1)[0].upper()
+                    # Into the transcript the backend reads; network events
+                    # never leave the engine. LIST records itself with its
+                    # listing. The password is already in the credentials,
+                    # which are admin-only — the transcript is not.
+                    if verb != "LIST":
+                        await session_manager.record_command(
+                            session_id,
+                            "PASS ********" if verb == "PASS" else line[:2000],
+                            output=(response or "").strip()[:2000],
+                        )
                     await self._send_response(writer, response)
 
                     if line.upper() in ("QUIT", "BYE"):

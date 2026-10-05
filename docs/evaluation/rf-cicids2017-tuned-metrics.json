@@ -1,0 +1,199 @@
+{
+  "generated_at": "2026-10-05T18:59:59.741134+00:00",
+  "n_test": 478293,
+  "accuracy": 0.9967049486402686,
+  "precision_macro": 0.8625124382364957,
+  "recall_macro": 0.9528741337411827,
+  "f1_macro": 0.895533015131605,
+  "per_class": {
+    "benign": {
+      "precision": 0.998392516043046,
+      "recall": 0.997654097577341,
+      "f1": 0.9980231702247484,
+      "support": 393452
+    },
+    "exfiltration": {
+      "precision": 0.46915351506456243,
+      "recall": 0.8236775818639799,
+      "f1": 0.5978062157221207,
+      "support": 397
+    },
+    "exploitation": {
+      "precision": 0.9947028286894798,
+      "recall": 0.9915962582981291,
+      "f1": 0.9931471141568382,
+      "support": 66280
+    },
+    "reconnaissance": {
+      "precision": 0.9878008931488944,
+      "recall": 0.9985685972252808,
+      "f1": 0.9931555604227126,
+      "support": 18164
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "benign",
+      "exfiltration",
+      "exploitation",
+      "reconnaissance"
+    ],
+    "matrix": [
+      [
+        392529,
+        370,
+        334,
+        219
+      ],
+      [
+        70,
+        327,
+        0,
+        0
+      ],
+      [
+        552,
+        0,
+        65723,
+        5
+      ],
+      [
+        10,
+        0,
+        16,
+        18138
+      ]
+    ]
+  },
+  "training": {
+    "source": "cicids2017",
+    "n_train": 1913168,
+    "test_size": 0.2,
+    "n_estimators": 200,
+    "max_depth": 20,
+    "class_weight": "sqrt",
+    "min_samples_leaf": 2,
+    "tuning": {
+      "criterion": "macro F1 on a 20% validation split of the training data",
+      "results": [
+        {
+          "class_weight": "balanced",
+          "min_samples_leaf": 2,
+          "val_f1_macro": 0.823284991682559,
+          "val_precision_macro": 0.7907918421833634,
+          "val_recall_macro": 0.9783989375344325,
+          "val_accuracy": 0.993986420443557
+        },
+        {
+          "class_weight": "balanced",
+          "min_samples_leaf": 5,
+          "val_f1_macro": 0.8134927766322281,
+          "val_precision_macro": 0.7833671848889996,
+          "val_recall_macro": 0.986013223752183,
+          "val_accuracy": 0.99292535425498
+        },
+        {
+          "class_weight": "sqrt",
+          "min_samples_leaf": 2,
+          "val_f1_macro": 0.9000642605999611,
+          "val_precision_macro": 0.8706428515889386,
+          "val_recall_macro": 0.9459906603387581,
+          "val_accuracy": 0.9968194148977875
+        },
+        {
+          "class_weight": "sqrt",
+          "min_samples_leaf": 5,
+          "val_f1_macro": 0.8920159190369906,
+          "val_precision_macro": 0.8570831684976803,
+          "val_recall_macro": 0.9561116057965098,
+          "val_accuracy": 0.9965528416188838
+        },
+        {
+          "class_weight": "none",
+          "min_samples_leaf": 2,
+          "val_f1_macro": 0.8869276603566654,
+          "val_precision_macro": 0.9548603073598982,
+          "val_recall_macro": 0.8529384654468857,
+          "val_accuracy": 0.9971068958848404
+        },
+        {
+          "class_weight": "none",
+          "min_samples_leaf": 5,
+          "val_f1_macro": 0.881253475970835,
+          "val_precision_macro": 0.9666619037613766,
+          "val_recall_macro": 0.8440348323417959,
+          "val_accuracy": 0.9970520131509484
+        }
+      ]
+    },
+    "class_balance": {
+      "benign": 1967257,
+      "exfiltration": 1985,
+      "exploitation": 331400,
+      "reconnaissance": 90819
+    },
+    "features": [
+      "destination_port",
+      "flow_duration",
+      "fwd_data_packets",
+      "fwd_bytes",
+      "bwd_bytes",
+      "fwd_packet_length_max",
+      "bwd_packet_length_max",
+      "flow_bytes_per_second",
+      "bwd_fwd_byte_ratio",
+      "fwd_iat_mean",
+      "fwd_iat_max",
+      "flow_iat_max"
+    ]
+  },
+  "inference_latency": {
+    "n": 2000,
+    "p50_ms": 9.097,
+    "p95_ms": 9.504,
+    "p99_ms": 10.118,
+    "max_ms": 11.379
+  },
+  "top_features": [
+    {
+      "feature": "bwd_packet_length_max",
+      "importance": 0.15516316059120483
+    },
+    {
+      "feature": "bwd_bytes",
+      "importance": 0.14321133959005897
+    },
+    {
+      "feature": "bwd_fwd_byte_ratio",
+      "importance": 0.14132180758787702
+    },
+    {
+      "feature": "fwd_bytes",
+      "importance": 0.10481248812520332
+    },
+    {
+      "feature": "destination_port",
+      "importance": 0.08302916399219408
+    },
+    {
+      "feature": "fwd_packet_length_max",
+      "importance": 0.07009883913322018
+    },
+    {
+      "feature": "flow_iat_max",
+      "importance": 0.06409199728795319
+    },
+    {
+      "feature": "fwd_iat_max",
+      "importance": 0.058137835629787776
+    },
+    {
+      "feature": "flow_bytes_per_second",
+      "importance": 0.05396569477366928
+    },
+    {
+      "feature": "flow_duration",
+      "importance": 0.049836776018924514
+    }
+  ]
+}

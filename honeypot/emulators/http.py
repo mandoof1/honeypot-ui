@@ -1,10 +1,13 @@
 import asyncio
+import base64
+import binascii
 import logging
 import random
 import time
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from honeypot.capture.flow import FlowMeter
 from honeypot.capture.http_uploads import extract_files
 from honeypot.core.config import config
 from honeypot.core.tls import build_tls_context
@@ -15,6 +18,43 @@ from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.adaptive.response import adaptive_engine
 
 logger = logging.getLogger(__name__)
+
+
+#: Form fields that carry a login, across the decoy's own forms and the
+#: products it imitates (WordPress, phpMyAdmin, generic admin panels).
+USER_FIELDS = ("username", "user", "log", "pma_username", "email", "login", "uname")
+PASSWORD_FIELDS = ("password", "pass", "pwd", "pma_password", "passwd")
+
+#: Characters of a request body kept in the transcript. Bodies are where
+#: injection payloads and webshell commands arrive.
+TRANSCRIPT_BODY_CHARS = 2000
+
+
+def _status_line(response: str) -> str:
+    return response.split("\r\n", 1)[0]
+
+
+def _basic_credentials(headers: dict) -> Optional[tuple[str, str]]:
+    value = headers.get("authorization", "")
+    if not value.lower().startswith("basic "):
+        return None
+    try:
+        decoded = base64.b64decode(value[6:].strip(), validate=True).decode("utf-8", "replace")
+    except (binascii.Error, ValueError):
+        return None
+    user, _, password = decoded.partition(":")
+    return user, password
+
+
+def _form_credentials(headers: dict, body: str) -> Optional[tuple[str, str]]:
+    if "application/x-www-form-urlencoded" not in headers.get("content-type", "") or not body:
+        return None
+    fields = parse_qs(body, keep_blank_values=True)
+    user = next((fields[k][0] for k in USER_FIELDS if k in fields), None)
+    password = next((fields[k][0] for k in PASSWORD_FIELDS if k in fields), None)
+    if user is None and password is None:
+        return None
+    return user or "", password or ""
 
 
 class HTTPHoneypot(BaseEmulator):
@@ -68,6 +108,7 @@ class HTTPHoneypot(BaseEmulator):
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
         source_ip, source_port = self._get_peer_info(writer)
+        flow = FlowMeter.for_stream(reader, writer, tls=self.use_tls)
         logger.info(f"HTTP connection from {source_ip}:{source_port}")
 
         if not await self._check_rate_limit(source_ip):
@@ -77,8 +118,18 @@ class HTTPHoneypot(BaseEmulator):
             return
 
         session_id = await session_manager.create_session(
-            self.protocol, source_ip, source_port
+            self.protocol, source_ip, source_port, flow=flow
         )
+
+        if mode_handler.is_passive():
+            await self._observe_passively(session_id, reader)
+            await session_manager.end_session(session_id)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return
 
         try:
             while True:
@@ -134,6 +185,9 @@ class HTTPHoneypot(BaseEmulator):
                         session_id, request_str, headers, body, source_ip, writer,
                         body_bytes,
                     )
+                    await self._record_exchange(
+                        session_id, request_str, headers, body, response
+                    )
                     await self._send_response(writer, response)
 
                     if headers.get("connection", "").lower() == "close":
@@ -155,6 +209,60 @@ class HTTPHoneypot(BaseEmulator):
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def _record_exchange(
+        self, session_id: str, request_line: str, headers: dict, body: str, response: str
+    ) -> None:
+        """Put the request where the backend will see it.
+
+        Requests were only kept as engine-side network events, which the
+        ingest does not forward, so every HTTP session reached the dashboard
+        with no paths, no payloads and no credentials — an empty row. They
+        now go into the transcript (request line, user agent, body) with the
+        status the decoy answered, and login attempts into the credentials,
+        so tool detection, de-obfuscation and the NLP stage read them like
+        shell commands.
+        """
+        parts = request_line.split()
+        command = " ".join(parts[:2]) if len(parts) >= 2 else request_line
+        agent = headers.get("user-agent")
+        if agent:
+            command += f"  [ua: {agent[:300]}]"
+        if body:
+            command += "\n" + body[:TRANSCRIPT_BODY_CHARS]
+        status = _status_line(response)
+        await session_manager.record_command(session_id, command, output=status)
+
+        accepted = status.split()[1:2] in (["200"], ["302"])
+        for creds in (_basic_credentials(headers), _form_credentials(headers, body)):
+            if creds is not None:
+                await session_manager.record_auth_attempt(
+                    session_id, creds[0][:256], creds[1][:256], accepted
+                )
+
+    async def _observe_passively(self, session_id: str, reader: asyncio.StreamReader) -> None:
+        """Passive mode: take the request, answer nothing.
+
+        A client speaks first in HTTP, so the request is still there to be
+        recorded; the connection is then closed without a byte of reply.
+        """
+        try:
+            request_line = await asyncio.wait_for(reader.readline(), timeout=15)
+            headers = await self._read_headers(reader) if request_line else {}
+        except (asyncio.TimeoutError, ConnectionError):
+            request_line, headers = b"", {}
+        line = request_line.decode("utf-8", errors="replace").strip()[: self.MAX_REQUEST_LINE]
+        await session_manager.record_network_event(
+            session_id, "passive_observation",
+            {"protocol": self.protocol, "responded": False},
+        )
+        if line:
+            agent = headers.get("user-agent")
+            await session_manager.record_command(
+                session_id,
+                " ".join(line.split()[:2]) + (f"  [ua: {agent[:300]}]" if agent else ""),
+                output="(passive: no response sent)",
+            )
 
     async def _read_headers(
         self, reader: asyncio.StreamReader
