@@ -99,7 +99,11 @@ the dashboard within seconds of each connection closing.
 | `active` | Emulators answer: fake shell, fake filesystem, fake HTTP responses. Captures the richest behavioural data. |
 | `passive` | Connections are accepted and logged but never answered. Captures who connected and what they sent, nothing more. Lower interaction, lower risk. |
 
-Switch at runtime without a restart:
+Switch at runtime without a restart, from **Settings → Emulation mode** in the
+dashboard or through the API. Saving in Settings stores the mode and pushes it
+to the running engine. An engine that was unreachable adopts the stored mode the
+next time it registers. Passive mode applies to every protocol: HTTP requests
+and anything an FTP client sends before giving up are still recorded.
 
 ```bash
 curl -X PATCH https://your-api.example.com/api/v1/honeypot/mode \
@@ -139,11 +143,26 @@ Content-Type: application/json
     { "filename": "m.sh", "sha256": "<64 hex chars>", "size": 1024 }
   ],
   "failed_logins": 12,
+  "flow": {
+    "duration": 412.5,
+    "fwd_packets": 38, "fwd_bytes": 4120, "fwd_max": 1180,
+    "bwd_packets": 41, "bwd_bytes": 9630, "bwd_max": 1460,
+    "fwd_iat_mean": 9.8, "fwd_iat_max": 61.2, "flow_iat_max": 61.2
+  },
   "packets": [{ "type": "data", "size": 400 }]
 }
 ```
 
-Every field except `attacker_ip` is optional. Unknown `status` values fall
+Every field except `attacker_ip` is optional.
+
+`flow` is what the stage-1 classifier reads. It holds the connection's
+statistics measured at the socket, as `honeypot/capture/flow.py` defines them:
+
+- **Direction:** forward is from the client.
+- **Packets:** data-carrying segments only.
+- **Units:** bytes are payload bytes; times are in seconds.
+
+Without `flow`, the verdict rests on the protocol's port alone. Unknown `status` values fall
 back to `completed` and an unparseable `started_at` falls back to ingest
 time, so a malformed field degrades that field rather than rejecting the
 session.

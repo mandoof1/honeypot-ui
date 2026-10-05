@@ -11,6 +11,7 @@
 ┌──────────────────────────────────────────────┐
 │  Honeypot Engine  (honeypot/)                │
 │  · protocol emulators + session capture      │
+│  · socket-level flow meter (classifier input)│
 │  · anti-fingerprinting banner rotation       │
 │  · per-IP rate limiting                      │
 │  · control API (token-authenticated)         │
@@ -21,7 +22,9 @@
 ┌──────────────────────────────────────────────┐
 │  Backend API  (backend/)  FastAPI            │
 │  · JWT auth + RBAC (viewer/analyst/admin)    │
-│  · analysis pipeline (see below)             │
+│  · analysis pipeline (see below); deploy/    │
+│    server runs it in a multi-worker `ingest` │
+│    service beside the dashboard API          │
 │  · alerting: email + signed webhook          │
 │  · export: CSV / JSON / CEF / STIX 2.1             │
 └───────────────┬──────────────────────────────┘
@@ -38,9 +41,14 @@
 └──────────────────────────────────────────────┘
 ```
 
-The engine sits on an **internal-only** Docker network. Only the backend
-bridges that network and the outside world, so a process that escapes an
-emulator has no route to the internet.
+The engine reaches the backend only over an **internal** Docker network.
+Docker refuses to publish ports for a container whose only network is
+internal, so the decoy ports sit on a second bridge. On that bridge,
+`deploy/server/honeysentinel-egress.sh` (a systemd unit that runs before
+Docker) lets replies to inbound connections through and drops every connection
+the engine tries to open. A process that escaped an emulator would have no way
+out, and the engine's isolation check verifies this by attempting connections
+outward rather than reading the routing table.
 
 ---
 
@@ -50,8 +58,8 @@ Each ingested session runs through, in order:
 
 | Stage | Implementation | Output |
 |---|---|---|
-| Geolocation | MaxMind GeoLite2 | country / city / lat / lon, or an explicit "unknown" |
-| Classification | Random Forest over 36 CIC-IDS-style flow features | benign / reconnaissance / exploitation / exfiltration |
+| Geolocation | MaxMind GeoLite2 or DB-IP City Lite (recorded as the location's `source`) | country / city / lat / lon, or an explicit "unknown" |
+| Classification | Random Forest over 12 flow features the engine measures at its sockets, trained on CIC-IDS2017 ([results](evaluation/README.md)) | benign / reconnaissance / exploitation / exfiltration |
 | De-obfuscation | Recursive base64 / hex / escape / URL decoding, depth- and size-bounded | decoded layers, merged into the text everything below matches against |
 | Command NLP | Regex tool + intent signatures, optional spaCy NER | tool names, intents, extracted IPs/URLs |
 | Anomaly detection | Isolation Forest over 11 behavioural features | anomaly score, outlier flag |
@@ -71,6 +79,18 @@ export to replace the built-in seed list.
 
 Raw commands, the command/output transcript, captured credentials, and any
 uploaded files are encrypted with AES-256-GCM before they are stored.
+
+The engine records HTTP requests (request line, user agent, body) and every FTP
+command in the transcript, with the reply it gave, so tool detection,
+de-obfuscation and NLP read web and FTP sessions the way they read shell
+commands. Logins from web forms and HTTP Basic auth join the captured
+credentials. An FTP `PASS` argument is masked in the transcript, because
+credentials are admin-only and the transcript is not.
+
+The synchronous path takes 16 ms of model time per session (forest 9.6 ms,
+isolation forest 2.8 ms, NLP 3.6 ms). The whole span to a stored verdict is
+about 33 ms at nominal load and stays within 200 ms up to 10 concurrent
+sessions on the reference host; see [evaluation](evaluation/README.md).
 
 **Two stages run asynchronously**, after the response has been returned, for
 the same reason: NFR-2 budgets 200 ms for classification, so anything slower
@@ -104,26 +124,30 @@ depth of analysis, never the capture.
 
 These matter more than the feature list, so they are stated up front.
 
-**The shipped models are bootstraps, not trained detectors.** If no model
-artefact exists at `MODEL_PATH_RF` / `MODEL_PATH_IF`, both are fitted on
-*synthetic* data generated at build time. Their category labels are
-structurally plausible but their confidence scores are not calibrated against
-real traffic. Every classification response carries
-`model_source: "synthetic"` so this is visible in the API, and the pipeline
-never presents a synthetic verdict as ground truth. To get real numbers,
-train it: `cd backend && python -m ml.train --data /path/to/CIC-IDS2017/`
-writes both the model and a metrics artefact, after which the API reports
-`model_source: "cicids2017"`. See [model training guide](../backend/ml/README.md), which also documents
-the domain shift between CIC-IDS2017's flow records and the session data this
-system actually captures — a limitation worth reading before quoting any
-figure the trainer produces.
+**The classifier is trained on CIC-IDS2017; it has not met real traffic.**
+`deploy/server/train-model.sh` (or `python -m ml.train --data … --tune`)
+produces the model and a metrics report. On the held-out test set it scores
+0.9967 accuracy and 0.896 macro F1, but exfiltration precision is only 0.47
+([evaluation](evaluation/README.md)).
 
-**Nothing has been trained yet, and nothing has captured real traffic yet.**
-The pipeline above is implemented and tested end to end, but no honeypot node
-has run against the internet, so the behavioural clusters are unfitted, no
-session has passed through the semantic stage, and no real payload has been
-captured or analysed. Treat every number the API currently returns as
-structural, not empirical.
+The artefact is not committed. Without it, the classifier is fitted on
+*synthetic* data and every verdict carries `model_source: "synthetic"`. The
+API also refuses a model built for a different feature layout. The anomaly
+detector is still a synthetic bootstrap.
+
+The [model training guide](../backend/ml/README.md) documents the domain shift
+between CIC-IDS2017's packet-level records and what the engine's sockets see.
+Read it before quoting any figure.
+
+**Nothing has captured real internet traffic yet.** No honeypot node has
+been exposed to the internet, so:
+
+- the behavioural clusters are unfitted;
+- no session has passed through the semantic stage;
+- no real payload has been captured or analysed.
+
+The classifier's metrics are empirical on its dataset. Everything the API
+returns about attacks is structural until a node runs exposed.
 
 **Payload analysis is static and heuristic, not a sandbox and not antivirus.**
 It reads a file's bytes and reports what they show; it never runs the sample,
@@ -136,17 +160,23 @@ resource-limited subprocess; a sample that trips a limit is marked failed and
 the rest of the session is unaffected.
 
 **Isolation is verified, not enforced by this code.** The real controls are
-the container runtime's (`cap_drop: ALL`, `read_only`, `no-new-privileges`,
-an `internal` network). `honeypot/security/breakout.py` *checks* those
-controls are actually in place and reports honestly when they are not — it
+the container runtime's (`cap_drop: ALL`, `read_only`, `no-new-privileges`),
+the internal networks, and, for the published decoy bridge, the host firewall.
+`honeypot/security/breakout.py` *checks* those controls are in place and
+reports honestly when they are not. Where the engine has a default route, it
+tries connecting to public addresses and fails the check if any succeed. It
 does not claim to sandbox itself from inside the sandbox.
 
-**Geolocation requires a MaxMind database.** Without `GEOIP_DB_PATH` pointing
-at a GeoLite2 file, sessions are stored with no location. The map and the
-country filter show fewer events rather than invented ones.
+**Geolocation requires a database file.** `GEOIP_DB_PATH` takes MaxMind
+GeoLite2 or DB-IP City Lite (CC BY 4.0, credited on the map; the self-hosted
+installer fetches it). Without one, sessions are stored with no location: the
+map and the country filter show fewer events rather than invented ones.
 
-**Rate limiting is per-process and in-memory.** Correct for a single
-instance; running multiple workers needs a shared backend (Redis).
+**Rate limiting is per-process and in-memory.** The dashboard API therefore
+runs as one process. The self-hosted `ingest` service has several workers, but
+it serves only the engine's token-authenticated calls, which carry no user
+rate limits. Scaling the dashboard API itself would need a shared limiter
+backend (Redis).
 
 **The SSH disguise is exact for OpenSSH 8.2p1 and nothing else.** Vetterl and
 Clayton ([USENIX WOOT '18](https://www.usenix.org/conference/woot18/presentation/vetterl))
@@ -176,7 +206,7 @@ and an attacker who explores beyond the emulated commands will notice.
 | Authorisation | Role hierarchy viewer < analyst < admin, enforced per route |
 | Registration | Always creates a **viewer**; roles are assigned only by an admin |
 | Email OTP | 6 digits from `secrets`, stored as an HMAC digest, 5-attempt limit, 10-minute expiry |
-| Multi-factor auth | TOTP (RFC 6238); enrolment requires a valid code before activation, single-use recovery codes |
+| Multi-factor auth | TOTP (RFC 6238), enrolled from Settings with a locally drawn QR code; activation requires a valid code, recovery codes are single-use and shown once; sign-in asks for the code when the API answers `X-MFA-Required: totp` |
 | Database transport | TLS required outside development (`DATABASE_SSL` to override) |
 | Encryption at rest | AES-256-GCM, unique nonce per record, over captured commands, payloads, uploaded files and authenticator secrets |
 | Service-to-service | Shared `HONEYPOT_INGEST_TOKEN`, compared in constant time |
@@ -202,7 +232,7 @@ ones that matter most:
 | `HONEYPOT_INGEST_TOKEN` | Shared between backend and engine — **must match** |
 | `CORS_ORIGINS` | Comma-separated allowed browser origins |
 | `TRUST_PROXY_HEADERS` | Enable only behind a trusted reverse proxy |
-| `GEOIP_DB_PATH` | MaxMind GeoLite2 database |
+| `GEOIP_DB_PATH` | MaxMind GeoLite2 or DB-IP City Lite database |
 | `SEED_ON_STARTUP` | Load the demo dataset into an empty database |
 | `RUN_MIGRATIONS_ON_STARTUP` | Disable to run `alembic upgrade head` as a release step |
 | `CHIMERA_URL` | Local OpenAI-compatible endpoint for semantic stage-2 analysis; unset disables it |
@@ -229,7 +259,10 @@ Bearer <access_token>`.
 | POST | `/api/v1/auth/refresh` | — | Exchange a refresh token |
 | POST | `/api/v1/auth/request-password-reset` | — | Request a reset code |
 | POST | `/api/v1/auth/reset-password` | — | Complete a reset |
-| GET | `/api/v1/auth/me` | any | Current user |
+| GET | `/api/v1/auth/me` | any | Current user, including whether TOTP is enabled |
+| POST | `/api/v1/auth/mfa/enroll` | any | Issue an authenticator secret and its `otpauth://` URI |
+| POST | `/api/v1/auth/mfa/confirm` | any | Activate it with a valid code; returns recovery codes once |
+| POST | `/api/v1/auth/mfa/disable` | any | Turn it off; needs a current or recovery code |
 | GET | `/api/v1/auth/users` | admin | List users |
 | POST | `/api/v1/auth/users` | admin | Create a user with a role |
 | PATCH | `/api/v1/auth/users/{id}/role` | admin | Change a role |
@@ -257,6 +290,8 @@ Bearer <access_token>`.
 | POST | `/api/v1/nodes/register-internal` | token | Engine self-registration |
 | DELETE | `/api/v1/nodes/{id}` | admin | Delete a node |
 | POST | `/api/v1/export/` | analyst | Bulk export (CSV/JSON/CEF/STIX) |
+| GET | `/api/v1/settings/system` | any | Emulation mode and node summary |
+| PATCH | `/api/v1/settings/system` | admin | Save the mode and push it to the running engine (`engine_applied` says whether it arrived) |
 | GET | `/api/v1/settings/thresholds` | any | Alert thresholds |
 | POST/PATCH/DELETE | `/api/v1/settings/thresholds` | admin | Manage thresholds |
 | GET | `/api/v1/honeypot/status` | any | Live engine status |
@@ -275,16 +310,20 @@ backend/          FastAPI application
   app/core/       config, database, security, encryption, TOTP, rate limiting
   app/services/   analysis pipeline, async enrichment, payload analysis, alerting, artifacts
   alembic/        migrations
-  ml/             classifier training + evaluation, cluster fitting
+  ml/             classifier training, tuning + evaluation, cluster fitting
   tests/          pytest suite
 honeypot/         standalone capture engine (minimal dependencies)
   emulators/      SSH (real transport), FTP, HTTP/HTTPS
-  capture/        shell-write interpreter, SFTP/SCP endpoint, HTTP upload parsing
+  capture/        shell-write interpreter, SFTP/SCP endpoint, HTTP upload parsing,
+                  socket-level flow meter
   core/           config, session manager, response modes, control API, TLS
   security/       rate limiting, egress filtering, isolation verification
   adaptive/       banner rotation, actor profiling
 src/              React dashboard
+deploy/server/    the whole stack on one machine: install, egress firewall, backups,
+                  training, controlled and load tests
 deploy/node/      standalone engine deployment for a remote VM
+docs/evaluation/  classifier metrics and NFR-2 load-test results
 scripts/          GeoLite2 fetch
 ```
 

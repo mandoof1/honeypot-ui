@@ -1,0 +1,28 @@
+{
+  "test": "TC13 / NFR-2 concurrent session stress",
+  "started_at": "2026-10-05T19:09:35Z",
+  "requested_sessions": 300,
+  "concurrency": 10,
+  "host": "debian",
+  "cpus": 8,
+  "recorded_sessions": 300,
+  "by_protocol": {
+    "ssh": 150,
+    "http": 90,
+    "ftp": 60
+  },
+  "analysis_ms": {
+    "p50": 28.17,
+    "p95": 51.49,
+    "p99": 62.05,
+    "max": 103.19,
+    "within_200ms_pct": 100.0
+  },
+  "turnaround_ms": {
+    "p50": 37.6,
+    "p95": 71.3,
+    "p99": 106.2,
+    "max": 137.5
+  },
+  "model_source": "cicids2017"
+}
