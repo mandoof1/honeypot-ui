@@ -1,0 +1,36 @@
+{
+	admin off
+	auto_https off
+	servers {
+		# Tailscale Serve terminates TLS on the host and forwards from
+		# loopback, which reaches this container through Docker's bridge.
+		# Trusting private ranges keeps the X-Forwarded-For it sets, so the
+		# API's per-client rate limit sees the real tailnet address.
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /health {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

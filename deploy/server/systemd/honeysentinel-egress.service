@@ -1,0 +1,17 @@
+[Unit]
+Description=HoneySentinel: block outbound connections from the honeypot bridge
+# In place before Docker starts any container, and after ufw has loaded its
+# own rules so they cannot be reordered above these.
+After=ufw.service
+Before=docker.service
+DefaultDependencies=no
+Wants=network-pre.target
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh
+
+[Install]
+WantedBy=multi-user.target docker.service

@@ -1,0 +1,28 @@
+# Production dashboard: the Vite build served by Caddy, which also proxies the
+# API so the browser talks to a single origin (no CORS, no second hostname).
+#
+# The repository-root Dockerfile.frontend runs the Vite dev server and is for
+# development only.
+
+FROM node:22-alpine AS build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY index.html vite.config.js ./
+COPY public ./public
+COPY src ./src
+# Relative, so the build works under whatever hostname serves it.
+ENV VITE_API_URL=/api/v1
+ARG VITE_GEOIP_ATTRIBUTION=""
+ENV VITE_GEOIP_ATTRIBUTION=${VITE_GEOIP_ATTRIBUTION}
+RUN npm run build
+
+FROM caddy:2-alpine
+# The image grants the binary cap_net_bind_service as a file capability, which
+# an exec under no-new-privileges with every capability dropped refuses
+# ("operation not permitted"). It listens on 8080 and needs none.
+RUN setcap -r /usr/bin/caddy
+COPY deploy/server/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /src/dist /srv
+USER 1000:1000
+EXPOSE 8080
