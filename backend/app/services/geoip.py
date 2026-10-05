@@ -1,4 +1,4 @@
-"""IP geolocation backed by a MaxMind GeoLite2 database."""
+"""IP geolocation backed by a MaxMind-format City database (GeoLite2 or DB-IP Lite)."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ class GeoIPService:
 
     def __init__(self):
         self.reader: Optional[geoip2.database.Reader] = None
+        self.source = "geolite2"
         self._init_reader()
 
     def _init_reader(self):
@@ -52,7 +53,11 @@ class GeoIPService:
             return
         try:
             self.reader = geoip2.database.Reader(db_path)
-            logger.info("GeoIP database loaded from %s", db_path)
+            database_type = self.reader.metadata().database_type
+            # Recorded with every location so the data says which database
+            # produced it; DB-IP's Lite edition reads through the same API.
+            self.source = "dbip" if database_type.upper().startswith("DBIP") else "geolite2"
+            logger.info("GeoIP database %s loaded from %s", database_type, db_path)
         except (OSError, ValueError) as exc:
             logger.error("Could not open GeoIP database: %s", exc)
 
@@ -86,7 +91,7 @@ class GeoIPService:
             "lat": response.location.latitude,
             "lon": response.location.longitude,
             "timezone": response.location.time_zone,
-            "source": "geolite2",
+            "source": self.source,
         }
 
     def close(self):

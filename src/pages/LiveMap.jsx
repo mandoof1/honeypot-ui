@@ -106,9 +106,20 @@ export default function LiveMap() {
               zoomControl={false}
             >
               <ZoomControl position="bottomright" />
+              {/* CARTO's basemaps now answer any request carrying a Referer
+                  with an "API KEY REQUIRED" watermark tile, so the map was
+                  blank on every deployment. OpenStreetMap's own tiles need
+                  no key; the class darkens them to match the theme. */}
               <TileLayer
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                attribution='&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap contributors'
+                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                className="map-tiles-dark"
+                maxZoom={19}
+                attribution={
+                  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' +
+                  // The location database's licence may require credit too
+                  // (DB-IP Lite is CC BY 4.0); set per deployment at build time.
+                  (import.meta.env.VITE_GEOIP_ATTRIBUTION ? ` | ${import.meta.env.VITE_GEOIP_ATTRIBUTION}` : '')
+                }
               />
 
               {visible.map((event) => {

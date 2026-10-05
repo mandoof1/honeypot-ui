@@ -56,8 +56,8 @@ export function AuthProvider({ children }) {
   }, [fetchUser])
 
   const login = useCallback(
-    async (email, password) => {
-      const data = await api.auth.login(email, password)
+    async (email, password, totpCode) => {
+      const data = await api.auth.login(email, password, totpCode)
       setTokens(data)
       await fetchUser()
       return data
@@ -72,11 +72,13 @@ export function AuthProvider({ children }) {
       login,
       logout,
       register: api.auth.register,
+      /** Re-read the signed-in user, e.g. after enrolling an authenticator. */
+      refreshUser: fetchUser,
       /** True when the signed-in user meets or exceeds `role`. */
       hasRole: (role) =>
         (ROLE_RANK[user?.role] ?? -1) >= (ROLE_RANK[role] ?? Infinity),
     }),
-    [user, loading, login, logout],
+    [user, loading, login, logout, fetchUser],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -77,7 +77,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    expose_headers=["Content-Disposition", "X-Export-Count", "X-Export-Truncated"],
+    # X-MFA-Required tells the login form to ask for an authenticator code;
+    # a cross-origin frontend cannot read it unless it is exposed.
+    expose_headers=["Content-Disposition", "X-Export-Count", "X-Export-Truncated", "X-MFA-Required"],
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],
 )

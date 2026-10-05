@@ -276,6 +276,11 @@
   .leaflet-tooltip::before { border-top-color: var(--color-line-2) !important; }
   .leaflet-popup-close-button { color: var(--color-paper-2) !important; }
 
+  /* OpenStreetMap publishes light tiles only; invert them into the dark UI. */
+  .map-tiles-dark {
+    filter: invert(1) hue-rotate(180deg) brightness(0.8) contrast(0.85) saturate(0.25);
+  }
+
   .leaflet-control-attribution {
     background: rgb(10 10 12 / 0.85) !important;
     color: var(--color-paper-3) !important;
