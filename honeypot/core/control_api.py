@@ -151,7 +151,9 @@ def build_control_api(service) -> ControlAPI:
 
     @api.route("GET", "/security-status")
     async def security_status(_body: dict) -> dict:
-        return breakout_prevention.verify_isolation()
+        # The sweep includes a blocking egress probe; keep it off the event
+        # loop the emulators run on.
+        return await asyncio.to_thread(breakout_prevention.verify_isolation)
 
     @api.route("GET", "/blocked-ips")
     async def blocked_ips(_body: dict) -> dict:

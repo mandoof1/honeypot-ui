@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import subprocess
 
 from honeypot.core.config import config
 
 logger = logging.getLogger(__name__)
+
+#: Well-known public endpoints the egress probe tries to reach. Connecting to
+#: any of them means the engine could equally reach an attacker's server.
+EGRESS_PROBES = (("1.1.1.1", 443), ("8.8.8.8", 53), ("9.9.9.9", 443))
 
 
 class IsolationReport:
@@ -130,16 +135,39 @@ class BreakoutPrevention:
             warnings.append("Could not read /proc/net/route to verify egress")
             return False
 
-        for line in lines:
-            fields = line.split()
-            # Destination 00000000 is the default route.
-            if len(fields) > 1 and fields[1] == "00000000":
-                warnings.append(
-                    "Container has a default route; it is not on an "
-                    "internal-only network"
-                )
-                return False
+        # Destination 00000000 is the default route.
+        has_default_route = any(
+            len(fields) > 1 and fields[1] == "00000000"
+            for fields in (line.split() for line in lines)
+        )
+        if not has_default_route:
+            return True
+
+        # Docker will not publish ports for a container that is only on an
+        # internal network, so an engine that must accept connections from
+        # the internet has a default route, and egress has to be dropped by
+        # the host firewall instead (deploy/server/honeysentinel-egress.sh).
+        # The routing table cannot show whether that firewall is in place, so
+        # test it.
+        if BreakoutPrevention._egress_reachable():
+            warnings.append(
+                "Container has a default route and outbound connections "
+                "succeed; egress is not blocked"
+            )
+            return False
         return True
+
+    @staticmethod
+    def _egress_reachable(timeout: float = 1.0) -> bool:
+        # A dropped SYN only fails by timing out, so the timeout bounds how
+        # long a sweep takes when egress is correctly blocked.
+        for host, port in EGRESS_PROBES:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except OSError:
+                continue
+        return False
 
     @staticmethod
     def _check_egress_allowlist(warnings: list[str]) -> bool:

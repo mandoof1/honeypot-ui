@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import httpx
 
+from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ class SessionRecord:
     keystroke_total: int = 0
     threat_profile: Optional[str] = None
     anomaly_score: float = 0.0
+    #: Socket-level traffic statistics; the classifier's input.
+    flow: Optional[FlowMeter] = None
 
     @property
     def duration(self) -> float:
@@ -104,6 +107,7 @@ class SessionRecord:
                 for a in self.authentication_attempts[: self.MAX_CREDENTIALS]
             ],
             "keystroke_count": max(self.keystroke_total, len(self.keystrokes)),
+            "flow": self.flow.summary() if self.flow else None,
             # Retrieval and execution events — where a dropper's C2 URL is.
             "events": [
                 {k: v for k, v in e.items() if k != "timestamp"} | {"at": e["timestamp"]}
@@ -171,6 +175,7 @@ class SessionRecord:
             "files_uploaded": self.files_uploaded,
             "files_downloaded": self.files_downloaded,
             "network_events": self.network_events,
+            "flow": self.flow.summary() if self.flow else None,
             "keystrokes": self.keystrokes,
             "authentication_attempts": self.authentication_attempts,
             "metadata": self.metadata,
@@ -226,6 +231,7 @@ class SessionManager:
         source_ip: str,
         source_port: int,
         metadata: Optional[dict] = None,
+        flow: Optional[FlowMeter] = None,
     ) -> str:
         session_id = str(uuid.uuid4())
         session = SessionRecord(
@@ -235,6 +241,7 @@ class SessionManager:
             source_port=source_port,
             start_time=time.time(),
             metadata=metadata or {},
+            flow=flow,
         )
         async with self._lock:
             self._sessions[session_id] = session
@@ -254,6 +261,8 @@ class SessionManager:
                 # Already ended; do not persist or ingest the session twice.
                 return session
             session.end_time = time.time()
+            if session.flow is not None:
+                session.flow.close()
 
         await self._persist_session(session)
         self._spawn(self._send_to_backend(session))
@@ -476,8 +485,10 @@ class SessionManager:
                     timeout=10,
                 )
                 if response.status_code in (200, 201):
-                    self._node_id = response.json()["id"]
+                    node = response.json()
+                    self._node_id = node["id"]
                     logger.info(f"Registered as honeypot node {self._node_id}")
+                    self._adopt_stored_mode(node.get("mode"))
                     return self._node_id
                 logger.warning(
                     f"Node registration rejected: HTTP {response.status_code} "
@@ -487,6 +498,25 @@ class SessionManager:
             logger.warning(f"Could not register honeypot node: {e}")
         self._node_id = 1
         return self._node_id
+
+    @staticmethod
+    def _adopt_stored_mode(stored: Optional[str]) -> None:
+        """Run in the mode the operator last chose, not the env default.
+
+        An existing node keeps its stored mode across re-registration, but the
+        engine always booted in HONEYPOT_OPERATIONAL_MODE, so a restart quietly
+        undid "passive" while the dashboard still showed it.
+        """
+        from honeypot.core.config import OperationalMode
+        from honeypot.core.modes import mode_handler
+
+        try:
+            mode = OperationalMode(stored)
+        except ValueError:
+            return
+        if mode != mode_handler.mode:
+            logger.info("Adopting stored operational mode: %s", mode.value)
+            mode_handler.mode = mode
 
     async def get_active_sessions(self) -> list[SessionRecord]:
         async with self._lock:
