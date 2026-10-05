@@ -34,6 +34,22 @@ from app.models import User, UserRole  # noqa: E402
 from app.core.security import get_password_hash  # noqa: E402
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Close the application's own database engine.
+
+    Some code paths (the analysis pipeline's background work, the app
+    lifespan) use the module-level engine in app.core.database rather than
+    the per-test one. Its pooled aiosqlite connection owns a non-daemon
+    worker thread, so the interpreter waited on it forever after the last
+    test: the suite passed and then never exited, which hangs any CI job.
+    """
+    import asyncio
+
+    from app.core import database
+
+    asyncio.run(database.engine.dispose())
+
+
 @pytest.fixture(autouse=True)
 def disable_rate_limiting():
     """Every test shares one client address, so the per-IP limits would

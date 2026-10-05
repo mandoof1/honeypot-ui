@@ -232,23 +232,49 @@ class TestEncryption:
             decrypt_data("not-a-valid-token")
 
 
-class TestClassifierScaling:
-    def test_features_are_normalised_into_unit_range(self):
+class TestClassifierFeatures:
+    FLOW = {
+        "duration": 10.0, "fwd_packets": 5, "fwd_bytes": 500, "bwd_bytes": 1500,
+        "fwd_max": 200, "bwd_max": 900, "fwd_iat_mean": 2.0, "fwd_iat_max": 4.0,
+        "flow_iat_max": 5.0,
+    }
+
+    def test_engine_flow_becomes_the_shared_feature_vector(self):
         from app.ai.classifier import FeatureExtractor
 
-        features = FeatureExtractor.extract_from_raw(
-            packets=[{"direction": "inbound", "payload": "x" * 1400}] * 50,
-            commands=["uname -a", "cat /etc/passwd"],
-            duration=120.0,
-        )
-        assert features.shape == (1, len(FeatureExtractor.CICIDS_FEATURES))
-        assert features.min() >= 0.0 and features.max() <= 1.0
+        vector = FeatureExtractor.extract_from_flow(self.FLOW, "ssh")
+        assert vector.shape == (1, len(FeatureExtractor.FEATURES))
+        row = dict(zip(FeatureExtractor.FEATURES, vector[0]))
+        assert row["destination_port"] == 22
+        assert row["flow_bytes_per_second"] == 200.0
+        assert row["bwd_fwd_byte_ratio"] == 3.0
+        assert row["flow_iat_max"] == 5.0
+
+    def test_session_without_telemetry_rests_on_the_service_alone(self):
+        from app.ai.classifier import FeatureExtractor
+
+        row = FeatureExtractor.extract_from_flow(None, "ftp")[0]
+        assert row[0] == 21 and not row[1:].any()
 
     def test_verdicts_declare_their_model_provenance(self):
         from app.ai.classifier import classifier
 
-        result = classifier.classify_raw([], ["ls"], 1.0)
-        assert result["model_source"] in ("synthetic", "pretrained")
+        result = classifier.classify_flow(self.FLOW, "http")
+        assert result["model_source"] in ("synthetic", "pretrained", "cicids2017")
+
+    def test_artefact_for_another_feature_layout_is_refused(self, tmp_path, monkeypatch):
+        import pickle
+
+        from app.ai import classifier as module
+
+        path = tmp_path / "rf.pkl"
+        with open(path, "wb") as fh:
+            pickle.dump({"model": object(), "label_encoder": object(),
+                         "source": "cicids2017", "features": ["old"] * 36}, fh)
+        monkeypatch.setattr(module.settings, "MODEL_PATH_RF", str(path))
+        fresh = module.AttackClassifier()
+        result = fresh.classify_flow(self.FLOW, "ssh")
+        assert result["model_source"] == "synthetic"
 
 
 class TestNLPEngine:
@@ -352,15 +378,24 @@ def test_training_features_match_the_classifier():
     would score well on its own split and be nonsense in production — so it is
     asserted here instead.
     """
+    import pandas as pd
+
     from app.ai.classifier import FeatureExtractor
     from ml import cicids
 
-    assert cicids.FEATURES == FeatureExtractor.CICIDS_FEATURES
-    assert set(cicids.SCALES) == set(FeatureExtractor.FEATURE_SCALES)
-    for name, scale in cicids.SCALES.items():
-        assert scale == FeatureExtractor.FEATURE_SCALES[name], (
-            f"{name} is normalised differently during training and inference"
-        )
+    assert list(cicids.FEATURES) == list(FeatureExtractor.FEATURES)
+
+    # CICFlowMeter's microseconds must arrive as the seconds the engine
+    # measures; the first version of the loader skipped this conversion.
+    raw = pd.DataFrame([{
+        "port": 22, "duration_us": 10_000_000, "fwd_data_packets": 5,
+        "fwd_bytes": 500, "bwd_bytes": 1500, "fwd_max": 200, "bwd_max": 900,
+        "fwd_iat_mean_us": 2_000_000, "fwd_iat_max_us": 4_000_000,
+        "flow_iat_max_us": 5_000_000,
+    }])
+    trained_on = cicids.features_from_frame(raw).to_numpy()[0]
+    inferred_on = FeatureExtractor.extract_from_flow(TestClassifierFeatures.FLOW, "ssh")[0]
+    assert list(trained_on) == list(inferred_on)
 
 
 def test_obfuscated_payload_reaches_tool_detection():

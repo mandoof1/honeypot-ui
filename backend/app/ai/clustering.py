@@ -79,8 +79,10 @@ def extract(session_data: Dict, nlp_result: Dict) -> np.ndarray:
         len(nlp_result.get("tool_names") or []),
         len(nlp_result.get("detected_intents") or []),
         float(nlp_result.get("complexity_score") or 0.0),
-        float(session_data.get("failed_login_attempts") or 0),
-        len(session_data.get("uploaded_files") or []),
+        # The ingest payload's own names. This read failed_login_attempts and
+        # uploaded_files, which nothing sends, so both were always zero.
+        float(session_data.get("failed_logins") or 0),
+        len(session_data.get("uploads") or []),
         float(deobf.get("max_depth") or 0),
     ], dtype=float)
 

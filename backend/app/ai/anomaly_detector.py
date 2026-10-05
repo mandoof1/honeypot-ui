@@ -72,8 +72,10 @@ class AnomalyDetector:
             for feat in ANOMALY_FEATURES
         ]).reshape(1, -1)
 
-        prediction = self.model.predict(feature_vector)[0]
+        # predict() is score_samples() - offset_ thresholded at zero; one
+        # pass over the trees instead of two.
         score = self.model.score_samples(feature_vector)[0]
+        prediction = -1 if score - self.model.offset_ < 0 else 1
 
         anomaly_score = float(-score)
         normalized_score = min(max(anomaly_score / 1.5, 0), 1)
@@ -96,8 +98,8 @@ class AnomalyDetector:
             for sf in sessions_features
         ])
 
-        predictions = self.model.predict(feature_matrix)
         scores = self.model.score_samples(feature_matrix)
+        predictions = np.where(scores - self.model.offset_ < 0, -1, 1)
 
         results = []
         for pred, score in zip(predictions, scores):

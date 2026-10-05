@@ -1,158 +1,92 @@
 from __future__ import annotations
+import logging
 import os
 import pickle
 import numpy as np
-from typing import List, Dict, Tuple, Optional
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from typing import Dict, Optional
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 ATTACK_LABELS = ["benign", "reconnaissance", "exploitation", "exfiltration"]
 
 
+#: The service each emulator stands in for. CIC-IDS2017's Destination Port is
+#: the service a flow was aimed at; the engine listens on high ports behind a
+#: redirect, so the protocol it emulates is the meaningful equivalent.
+SERVICE_PORTS = {"ssh": 22, "ftp": 21, "http": 80, "https": 443, "telnet": 23}
+
+
 class FeatureExtractor:
-    CICIDS_FEATURES = [
-        "flow_duration", "total_fwd_packets", "total_bwd_packets",
-        "fwd_packet_length_mean", "fwd_packet_length_std",
-        "bwd_packet_length_mean", "bwd_packet_length_std",
-        "flow_bytes_per_second", "flow_packets_per_second",
-        "fwd_header_length", "bwd_header_length",
-        "fwd_packets_per_second", "bwd_packets_per_second",
-        "min_packet_length", "max_packet_length",
-        "packet_length_mean", "packet_length_std", "packet_length_variance",
-        "fin_flag_count", "syn_flag_count", "rst_flag_count",
-        "psh_flag_count", "ack_flag_count", "urg_flag_count",
-        "down_up_ratio", "average_packet_size",
-        "fwd_segment_size_mean", "bwd_segment_size_mean",
-        "fwd_bytes_per_bulk", "fwd_bulk_rate",
-        "subflow_fwd_packets", "subflow_bwd_packets",
-        "active_mean", "active_std", "idle_mean", "idle_std",
+    """One definition of the model's input, used by training and inference.
+
+    The previous 36-feature vector copied CICFlowMeter's columns, most of which
+    (TCP flag counts, header lengths, bulk rates) the engine cannot observe, and
+    the engine reported nothing it could: in production nearly every position
+    was zero. These twelve are the features both sides measure with the same
+    meaning — the engine at its sockets (honeypot/capture/flow.py), the
+    dataset in CICFlowMeter's columns (ml/cicids.py) — and ``derive`` is the
+    single place the derived ones are computed, for both.
+
+    Values are left in their natural units (seconds, bytes). A Random Forest
+    is insensitive to scale, and the old clip-to-[0, 1] normalisation threw
+    away everything above each cap: every CIC-IDS2017 flow longer than 600
+    microseconds had the same duration.
+    """
+
+    FEATURES = [
+        "destination_port",
+        "flow_duration",           # seconds
+        "fwd_data_packets",        # client segments carrying data
+        "fwd_bytes",
+        "bwd_bytes",
+        "fwd_packet_length_max",
+        "bwd_packet_length_max",
+        "flow_bytes_per_second",
+        "bwd_fwd_byte_ratio",
+        "fwd_iat_mean",            # seconds
+        "fwd_iat_max",             # seconds
+        "flow_iat_max",            # seconds
     ]
 
     @staticmethod
-    def extract_from_session(session_data: Dict) -> np.ndarray:
-        values = [
-            session_data.get(feat, 0.0)
-            for feat in FeatureExtractor.CICIDS_FEATURES
+    def derive(port, duration, fwd_packets, fwd_bytes, bwd_bytes,
+               fwd_max, bwd_max, fwd_iat_mean, fwd_iat_max, flow_iat_max):
+        """Assemble the feature columns. Accepts scalars or numpy arrays."""
+        duration = np.maximum(duration, 0.0)
+        return [
+            port, duration, fwd_packets, fwd_bytes, bwd_bytes, fwd_max, bwd_max,
+            (fwd_bytes + bwd_bytes) / np.maximum(duration, 1e-3),
+            bwd_bytes / np.maximum(fwd_bytes, 1),
+            fwd_iat_mean, fwd_iat_max, flow_iat_max,
         ]
-        return FeatureExtractor._normalise(values)
-
-    #: Rough upper bound per feature, used to map raw observations into the
-    #: [0, 1] range the model is trained on. Without this, raw magnitudes
-    #: (durations in seconds, byte counts) were fed to a model fitted on
-    #: clipped [0, 1] data, so predictions were effectively arbitrary.
-    FEATURE_SCALES = {
-        "flow_duration": 600.0,
-        "total_fwd_packets": 500.0,
-        "total_bwd_packets": 500.0,
-        "fwd_packet_length_mean": 1500.0,
-        "fwd_packet_length_std": 1500.0,
-        "bwd_packet_length_mean": 1500.0,
-        "bwd_packet_length_std": 1500.0,
-        "flow_bytes_per_second": 100000.0,
-        "flow_packets_per_second": 500.0,
-        "fwd_header_length": 500.0,
-        "bwd_header_length": 500.0,
-        "fwd_packets_per_second": 200.0,
-        "bwd_packets_per_second": 200.0,
-        "min_packet_length": 1500.0,
-        "max_packet_length": 1500.0,
-        "packet_length_mean": 1500.0,
-        "packet_length_std": 1500.0,
-        "packet_length_variance": 1000000.0,
-        "fin_flag_count": 50.0,
-        "syn_flag_count": 50.0,
-        "rst_flag_count": 50.0,
-        "psh_flag_count": 100.0,
-        "ack_flag_count": 200.0,
-        "urg_flag_count": 20.0,
-        "down_up_ratio": 10.0,
-        "average_packet_size": 1500.0,
-        "fwd_segment_size_mean": 1500.0,
-        "bwd_segment_size_mean": 1500.0,
-        "fwd_bytes_per_bulk": 10000.0,
-        "fwd_bulk_rate": 10000.0,
-        "subflow_fwd_packets": 500.0,
-        "subflow_bwd_packets": 500.0,
-        "active_mean": 300.0,
-        "active_std": 300.0,
-        "idle_mean": 300.0,
-        "idle_std": 300.0,
-    }
 
     @classmethod
-    def _normalise(cls, values: List[float]) -> np.ndarray:
-        scaled = [
-            min(max(float(value) / cls.FEATURE_SCALES[name], 0.0), 1.0)
-            for name, value in zip(cls.CICIDS_FEATURES, values)
-        ]
-        return np.array(scaled).reshape(1, -1)
+    def extract_from_flow(cls, flow: Optional[Dict], protocol: str) -> np.ndarray:
+        """Build the vector from the engine's flow summary.
 
-    @staticmethod
-    def extract_from_raw(
-        packets: List[Dict],
-        commands: List[str],
-        duration: float,
-    ) -> np.ndarray:
-        total_fwd = sum(1 for p in packets if p.get("direction") == "outbound")
-        total_bwd = len(packets) - total_fwd
-        fwd_lengths = [len(p.get("payload", "")) for p in packets if p.get("direction") == "outbound"]
-        bwd_lengths = [len(p.get("payload", "")) for p in packets if p.get("direction") == "inbound"]
-        all_lengths = [len(p.get("payload", "")) for p in packets]
+        A session ingested without one (an engine predating flow telemetry)
+        gets zeros for everything but the port: the verdict then rests on the
+        service alone, which is all that is known about it.
+        """
+        f = flow or {}
 
-        syn_count = sum(1 for p in packets if p.get("flags", {}).get("syn", False))
-        fin_count = sum(1 for p in packets if p.get("flags", {}).get("fin", False))
-        rst_count = sum(1 for p in packets if p.get("flags", {}).get("rst", False))
-        psh_count = sum(1 for p in packets if p.get("flags", {}).get("psh", False))
-        ack_count = sum(1 for p in packets if p.get("flags", {}).get("ack", False))
-        urg_count = sum(1 for p in packets if p.get("flags", {}).get("urg", False))
+        def num(key: str) -> float:
+            try:
+                return max(float(f.get(key) or 0.0), 0.0)
+            except (TypeError, ValueError):
+                return 0.0
 
-        command_entropy = FeatureExtractor._shannon_entropy(" ".join(commands)) if commands else 0
-        unique_commands = len(set(commands)) if commands else 0
-
-        features = [
-            duration,
-            total_fwd, total_bwd,
-            np.mean(fwd_lengths) if fwd_lengths else 0,
-            np.std(fwd_lengths) if fwd_lengths else 0,
-            np.mean(bwd_lengths) if bwd_lengths else 0,
-            np.std(bwd_lengths) if bwd_lengths else 0,
-            sum(all_lengths) / max(duration, 0.001),
-            len(packets) / max(duration, 0.001),
-            sum(1 for p in packets if p.get("direction") == "outbound" and p.get("header_size", 0)),
-            sum(1 for p in packets if p.get("direction") == "inbound" and p.get("header_size", 0)),
-            total_fwd / max(duration, 0.001),
-            total_bwd / max(duration, 0.001),
-            min(all_lengths) if all_lengths else 0,
-            max(all_lengths) if all_lengths else 0,
-            np.mean(all_lengths) if all_lengths else 0,
-            np.std(all_lengths) if all_lengths else 0,
-            np.var(all_lengths) if all_lengths else 0,
-            fin_count, syn_count, rst_count, psh_count, ack_count, urg_count,
-            total_fwd / max(total_bwd, 1),
-            np.mean(all_lengths) if all_lengths else 0,
-            np.mean(fwd_lengths) if fwd_lengths else 0,
-            np.mean(bwd_lengths) if bwd_lengths else 0,
-            0, 0,
-            total_fwd, total_bwd,
-            0, 0, 0, 0,
-            command_entropy, unique_commands,
-        ]
-        return FeatureExtractor._normalise(
-            features[: len(FeatureExtractor.CICIDS_FEATURES)]
+        row = cls.derive(
+            float(SERVICE_PORTS.get((protocol or "").lower(), 0)),
+            num("duration"), num("fwd_packets"), num("fwd_bytes"), num("bwd_bytes"),
+            num("fwd_max"), num("bwd_max"),
+            num("fwd_iat_mean"), num("fwd_iat_max"), num("flow_iat_max"),
         )
-
-    @staticmethod
-    def _shannon_entropy(text: str) -> float:
-        if not text:
-            return 0.0
-        freq = {}
-        for c in text:
-            freq[c] = freq.get(c, 0) + 1
-        length = len(text)
-        return -sum((count / length) * np.log2(count / length) for count in freq.values())
+        return np.array([float(v) for v in row]).reshape(1, -1)
 
 
 class AttackClassifier:
@@ -172,12 +106,25 @@ class AttackClassifier:
             # operator-controlled path from configuration, never user input.
             with open(model_path, "rb") as f:
                 data = pickle.load(f)
-            self.model = data["model"]
-            self.label_encoder = data["label_encoder"]
-            self.model_source = data.get("source", "pretrained")
-        else:
-            self._train_default_model()
-            self.model_source = "synthetic"
+            if data.get("features") == FeatureExtractor.FEATURES:
+                self.model = data["model"]
+                self.label_encoder = data["label_encoder"]
+                self.model_source = data.get("source", "pretrained")
+                # One sample at a time: a thread pool per prediction costs
+                # more than the trees themselves.
+                self.model.n_jobs = 1
+                self._loaded = True
+                return
+            # An artefact built for another feature layout would accept the
+            # vector only if the lengths happened to match, and then answer
+            # about the wrong features.
+            logger.warning(
+                "Model at %s was built for a different feature set; "
+                "falling back to the synthetic bootstrap. Retrain with ml.train.",
+                model_path,
+            )
+        self._train_default_model()
+        self.model_source = "synthetic"
         self._loaded = True
 
     def _train_default_model(self):
@@ -190,23 +137,29 @@ class AttackClassifier:
         a labelled corpus (e.g. CIC-IDS2017) and dropping the artefact at
         MODEL_PATH_RF.
         """
-        np.random.seed(42)
-        n_samples = 2000
-        n_features = len(FeatureExtractor.CICIDS_FEATURES)
+        rng = np.random.default_rng(42)
+        n = 2000
 
-        X_benign = np.random.normal(0.5, 0.3, (n_samples, n_features)).clip(0, 1)
-        X_recon = np.random.normal(0.3, 0.2, (n_samples // 2, n_features)).clip(0, 1)
-        X_recon[:, 19] = np.random.normal(0.8, 0.1, n_samples // 2).clip(0, 1)
-        X_exploit = np.random.normal(0.7, 0.2, (n_samples // 2, n_features)).clip(0, 1)
-        X_exploit[:, 21] = np.random.normal(0.9, 0.1, n_samples // 2).clip(0, 1)
-        X_exfil = np.random.normal(0.6, 0.25, (n_samples // 2, n_features)).clip(0, 1)
-        X_exfil[:, 7] = np.random.normal(0.9, 0.1, n_samples // 2).clip(0, 1)
+        def flows(count, port, duration, fwd, size, ratio, gap):
+            durations = rng.lognormal(np.log(duration), 1.0, count)
+            packets = rng.poisson(fwd, count) + 1
+            fwd_bytes = packets * rng.lognormal(np.log(size), 0.6, count)
+            bwd_bytes = fwd_bytes * rng.lognormal(np.log(ratio), 0.7, count)
+            return np.column_stack(FeatureExtractor.derive(
+                np.full(count, float(port)) if port else rng.choice([22.0, 21.0, 80.0, 443.0], count),
+                durations, packets, fwd_bytes, bwd_bytes,
+                fwd_bytes / packets * 1.5, bwd_bytes / packets * 1.5,
+                durations / packets, durations / packets * 2, gap * durations,
+            ))
 
-        X = np.vstack([X_benign, X_recon, X_exploit, X_exfil])
-        y = (["benign"] * n_samples +
-             ["reconnaissance"] * (n_samples // 2) +
-             ["exploitation"] * (n_samples // 2) +
-             ["exfiltration"] * (n_samples // 2))
+        X = np.vstack([
+            flows(n, None, 30.0, 20, 300, 3.0, 0.5),            # benign
+            flows(n // 2, None, 0.05, 1, 40, 0.5, 0.9),         # reconnaissance
+            flows(n // 2, 22, 4.0, 12, 120, 1.2, 0.3),          # exploitation
+            flows(n // 2, 443, 120.0, 400, 900, 0.1, 0.2),      # exfiltration
+        ])
+        y = (["benign"] * n + ["reconnaissance"] * (n // 2)
+             + ["exploitation"] * (n // 2) + ["exfiltration"] * (n // 2))
 
         self.label_encoder = LabelEncoder()
         y_encoded = self.label_encoder.fit_transform(y)
@@ -228,20 +181,23 @@ class AttackClassifier:
                     "model": self.model,
                     "label_encoder": self.label_encoder,
                     "source": "synthetic",
+                    "features": FeatureExtractor.FEATURES,
                 },
                 f,
             )
 
     def _predict(self, features: np.ndarray) -> Dict:
-        prediction = self.model.predict(features)[0]
+        # One pass over the forest: predict() is the argmax of predict_proba(),
+        # and calling both walked all 200 trees twice per session.
         probabilities = self.model.predict_proba(features)[0]
+        prediction = self.model.classes_[int(np.argmax(probabilities))]
         return {
             "category": str(self.label_encoder.inverse_transform([prediction])[0]),
             "confidence": float(max(probabilities)),
             "probabilities": {
                 str(label): float(prob)
                 for label, prob in zip(
-                    self.label_encoder.classes_, probabilities
+                    self.label_encoder.inverse_transform(self.model.classes_), probabilities
                 )
             },
             # Consumers must be able to tell a bootstrap verdict from one
@@ -249,19 +205,9 @@ class AttackClassifier:
             "model_source": self.model_source,
         }
 
-    def classify(self, session_data: Dict) -> Dict:
+    def classify_flow(self, flow: Optional[Dict], protocol: str) -> Dict:
         self._ensure_loaded()
-        return self._predict(
-            self.feature_extractor.extract_from_session(session_data)
-        )
-
-    def classify_raw(
-        self, packets: List[Dict], commands: List[str], duration: float
-    ) -> Dict:
-        self._ensure_loaded()
-        return self._predict(
-            self.feature_extractor.extract_from_raw(packets, commands, duration)
-        )
+        return self._predict(self.feature_extractor.extract_from_flow(flow, protocol))
 
 
 classifier = AttackClassifier()
