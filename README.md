@@ -23,7 +23,8 @@ and a workspace for investigating suspicious activity.
 |---|---|
 | **Capture** | SSH, FTP, HTTP and HTTPS emulators record interactions, attempted credentials (shell, FTP, web login forms and HTTP Basic auth), files attackers upload, and each connection's flow statistics. Passive mode records without answering, on every protocol. |
 | **Investigate** | Search sessions, filter by protocol and time, inspect transcripts (shell commands, FTP commands and HTTP requests with their bodies), and review ATT&CK mappings. |
-| **Understand** | A Random Forest trained on CIC-IDS2017, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
+| **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
+| **Protect a website** | Put a real web application behind the HTTP/HTTPS decoys. Every request is recorded, card numbers masked, and a client that gives itself away is answered by a decoy copy of the site from then on, while everyone else keeps reaching the live one. |
 | **Reverse-engineer** | Uploaded files are analysed statically — never run — for type, capabilities, embedded indicators, and a malware-family hint. |
 | **Respond** | Triage alerts, manage nodes, review indicators, and control the honeypot through role-restricted actions. |
 | **Share** | Copy an investigation link or export matching sessions as CSV, JSON, CEF, or STIX. |
@@ -90,8 +91,9 @@ The installer is idempotent, and sets up:
   drops anything the engine tries to open.
 - **Throughput.** A separate four-worker `ingest` service analyses sessions, so a
   burst does not queue behind the dashboard's API.
-- **Operations.** Nightly database backups, and the dashboard served over
-  Tailscale HTTPS.
+- **Operations.** Nightly database backups, the dashboard served over
+  Tailscale HTTPS, and, when a website sits behind the decoys, a nightly reset of
+  its decoy copy.
 - **Accounts.** An administrator account is created directly. The demo seed is
   never used, so no synthetic session sits beside captured traffic.
 
@@ -103,6 +105,7 @@ Scripts beside it cover the rest of the lifecycle:
 | `controlled-test.sh` | End-to-end check against a throwaway engine named `controlled-test-node`, so test traffic never mixes with real captures |
 | `stress-test.sh` | The NFR-2 / TC13 load test: N concurrent sessions, then the latency measured for each |
 | `backup.sh` | The nightly `pg_dump`, on demand |
+| `reset-shop.sh` | The nightly website job, on demand: back up the live copy, regenerate the decoy copy |
 
 ## Evaluation
 
@@ -135,6 +138,51 @@ is Bot and Infiltration traffic, about 2,000 flows in all.
 
 The requirement holds up to 10 concurrent sessions on this host. Past that,
 sessions queue for CPU.
+
+## A real website behind the decoys
+
+By default the HTTP and HTTPS decoys answer with their own pages. Pointed at a web
+application, they front it instead: each request is recorded as before (transcript,
+logins as credentials, uploads, probe detection, with card numbers and security codes
+masked in everything stored) and then answered by the application.
+
+With a second, decoy copy of the application configured, the engine also decides per
+request which copy answers:
+
+```mermaid
+flowchart LR
+    Client[Client] --> Engine[HTTP/HTTPS decoy: records every request]
+    Engine -->|ordinary visitors| Live[Live application]
+    Engine -->|once the client gives itself away| Copy[Decoy copy: same public pages, invented private data]
+    Engine -->|bait paths: /.env, /wp-login.php, ...| Bait[Built-in bait pages]
+```
+
+A client moves to the decoy copy on a signal a real visitor never produces: a request
+for a bait path, an attack pattern in the path, query or body (SQL injection, XSS,
+traversal, Log4Shell, command injection), an attack tool's user agent (sqlmap, Nikto,
+Nuclei, ...), or ten failed logins within ten minutes. It stays there while it keeps
+sending requests, and the mark lapses after six quiet hours. A client is its address
+plus user agent, so other people behind the same address are not diverted with it,
+and the application's session cookie follows it if its address changes. Blocking would
+protect the live copy as well, but it ends the recording and tells the attacker they
+were seen; diverting keeps both.
+
+In the dashboard, diverted sessions are tagged **decoy**, the session panel says why
+and since when, and the transcript marks every request the decoy copy answered.
+Diverted sessions count as at least reconnaissance, even a follow-up connection that
+looks like ordinary browsing on its own.
+
+The reference deployment runs a practice shop this way, as two copies on separate
+internal networks: identical catalog and reviews, but the decoy's customers, addresses
+and orders are invented, and it keeps weak demo passwords as bait while the live copy
+has none. The decoy copy is regenerated nightly. Setup and settings are in the
+[self-hosted guide](deploy/server/README.md#a-real-website-behind-the-http-decoys);
+the engine side is `honeypot/security/diversion.py`.
+
+What it cannot do: an attack none of those signals recognises reaches the live copy,
+and so does everything an attacker sends before the first request that gives them
+away. A client signed in on the live copy appears signed out once diverted, and an
+engine restart forgets which clients were diverted.
 
 ## Investigation workspace
 
@@ -216,6 +264,12 @@ This is a capstone platform, **not a validated production detection system**.
   process. The multi-worker ingest service carries no user-facing rate limits.
 - Payload analysis is static and heuristic — it never runs a sample, so it misses
   runtime-only behaviour, and its malware-family label is a hint with evidence, not a verdict.
+- Session categories combine the flow classifier with signature rules (web-attack
+  patterns, brute force, uploads, probes, diversion), because the flow model calls
+  command and web sessions benign. Where the rules decided, the session says
+  `model_source: "rules"` and the flow model's own distribution is kept beside it.
+- Diverting attackers to a decoy website only works for what its signals recognise,
+  and only from the first request that gives the attacker away.
 - Emulated services remain distinguishable from real systems through some behaviors.
 
 See the [technical reference](docs/TECHNICAL_REFERENCE.md) for the analysis pipeline,
@@ -282,6 +336,8 @@ Start with [`.env.example`](.env.example). The key settings are:
 | `GEOIP_DB_PATH` | Optional MaxMind GeoLite2 or DB-IP City Lite database path. |
 | `HONEYPOT_PROTOCOLS` | Emulators to run: any of `ssh,ftp,http,https`. |
 | `HONEYPOT_OPERATIONAL_MODE` | Starting mode, `active` or `passive`; a mode saved in Settings takes precedence once the engine registers. |
+| `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
+| `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |
 | `CHIMERA_URL` | Optional local model endpoint. |
 
 | Guide | Use it for |
