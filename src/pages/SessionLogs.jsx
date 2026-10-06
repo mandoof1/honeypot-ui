@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState'
 import ErrorBanner from '../components/ErrorBanner'
 import SessionDetail from '../components/SessionDetail'
 import { diversionOf } from '../lib/diversion'
+import { networkLabel } from '../lib/origin'
 import Dialog from '../components/Dialog'
 import { LoadingRegion } from '../components/Loading'
 
@@ -112,7 +113,7 @@ function SessionRow({ session, selected, onSelect }) {
               {CATEGORY_LABEL[session.attack_category] || CATEGORY_LABEL.unknown}
             </span>
             <span aria-hidden="true">·</span>
-            <span className="shrink-0">{session.geo?.country || '—'}</span>
+            <span className="shrink-0">{session.geo?.country || networkLabel(session.attacker_ip) || '—'}</span>
             <span aria-hidden="true">·</span>
             <span className="readout shrink-0">
               {new Date(session.started_at).toLocaleString(undefined, {

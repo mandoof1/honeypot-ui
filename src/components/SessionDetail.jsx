@@ -7,6 +7,7 @@ import SessionTranscript, {
   RetrievalBlock,
 } from './SessionTranscript'
 import { diversionOf } from '../lib/diversion'
+import { networkLabel } from '../lib/origin'
 
 /*
  * Session detail.
@@ -139,7 +140,7 @@ export default function SessionDetail({ session, onClose }) {
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line px-4 py-3.5">
         <Fact label="Origin" mono={false}>
-          {session.geo?.country_name || session.geo?.country || 'Unknown'}
+          {session.geo?.country_name || session.geo?.country || networkLabel(session.attacker_ip) || 'Unknown'}
         </Fact>
         <Fact label="Protocol">
           <span className="uppercase">{session.protocol || '—'}</span>

@@ -6,6 +6,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import { SkeletonBlock } from '../components/Loading'
 import { CompositionBar, HourTrace, RankList } from '../components/charts'
 import { SeverityRail } from '../components/Severity'
+import { networkLabel } from '../lib/origin'
 import {
   CATEGORY_COLOR, CATEGORY_LABEL, HANDS_ON_PROFILES,
   PROFILE_LABEL_SHORT, timeAgo,
@@ -114,7 +115,7 @@ function FeedRow({ event }) {
           </span>
           <span aria-hidden="true">·</span>
           <span className="truncate">
-            {event.geo_country_name || event.geo_country || 'Unknown origin'}
+            {event.geo_country_name || event.geo_country || networkLabel(event.attacker_ip) || 'Unknown origin'}
           </span>
         </div>
       </div>
@@ -188,7 +189,7 @@ export default function Dashboard() {
 
   const countries = Object.entries(
     liveEvents.reduce((acc, e) => {
-      const name = e.geo_country_name || e.geo_country
+      const name = e.geo_country_name || e.geo_country || networkLabel(e.attacker_ip)
       if (name) acc[name] = (acc[name] || 0) + 1
       return acc
     }, {}),
@@ -206,7 +207,7 @@ export default function Dashboard() {
   const repeats = (stats?.top_attacker_ips || []).slice(0, 6).map((a) => ({
     key: a.ip,
     label: a.ip,
-    sub: a.country || undefined,
+    sub: a.country || networkLabel(a.ip) || undefined,
     value: a.count,
   }))
 
