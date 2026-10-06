@@ -3,8 +3,10 @@ import { CategoryTag } from './Severity'
 import { PROFILE_LABEL } from '../lib/severity'
 import SessionTranscript, {
   CredentialsBlock,
+  DiversionBlock,
   RetrievalBlock,
 } from './SessionTranscript'
+import { diversionOf } from '../lib/diversion'
 
 /*
  * Session detail.
@@ -21,6 +23,7 @@ const MODEL_SOURCE_NOTE = {
   cicids2017: 'Trained · CIC-IDS2017',
   pretrained: 'Trained model',
   unloaded: 'No model loaded',
+  rules: 'Signature rules',
 }
 
 function percent(value) {
@@ -123,6 +126,15 @@ export default function SessionDetail({ session, onClose }) {
             {session.scanner_operator} scanner
           </span>
         )}
+        {diversionOf(session) && (
+          <span
+            className="tag"
+            style={{ color: 'var(--color-s3)' }}
+            title={`Answered by the decoy copy of the website: ${diversionOf(session).reason || 'earlier attack'}`}
+          >
+            Diverted to decoy
+          </span>
+        )}
       </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line px-4 py-3.5">
@@ -155,6 +167,13 @@ export default function SessionDetail({ session, onClose }) {
           <p className="mt-2.5 text-[12px] leading-relaxed text-paper-3">
             This classifier has not been trained on captured traffic. Treat the
             confidence above as a placeholder, not a measurement.
+          </p>
+        )}
+        {session.model_source === 'rules' && (
+          <p className="mt-2.5 text-[12px] leading-relaxed text-paper-3">
+            The flow model read this session as benign; the category above comes
+            from signature rules over the recorded commands, logins and uploads.
+            See the detected tools and intents below for what matched.
           </p>
         )}
         {session.cluster?.fitted && (
@@ -237,6 +256,7 @@ export default function SessionDetail({ session, onClose }) {
         </Block>
       )}
 
+      <DiversionBlock session={session} />
       <RetrievalBlock session={session} />
       {/* Keyed so switching sessions remounts them and their loaded state
           resets, rather than being cleared afterwards by an effect. */}

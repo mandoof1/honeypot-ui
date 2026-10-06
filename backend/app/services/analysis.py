@@ -84,6 +84,40 @@ def _summarise_packets(packets) -> Optional[Dict]:
             "by_type": by_type}
 
 
+#: Kill-chain ordering, used to keep the more advanced of two verdicts.
+_CATEGORY_RANK = {
+    AttackCategory.BENIGN: 0,
+    AttackCategory.RECONNAISSANCE: 1,
+    AttackCategory.EXPLOITATION: 2,
+    AttackCategory.EXFILTRATION: 3,
+}
+
+#: NLP tool/web-signature categories collapsed onto the four stored classes. The
+#: NLP layer recognises far more specific categories than the flow model's four;
+#: this is how a signature hit (sqlmap, a UNION SELECT, a webshell upload) sets
+#: the session's category even when the flow model — trained on CIC-IDS2017
+#: network flows and domain-shifted onto command/web sessions — calls it benign.
+_RECON_SIGNALS = {
+    "scanner", "directory_enum", "vulnerability_scanner", "reconnaissance",
+    "path_traversal",
+}
+_EXPLOIT_SIGNALS = {
+    "sql_injection", "xss", "command_injection", "log4shell", "lfi_rfi",
+    "webshell", "exploitation_framework", "reverse_shell", "c2_framework",
+    "credential_theft", "password_cracker", "privilege_modification",
+    "persistence", "lateral_movement", "web_proxy",
+}
+_EXFIL_SIGNALS = {"exfiltration"}
+_EXPLOIT_INTENTS = {
+    "credential_harvesting", "privilege_escalation", "lateral_movement",
+    "persistence", "ransomware", "botnet", "defacement", "denial_of_service",
+    "web_exploitation",
+}
+
+#: Failed logins at or above this in one session read as a brute-force attempt.
+_BRUTE_FORCE_THRESHOLD = 3
+
+
 def _looks_like_ip(value: str) -> bool:
     try:
         ipaddress.ip_address(value)
@@ -169,6 +203,32 @@ class AnalysisPipeline:
             extract_behaviour(session_data, nlp_result)
         )
 
+        # Reconcile the flow model's verdict with the rule-based evidence. The
+        # flow model (stage 1, FR-2) classifies the traffic's *shape* and is
+        # domain-shifted on command/web sessions, so on its own it labels almost
+        # everything benign. The rule layer reads the recorded commands, probes,
+        # logins and uploads; when it finds a more advanced stage, that becomes
+        # the session's category. The flow model's own distribution is still
+        # kept verbatim in class_probabilities, and model_source records which
+        # layer the stored category actually came from.
+        flow_category = _coerce_enum(
+            AttackCategory, ai_result.get("category"), AttackCategory.BENIGN
+        )
+        rule_category, rule_confidence, rule_reason = self._rule_based_category(
+            nlp_result, session_data
+        )
+        if _CATEGORY_RANK[rule_category] > _CATEGORY_RANK[flow_category]:
+            final_category = rule_category
+            final_confidence = rule_confidence
+            category_source = "rules"
+        else:
+            final_category = flow_category
+            final_confidence = float(ai_result.get("confidence") or 0.0)
+            category_source = ai_result.get("model_source")
+
+        # Downstream stages (MITRE mapping, severity) read the agreed verdict.
+        ai_result["category"] = final_category.value
+
         mitre_result = mitre_mapper.map_analysis(nlp_result, ai_result, session_data)
 
         iocs = self._extract_iocs(attacker_ip, nlp_result, session_data)
@@ -208,10 +268,8 @@ class AnalysisPipeline:
             started_at=_parse_timestamp(session_data.get("started_at"), _now),
             ended_at=_now,
             duration_seconds=duration,
-            attack_category=_coerce_enum(
-                AttackCategory, ai_result.get("category"), AttackCategory.BENIGN
-            ),
-            attack_confidence=ai_result["confidence"],
+            attack_category=final_category,
+            attack_confidence=final_confidence,
             attacker_profile=_coerce_enum(
                 AttackerProfile,
                 profile_result.get("profile"),
@@ -225,7 +283,7 @@ class AnalysisPipeline:
             command_count=len(commands),
             mitre_tactics=mitre_result.get("tactic_ids", []),
             mitre_techniques=mitre_result.get("techniques", []),
-            model_source=ai_result.get("model_source"),
+            model_source=category_source,
             cluster_id=cluster_result.get("cluster"),
             cluster_distance=cluster_result.get("distance"),
             cluster_is_outlier=cluster_result.get("is_outlier"),
@@ -395,6 +453,72 @@ class AnalysisPipeline:
                 seen.add(key)
                 unique.append(ioc)
         return unique
+
+    def _rule_based_category(self, nlp_result: Dict, session_data: Dict):
+        """Derive a category from deterministic evidence in the session.
+
+        Reads the NLP categories/intents (which now include web-exploitation
+        signatures), the failed-login count, uploaded files and the count of
+        attack probes the decoy flagged. Returns the highest kill-chain stage
+        any of them implies, a confidence for that signature match, and a short
+        reason. Benign when nothing matched — the flow model then stands.
+        """
+        categories = set(nlp_result.get("categories") or [])
+        intents = set(nlp_result.get("detected_intents") or [])
+        failed_logins = int(session_data.get("failed_logins") or 0)
+        upload_count = len(session_data.get("uploads") or [])
+        probe_count = sum(
+            1
+            for packet in (session_data.get("packets") or [])
+            if isinstance(packet, dict) and packet.get("type") == "attack_detected"
+        )
+
+        category = AttackCategory.BENIGN
+        reasons: List[str] = []
+
+        def bump(to: AttackCategory, why: str):
+            nonlocal category
+            reasons.append(why)
+            if _CATEGORY_RANK[to] > _CATEGORY_RANK[category]:
+                category = to
+
+        if categories & _RECON_SIGNALS or "reconnaissance" in intents:
+            bump(AttackCategory.RECONNAISSANCE, "reconnaissance tooling or behaviour")
+        if probe_count:
+            # The decoy flagged a probe whose kind isn't forwarded in detail; a
+            # recon floor is the honest minimum (NLP catches the specific ones).
+            bump(AttackCategory.RECONNAISSANCE, f"{probe_count} flagged attack probe(s)")
+        diversion = next(
+            (
+                e for e in (session_data.get("events") or [])
+                if isinstance(e, dict) and e.get("event_type") == "http_diversion"
+            ),
+            None,
+        )
+        if diversion:
+            # The client gave itself away earlier, maybe on another connection,
+            # so this session can look like plain browsing on its own.
+            bump(
+                AttackCategory.RECONNAISSANCE,
+                f"diverted to the decoy application ({diversion.get('reason') or 'earlier attack'})",
+            )
+        if categories & _EXPLOIT_SIGNALS or intents & _EXPLOIT_INTENTS:
+            bump(AttackCategory.EXPLOITATION, "exploitation signature or intent")
+        if failed_logins >= _BRUTE_FORCE_THRESHOLD:
+            bump(AttackCategory.EXPLOITATION, f"{failed_logins} failed logins (brute force)")
+        if upload_count:
+            bump(AttackCategory.EXPLOITATION, f"{upload_count} file upload(s)")
+        if categories & _EXFIL_SIGNALS or "data_exfiltration" in intents:
+            bump(AttackCategory.EXFILTRATION, "data-exfiltration behaviour")
+
+        if category is AttackCategory.BENIGN:
+            return category, 0.0, ""
+        # Deliberately not 1.0: strong heuristics over recorded text, not proof.
+        # A little higher when several independent signals agree.
+        confidence = 0.9 if len(reasons) > 1 else 0.75
+        reason = "; ".join(reasons[:4])
+        logger.debug("Rule-based category %s: %s", category.value, reason)
+        return category, confidence, reason
 
     def _determine_severity(
         self,

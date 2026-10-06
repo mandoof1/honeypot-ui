@@ -138,6 +138,13 @@ systemctl enable --now honeysentinel-backup.timer >/dev/null 2>&1
 iptables -S DOCKER-USER | grep -q HS-DECOY-EGRESS \
   || { echo "    egress rules missing; refusing to expose the engine" >&2; exit 1; }
 echo "    egress rules active; nightly backup scheduled"
+# Only when docker-compose.override.yml puts an application behind the decoys.
+if docker compose config --services | grep -x shop >/dev/null; then
+  systemctl enable --now honeysentinel-shop-reset.timer >/dev/null 2>&1
+  echo "    nightly shop reset scheduled"
+else
+  systemctl disable --now honeysentinel-shop-reset.timer >/dev/null 2>&1 || true
+fi
 
 echo "==> 5/7  Build and start"
 docker compose up -d --build --remove-orphans

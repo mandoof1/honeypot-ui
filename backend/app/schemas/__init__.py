@@ -258,6 +258,10 @@ class NetworkEvent(BaseModel):
     #: doubt about whether the payload actually ran.
     fetched: Optional[bool] = None
     executed: Optional[bool] = None
+    #: http_diversion: why the client was handed to the decoy application,
+    #: and when it first was (epoch seconds).
+    reason: Optional[str] = None
+    since: Optional[float] = None
     at: Optional[float] = None
 
 

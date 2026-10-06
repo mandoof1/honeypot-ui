@@ -250,3 +250,56 @@ class TestRetrievalEvents:
         session_id, admin = await _ingest(client, auth_headers)
         body = (await client.get(f"/api/v1/sessions/{session_id}", headers=admin)).json()
         assert body["keystroke_count"] == 61
+
+
+DIVERTED_SESSION = {
+    "protocol": "http",
+    "attacker_ip": "203.0.113.90",
+    "attacker_port": 50100,
+    "started_at": "2026-02-03T03:03:00Z",
+    "status": "completed",
+    "duration_seconds": 4.0,
+    # A follow-up connection: nothing in it is an attack on its own.
+    "commands": ["GET /api/account", "GET /api/orders"],
+    "transcript": [
+        {"command": "GET /api/account", "output": "HTTP/1.1 200 OK  [answered by the decoy application]", "exit_code": 0, "timestamp": 1.0},
+        {"command": "GET /api/orders", "output": "HTTP/1.1 200 OK  [answered by the decoy application]", "exit_code": 0, "timestamp": 2.0},
+    ],
+    "events": [
+        {
+            "event_type": "http_diversion",
+            "reason": "sql_injection in the request",
+            "path": "/api/account",
+            "since": 1767400000.0,
+            "at": 1.0,
+        },
+    ],
+    "payload": "",
+    "uploads": [],
+    "failed_logins": 0,
+    "packets": [],
+}
+
+
+class TestDiversionEvents:
+    async def test_the_reason_reaches_the_client_and_the_session_is_not_benign(self, client, auth_headers):
+        admin = await auth_headers(UserRole.ADMIN)
+        node = await client.post(
+            "/api/v1/nodes/",
+            headers=admin,
+            json={"name": "edge-web", "protocol": "http", "ip_address": "10.0.0.10", "port": 8080},
+        )
+        assert node.status_code == 201, node.text
+        response = await client.post(
+            f"/api/v1/sessions/ingest-internal?node_id={node.json()['id']}",
+            headers=INGEST_HEADERS,
+            json=DIVERTED_SESSION,
+        )
+        assert response.status_code == 200, response.text
+        body = (await client.get(f"/api/v1/sessions/{response.json()['session_id']}", headers=admin)).json()
+
+        [event] = [e for e in body["network_events"] if e["event_type"] == "http_diversion"]
+        assert event["reason"] == "sql_injection in the request"
+        assert event["since"] == 1767400000.0
+        assert event["path"] == "/api/account"
+        assert body["attack_category"] != "benign"

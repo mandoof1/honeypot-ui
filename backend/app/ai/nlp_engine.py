@@ -36,6 +36,33 @@ OFFENSIVE_TOOLS = {
     "enum_windows": {"pattern": r"(?:systeminfo|net\s+user|net\s+localgroup|ipconfig\s+/all)", "category": "reconnaissance"},
 }
 
+#: Web-exploitation signatures matched against the request text itself (the
+#: HTTP decoy records each request line as a "command"). The flow classifier is
+#: blind to these — they live in the payload, not the flow shape — and the tool
+#: table above only catches sqlmap-style strings, so web probes used to leave no
+#: category behind. Each maps to one of the engine's category tags, consumed by
+#: the analysis pipeline's rule-based category.
+WEB_ATTACK_SIGNATURES = {
+    "sql_injection": r"(?:union(?:\s|\+|%20)+select|'\s*or\s*'?1'?\s*=\s*'?1|\bor\s+1=1\b|;\s*drop\s+table|sleep\(\d|benchmark\()",
+    "xss": r"(?:<script|%3cscript|onerror\s*=|onerror%3d|javascript:)",
+    "path_traversal": r"(?:\.\./\.\.|\.\.%2f|\.\.\\|/etc/passwd|/etc/shadow|%2fetc%2f)",
+    "log4shell": r"(?:\$\{jndi:|%24%7bjndi)",
+    "command_injection": r"(?:;\s*(?:id|whoami|uname)\b|\|\s*(?:bash|sh)\b|\$\(.*\)|/dev/tcp/)",
+    "lfi_rfi": r"(?:php://(?:filter|input)|data://text|expect://)",
+    "webshell": r"(?:<\?php|eval\(\$_(?:get|post|request|server)|system\(\$_|passthru\(|assert\(\$_)",
+}
+
+#: Which of the four stored classes each web signature implies.
+WEB_ATTACK_CATEGORY = {
+    "sql_injection": "exploitation",
+    "xss": "exploitation",
+    "command_injection": "exploitation",
+    "log4shell": "exploitation",
+    "lfi_rfi": "exploitation",
+    "webshell": "exploitation",
+    "path_traversal": "reconnaissance",
+}
+
 ATTACK_INTENTS = {
     "credential_harvesting": ["password", "credential", "hash", "dump", "lsass", "sam", "shadow", "ntds"],
     "privilege_escalation": ["sudo", "root", "admin", "privilege", "escalat", "setuid", "suid"],
@@ -114,6 +141,14 @@ class NLPEngine:
                     "confidence": 0.85,
                 })
 
+        # Web-exploitation signatures over the raw request text.
+        web_attacks: Set[str] = set()
+        for name, pattern in WEB_ATTACK_SIGNATURES.items():
+            if re.search(pattern, full_text):
+                web_attacks.add(name)
+                categories.add(name)
+                detected_intents.add("web_exploitation")
+
         for intent, keywords in ATTACK_INTENTS.items():
             for keyword in keywords:
                 if keyword in full_text:
@@ -138,6 +173,7 @@ class NLPEngine:
             "tool_names": list(tool_names),
             "detected_intents": list(detected_intents),
             "categories": list(categories),
+            "web_attacks": list(web_attacks),
             "entities": entities,
             "extracted_ips": ips,
             "extracted_urls": urls,

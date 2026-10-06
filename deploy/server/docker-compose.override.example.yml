@@ -1,0 +1,90 @@
+# Example: the reference server's override, which serves the Bolt & Batten
+# practice shop behind the decoys. Copy to docker-compose.override.yml (git
+# ignores that name) and add SHOP_ADMIN_PASSWORD and SHOP_SEED_TIME to .env.
+#
+# The Bolt & Batten practice shop, served through the HTTP/HTTPS decoys as two
+# copies: the live one, and a decoy copy attackers are diverted to.
+#
+# Compose merges this file into docker-compose.yml automatically, so install.sh
+# and every `docker compose` command here include it. The shop's source is a
+# separate project at /opt/bolt-and-batten.
+#
+# The decoy records each request as usual and then has a shop answer it: the
+# live copy, or, once a client has given itself away as an attacker, the decoy
+# copy (see honeypot/security/diversion.py). The decoy copy has the same
+# catalog and reviews but invented customers, orders and addresses, and keeps
+# the demo passwords as bait; the live copy has none of them. Both are dated as
+# of SHOP_SEED_TIME so their pages match. Bait paths such as /.env and
+# /wp-login.php are still answered by the decoy engine itself.
+#
+# Each copy sits alone with the engine on its own internal network: no
+# published ports, no route out, and no route from one copy to the other.
+# reset-shop.sh (nightly) regenerates the decoy copy and backs up the live one.
+
+x-shop: &shop
+  build: ${SHOP_SOURCE:-/opt/bolt-and-batten}
+  image: bolt-and-batten-web
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/categories').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  honeypot:
+    environment:
+      HONEYPOT_HTTP_UPSTREAM: http://shop:3000
+      HONEYPOT_HTTP_DECOY_UPSTREAM: http://shop-decoy:3000
+      # The shop's own pages, which would otherwise be decoy bait.
+      HONEYPOT_HTTP_UPSTREAM_OWNS: /login,/admin
+      # So a diverted session stays diverted if its address changes.
+      HONEYPOT_HTTP_SESSION_COOKIE: sid
+    networks:
+      shop: {}
+      shop_decoy: {}
+    depends_on:
+      shop:
+        condition: service_healthy
+      shop-decoy:
+        condition: service_healthy
+
+  shop:
+    <<: *shop
+    environment:
+      # Port 8080 is plain HTTP; a Secure cookie would never come back.
+      COOKIE_SECURE: "false"
+      SHOP_ROLE: live
+      SHOP_ADMIN_PASSWORD: ${SHOP_ADMIN_PASSWORD:?add SHOP_ADMIN_PASSWORD to .env}
+      SHOP_SEED_TIME: ${SHOP_SEED_TIME:?add SHOP_SEED_TIME to .env}
+    volumes:
+      - shop_data:/app/data
+    networks: [shop]
+
+  shop-decoy:
+    <<: *shop
+    environment:
+      COOKIE_SECURE: "false"
+      SHOP_ROLE: decoy
+      SHOP_SEED_TIME: ${SHOP_SEED_TIME:?add SHOP_SEED_TIME to .env}
+    volumes:
+      - shop_decoy_data:/app/data
+    networks: [shop_decoy]
+
+networks:
+  shop:
+    internal: true
+  shop_decoy:
+    internal: true
+
+volumes:
+  shop_data:
+  shop_decoy_data:

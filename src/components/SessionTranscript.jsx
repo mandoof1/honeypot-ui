@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react'
-import { AlertTriangle, ChevronDown, Download, Eye, Loader2, Play } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Download, Eye, Loader2, Play, Shuffle } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
+import { diversionOf } from '../lib/diversion'
 
 /*
  * The transcript.
@@ -174,10 +175,9 @@ export default function SessionTranscript({ session }) {
  */
 export function RetrievalBlock({ session }) {
   const events = session?.network_events || []
-  if (!events.length) return null
-
   const downloads = events.filter((e) => e.event_type === 'file_download')
   const executions = events.filter((e) => e.event_type === 'payload_execution')
+  if (!downloads.length && !executions.length) return null
 
   return (
     <section className="border-t border-line px-4 py-3.5">
@@ -227,6 +227,49 @@ export function RetrievalBlock({ session }) {
           </li>
         ))}
       </ul>
+    </section>
+  )
+}
+
+/*
+ * Diversion to the decoy application.
+ *
+ * With a decoy copy of the website configured, a client that gives itself
+ * away as an attacker is answered by the copy from then on. This says why,
+ * and since when: the reason may come from an earlier connection, which is
+ * why a session of ordinary-looking requests can carry it.
+ */
+export function DiversionBlock({ session }) {
+  const event = diversionOf(session)
+  if (!event) return null
+
+  return (
+    <section className="border-t border-line px-4 py-3.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="eyebrow">Decoy application</h3>
+        <span className="text-[12px] text-paper-3">the live site was not reached</span>
+      </div>
+      <div className="mt-2.5 flex items-baseline gap-2">
+        <Shuffle
+          className="h-3 w-3 shrink-0 self-center"
+          strokeWidth={2}
+          style={{ color: 'var(--color-s3)' }}
+        />
+        <span className="min-w-0 flex-1 text-[12px] text-paper">
+          Diverted: {event.reason || 'earlier attack'}
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-5 text-[12px] text-paper-3">
+        {event.path && <span className="readout break-all">{event.path}</span>}
+        {event.since && (
+          <span className="readout">
+            since {new Date(event.since * 1000).toLocaleString()}
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-[12px] text-paper-3">
+        Requests before the first diverted one were answered by the live site; the transcript marks each one the decoy answered.
+      </p>
     </section>
   )
 }

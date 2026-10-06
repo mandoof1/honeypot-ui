@@ -1,2 +1,4 @@
 .env
 state/
+# Site-specific; see docker-compose.override.example.yml.
+docker-compose.override.yml

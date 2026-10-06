@@ -1,0 +1,8 @@
+[Unit]
+Description=HoneySentinel: reset the shop behind the HTTP decoys
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/reset-shop.sh
