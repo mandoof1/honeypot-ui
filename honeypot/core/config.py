@@ -68,6 +68,28 @@ class HoneypotConfig:
     http_max_body_bytes: int = int(
         os.getenv("HONEYPOT_HTTP_MAX_BODY_BYTES", str(8 * 1024 * 1024))
     )
+    #: A real web application to put behind the HTTP/HTTPS decoys, as
+    #: http://host:port on a network the engine can reach. Every request is
+    #: recorded exactly as before and then answered by the application, except
+    #: the bait paths (fake .env, WordPress, phpMyAdmin...), which the decoy
+    #: keeps answering itself. Empty: the decoy's built-in pages only.
+    http_upstream: str = os.getenv("HONEYPOT_HTTP_UPSTREAM", "")
+    #: Bait paths the application serves itself and so should receive,
+    #: comma-separated: a shop has its own /login and /admin.
+    http_upstream_owns: str = os.getenv("HONEYPOT_HTTP_UPSTREAM_OWNS", "")
+    #: A decoy copy of that application, as http://host:port: same public
+    #: pages, invented private data. Set, a client that gives itself away as
+    #: an attacker is answered by the decoy copy from then on, while everyone
+    #: else keeps reaching the live one. See honeypot/security/diversion.py.
+    http_decoy_upstream: str = os.getenv("HONEYPOT_HTTP_DECOY_UPSTREAM", "")
+    #: Seconds a diverted client stays diverted after its last request.
+    http_divert_ttl: int = int(os.getenv("HONEYPOT_HTTP_DIVERT_TTL", str(6 * 3600)))
+    #: Failed logins within ten minutes that divert a client; 0 never does.
+    http_divert_failed_logins: int = int(os.getenv("HONEYPOT_HTTP_DIVERT_FAILED_LOGINS", "10"))
+    #: The application's session cookie, so a diverted session stays diverted
+    #: when its address changes. Empty: clients are told apart by address and
+    #: user agent only.
+    http_session_cookie: str = os.getenv("HONEYPOT_HTTP_SESSION_COOKIE", "")
 
     #: Which OpenSSH release the SSH emulator imitates — banner and transport
     #: proposal together. See honeypot/adaptive/ssh_profile.py; the profile

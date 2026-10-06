@@ -217,12 +217,28 @@ export default function LiveMap() {
               )}
             </div>
 
+            {/* With no plottable points the map is a blank ocean; say why so it
+                doesn't read as broken. On a tailnet/LAN honeypot every source
+                is a private address, which no geolocation database can place. */}
+            {visible.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[400] flex items-center justify-center p-4">
+                <div className="max-w-sm rounded-[4px] border border-line bg-ink-1/95 px-4 py-3 text-center backdrop-blur">
+                  <p className="text-[13px] text-paper">No origins to plot yet</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-paper-2">
+                    {events.length > 0
+                      ? 'Recorded sessions all come from private addresses (tailnet or LAN), which have no geographic location. Internet-facing traffic will appear here.'
+                      : 'Sessions with a public source address will appear here as they are captured.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
             {unlocatable > 0 && (
               <p className="pointer-events-none absolute bottom-3 left-3 z-[500] max-w-md rounded-[4px] border border-line bg-ink-1/95 px-3 py-2 text-[12px] text-paper-2 backdrop-blur">
                 <span className="readout text-paper">{unlocatable}</span>{' '}
-                {unlocatable === 1 ? 'event has' : 'events have'} no location.
-                Point <span className="readout">GEOIP_DB_PATH</span> at a MaxMind
-                GeoLite2 database to resolve them.
+                {unlocatable === 1 ? 'session has' : 'sessions have'} no mappable
+                location — their source addresses are private (tailnet or LAN) or
+                absent from the geolocation database.
               </p>
             )}
           </>

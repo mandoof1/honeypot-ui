@@ -108,11 +108,16 @@ class SessionRecord:
             ],
             "keystroke_count": max(self.keystroke_total, len(self.keystrokes)),
             "flow": self.flow.summary() if self.flow else None,
-            # Retrieval and execution events — where a dropper's C2 URL is.
+            # Retrieval and execution events — where a dropper's C2 URL is —
+            # and the moment a web client was handed to the decoy application.
+            # Filtered before the cap: a web session logs an event per
+            # request, which would otherwise push these past it.
             "events": [
                 {k: v for k, v in e.items() if k != "timestamp"} | {"at": e["timestamp"]}
-                for e in self.network_events[: self.MAX_EVENTS]
-                if e.get("event_type") in ("file_download", "payload_execution")
+                for e in [
+                    e for e in self.network_events
+                    if e.get("event_type") in ("file_download", "payload_execution", "http_diversion")
+                ][: self.MAX_EVENTS]
             ],
             "packets": [
                 {

@@ -7,6 +7,7 @@ import { useDebounced } from '../hooks/useDebounced'
 import EmptyState from '../components/EmptyState'
 import ErrorBanner from '../components/ErrorBanner'
 import SessionDetail from '../components/SessionDetail'
+import { diversionOf } from '../lib/diversion'
 import Dialog from '../components/Dialog'
 import { LoadingRegion } from '../components/Loading'
 
@@ -29,6 +30,8 @@ function toLocalDate(value) {
 }
 
 const PAGE_SIZE = 25
+//: How often the list silently refreshes with newly captured sessions.
+const REFRESH_MS = 15000
 
 const CATEGORIES = ['benign', 'reconnaissance', 'exploitation', 'exfiltration']
 const STATUSES = ['active', 'completed', 'terminated']
@@ -92,6 +95,15 @@ function SessionRow({ session, selected, onSelect }) {
             {handsOn && (
               <span className="tag shrink-0" style={{ color: 'var(--color-s4)' }}>
                 {PROFILE_LABEL_SHORT[session.attacker_profile]}
+              </span>
+            )}
+            {diversionOf(session) && (
+              <span
+                className="tag shrink-0"
+                style={{ color: 'var(--color-s3)' }}
+                title="Answered by the decoy copy of the website"
+              >
+                decoy
               </span>
             )}
           </span>
@@ -195,6 +207,29 @@ export default function SessionLogs() {
     const timer = setTimeout(load, 0)
     return () => { controller.abort(); clearTimeout(timer) }
   }, [page, query, reload])
+
+  // Auto-refresh so new captures appear without a manual reload. This is a
+  // silent background refresh: it replaces the current page in place and never
+  // toggles the loading state, so the list doesn't flash or lose the reader's
+  // place. User actions (paging, filtering, selecting) still go through the
+  // effect above.
+  useEffect(() => {
+    if (REFRESH_MS <= 0) return undefined
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const data = await api.sessions.list({ page, page_size: PAGE_SIZE, ...query })
+        if (cancelled) return
+        setSessions(data.sessions || [])
+        setTotal(data.total || 0)
+        setError(null)
+      } catch {
+        // Keep the last good list; the next tick (or a manual reload) retries.
+      }
+    }
+    const interval = setInterval(poll, REFRESH_MS)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [page, query])
 
   // Missing or slow deep-link details must not hide a successful list result.
   useEffect(() => {

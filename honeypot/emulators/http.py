@@ -1,14 +1,16 @@
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import random
 import time
-from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from typing import Optional, Union
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 from honeypot.capture.flow import FlowMeter
 from honeypot.capture.http_uploads import extract_files
+from honeypot.capture.redact import redact_card_data
 from honeypot.core.config import config
 from honeypot.core.tls import build_tls_context
 from honeypot.core.session import session_manager
@@ -16,6 +18,15 @@ from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
 from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.adaptive.response import adaptive_engine
+from honeypot.security.diversion import (
+    FAILED_LOGIN_WINDOW,
+    HARMLESS_BAIT,
+    Mark,
+    diversion_table,
+    issued_tokens,
+    request_token,
+    scanner_agent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +41,63 @@ PASSWORD_FIELDS = ("password", "pass", "pwd", "pma_password", "passwd")
 TRANSCRIPT_BODY_CHARS = 2000
 
 
-def _status_line(response: str) -> str:
+#: Headers that describe one connection rather than the message, so they are
+#: never passed between the client and an upstream application.
+HOP_BY_HOP = frozenset({
+    "connection", "keep-alive", "proxy-connection", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+})
+
+#: Largest response accepted from an upstream application.
+MAX_UPSTREAM_RESPONSE_BYTES = 16 * 1024 * 1024
+
+#: Substrings in a request path that mark a probe, and what each one probes for.
+PATH_ATTACK_INDICATORS = [
+    ("../", "path_traversal"),
+    ("etc/passwd", "etc_passwd_probe"),
+    ("etc/shadow", "etc_shadow_probe"),
+    ("/proc/", "proc_probe"),
+    ("<script>", "xss_attempt"),
+    ("javascript:", "xss_attempt"),
+    ("union+select", "sql_injection"),
+    ("union%20select", "sql_injection"),
+    ("1=1", "sql_injection"),
+    ("1' OR '1'='1", "sql_injection"),
+    ("${jndi:", "log4shell_attempt"),
+    ("${env:", "log4shell_attempt"),
+    ("cmd=", "command_injection"),
+    ("exec(", "command_injection"),
+    ("shell_exec", "command_injection"),
+    ("/etc/passwd", "lfi_attempt"),
+    ("php://filter", "lfi_attempt"),
+    ("php://input", "lfi_attempt"),
+    ("data://", "lfi_attempt"),
+    ("expect://", "lfi_attempt"),
+]
+
+#: The same for request bodies.
+BODY_ATTACK_INDICATORS = [
+    ("<?php", "php_injection"),
+    ("<script>", "xss_attempt"),
+    ("union select", "sql_injection"),
+    ("${jndi:", "log4shell_attempt"),
+    ("cmd=", "command_injection"),
+]
+
+
+def _status_line(response: Union[str, bytes]) -> str:
+    if isinstance(response, bytes):
+        response = response[:512].decode("latin-1")
     return response.split("\r\n", 1)[0]
+
+
+def _parse_upstream(url: str) -> Optional[tuple[str, int]]:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or not parsed.hostname:
+        raise ValueError(f"HONEYPOT_HTTP_UPSTREAM must be http://host:port, got {url!r}")
+    return parsed.hostname, parsed.port or 80
 
 
 def _basic_credentials(headers: dict) -> Optional[tuple[str, str]]:
@@ -44,6 +110,23 @@ def _basic_credentials(headers: dict) -> Optional[tuple[str, str]]:
         return None
     user, _, password = decoded.partition(":")
     return user, password
+
+
+def _json_credentials(headers: dict, body: str) -> Optional[tuple[str, str]]:
+    """A login posted as JSON, the way single-page applications send one."""
+    if "application/json" not in headers.get("content-type", "") or not body:
+        return None
+    try:
+        fields = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(fields, dict):
+        return None
+    user = next((fields[k] for k in USER_FIELDS if isinstance(fields.get(k), str)), None)
+    password = next((fields[k] for k in PASSWORD_FIELDS if isinstance(fields.get(k), str)), None)
+    if user is None and password is None:
+        return None
+    return user or "", password or ""
 
 
 def _form_credentials(headers: dict, body: str) -> Optional[tuple[str, str]]:
@@ -100,6 +183,16 @@ class HTTPHoneypot(BaseEmulator):
             "/config.php": "<?php\n$db_host = 'localhost';\n$db_user = 'root';\n$db_pass = 'admin123';\n$db_name = 'production';\n?>\n",
             "/wp-config.php": "<?php\ndefine('DB_NAME', 'wordpress');\ndefine('DB_USER', 'wp_user');\ndefine('DB_PASSWORD', 'wp_pass_2024');\ndefine('DB_HOST', 'localhost');\n?>\n",
         }
+        self._upstream = _parse_upstream(config.http_upstream)
+        self._decoy_upstream = _parse_upstream(config.http_decoy_upstream)
+        if self._decoy_upstream and not self._upstream:
+            logger.warning("HONEYPOT_HTTP_DECOY_UPSTREAM ignored: no HONEYPOT_HTTP_UPSTREAM to divert from")
+            self._decoy_upstream = None
+        owned = {p.strip() for p in config.http_upstream_owns.split(",") if p.strip()}
+        self._bait_paths = (set(self._fake_files) | set(self._vulnerable_endpoints)) - owned
+        #: What answered each session's request in flight, for its transcript
+        #: line: "decoy" when the decoy application did.
+        self._answered_by: dict[str, str] = {}
 
     def get_banner(self) -> str:
         return fingerprint_engine.get_http_server_header()
@@ -175,18 +268,23 @@ class HTTPHoneypot(BaseEmulator):
                             reader.readexactly(content_length),
                             timeout=min(300, max(30, content_length / 32_768)),
                         )
-                        # The decoded form feeds the text matching below; the
-                        # raw bytes are what gets captured. Decoding with
-                        # replacement characters used to be the only copy,
-                        # which destroyed every binary upload on arrival.
-                        body = body_bytes.decode("utf-8", errors="replace")
+                        # The decoded form feeds the text matching and the
+                        # records, with card data masked; the raw bytes are
+                        # what gets captured as a file or forwarded upstream.
+                        # Decoding with replacement characters used to be the
+                        # only copy, which destroyed every binary upload on
+                        # arrival.
+                        body = redact_card_data(
+                            body_bytes.decode("utf-8", errors="replace")
+                        )
 
                     response = await self._handle_request(
                         session_id, request_str, headers, body, source_ip, writer,
                         body_bytes,
                     )
                     await self._record_exchange(
-                        session_id, request_str, headers, body, response
+                        session_id, request_str, headers, body, response,
+                        self._answered_by.pop(session_id, None),
                     )
                     await self._send_response(writer, response)
 
@@ -203,6 +301,7 @@ class HTTPHoneypot(BaseEmulator):
         except Exception as e:
             logger.error(f"HTTP session error: {e}")
         finally:
+            self._answered_by.pop(session_id, None)
             await session_manager.end_session(session_id)
             writer.close()
             try:
@@ -211,7 +310,13 @@ class HTTPHoneypot(BaseEmulator):
                 pass
 
     async def _record_exchange(
-        self, session_id: str, request_line: str, headers: dict, body: str, response: str
+        self,
+        session_id: str,
+        request_line: str,
+        headers: dict,
+        body: str,
+        response: Union[str, bytes],
+        answered_by: Optional[str] = None,
     ) -> None:
         """Put the request where the backend will see it.
 
@@ -230,11 +335,17 @@ class HTTPHoneypot(BaseEmulator):
             command += f"  [ua: {agent[:300]}]"
         if body:
             command += "\n" + body[:TRANSCRIPT_BODY_CHARS]
+        command = redact_card_data(command)
         status = _status_line(response)
-        await session_manager.record_command(session_id, command, output=status)
-
         accepted = status.split()[1:2] in (["200"], ["302"])
-        for creds in (_basic_credentials(headers), _form_credentials(headers, body)):
+        output = status + ("  [answered by the decoy application]" if answered_by == "decoy" else "")
+        await session_manager.record_command(session_id, command, output=output)
+
+        for creds in (
+            _basic_credentials(headers),
+            _form_credentials(headers, body),
+            _json_credentials(headers, body),
+        ):
             if creds is not None:
                 await session_manager.record_auth_attempt(
                     session_id, creds[0][:256], creds[1][:256], accepted
@@ -260,7 +371,8 @@ class HTTPHoneypot(BaseEmulator):
             agent = headers.get("user-agent")
             await session_manager.record_command(
                 session_id,
-                " ".join(line.split()[:2]) + (f"  [ua: {agent[:300]}]" if agent else ""),
+                redact_card_data(" ".join(line.split()[:2]))
+                + (f"  [ua: {agent[:300]}]" if agent else ""),
                 output="(passive: no response sent)",
             )
 
@@ -320,7 +432,7 @@ class HTTPHoneypot(BaseEmulator):
             "http_request",
             {
                 "method": method,
-                "path": full_path,
+                "path": redact_card_data(full_path),
                 "headers": dict(headers),
                 "body_preview": body[:500] if body else "",
                 "source_ip": source_ip,
@@ -331,6 +443,24 @@ class HTTPHoneypot(BaseEmulator):
             "http_method": method,
             "http_path": path,
         })
+
+        if self._decoy_upstream and self._is_bait(path) and path not in HARMLESS_BAIT:
+            # Answered by the decoy's own bait page below; everything after
+            # it goes to the decoy application.
+            await self._divert(session_id, source_ip, headers, path, f"requested bait path {path}")
+
+        if self._upstream and not self._is_bait(path):
+            # Raw and decoded both: the patterns include encoded forms
+            # (union+select) and decoded ones (<script>).
+            attack = await self._note_attack(
+                session_id, f"{full_path}\n{unquote_plus(full_path)}", PATH_ATTACK_INDICATORS, source_ip
+            )
+            attack = await self._note_attack(session_id, body, BODY_ATTACK_INDICATORS, source_ip, path) or attack
+            if not self._decoy_upstream:
+                return await self._forward(self._upstream, method, full_path, headers, body_bytes, source_ip)
+            return await self._serve_diverting(
+                session_id, method, full_path, path, headers, body, body_bytes, source_ip, attack
+            )
 
         if method == "GET":
             return await self._handle_get(session_id, path, query, headers, source_ip)
@@ -379,42 +509,7 @@ class HTTPHoneypot(BaseEmulator):
                 {"Content-Type": "text/html"},
             )
 
-        attack_indicators = [
-            ("../", "path_traversal"),
-            ("etc/passwd", "etc_passwd_probe"),
-            ("etc/shadow", "etc_shadow_probe"),
-            ("/proc/", "proc_probe"),
-            ("<script>", "xss_attempt"),
-            ("javascript:", "xss_attempt"),
-            ("union+select", "sql_injection"),
-            ("union%20select", "sql_injection"),
-            ("1=1", "sql_injection"),
-            ("1' OR '1'='1", "sql_injection"),
-            ("${jndi:", "log4shell_attempt"),
-            ("${env:", "log4shell_attempt"),
-            ("cmd=", "command_injection"),
-            ("exec(", "command_injection"),
-            ("shell_exec", "command_injection"),
-            ("/etc/passwd", "lfi_attempt"),
-            ("php://filter", "lfi_attempt"),
-            ("php://input", "lfi_attempt"),
-            ("data://", "lfi_attempt"),
-            ("expect://", "lfi_attempt"),
-        ]
-
-        for indicator, attack_type in attack_indicators:
-            if indicator.lower() in path.lower():
-                await session_manager.record_network_event(
-                    session_id, "attack_detected", {
-                        "type": attack_type,
-                        "path": path,
-                        "source_ip": source_ip,
-                    }
-                )
-                await adaptive_engine.profile_actor(session_id, source_ip, {
-                    "attack_type": attack_type,
-                })
-                break
+        await self._note_attack(session_id, path, PATH_ATTACK_INDICATORS, source_ip)
 
         return self._build_response(
             404, "Not Found",
@@ -472,32 +567,237 @@ class HTTPHoneypot(BaseEmulator):
                 {"Content-Type": "text/plain"},
             )
 
-        attack_indicators = [
-            ("<?php", "php_injection"),
-            ("<script>", "xss_attempt"),
-            ("union select", "sql_injection"),
-            ("${jndi:", "log4shell_attempt"),
-            ("cmd=", "command_injection"),
-        ]
-
-        for indicator, attack_type in attack_indicators:
-            if indicator.lower() in body.lower():
-                await session_manager.record_network_event(
-                    session_id, "attack_detected", {
-                        "type": attack_type,
-                        "path": path,
-                        "body_preview": body[:200],
-                    }
-                )
-                await adaptive_engine.profile_actor(session_id, source_ip, {
-                    "attack_type": attack_type,
-                })
-                break
+        await self._note_attack(session_id, body, BODY_ATTACK_INDICATORS, source_ip, path)
 
         return self._build_response(
             200, "OK",
             '{"status": "ok"}\n',
             {"Content-Type": "application/json"},
+        )
+
+    async def _note_attack(
+        self,
+        session_id: str,
+        text: str,
+        indicators: list[tuple[str, str]],
+        source_ip: str,
+        path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Record the first probe pattern found in a path or body; its type."""
+        if not text:
+            return None
+        lowered = text.lower()
+        for indicator, attack_type in indicators:
+            if indicator.lower() in lowered:
+                details = {"type": attack_type, "path": redact_card_data(path or text.split("\n", 1)[0])}
+                if path is None:
+                    details["source_ip"] = source_ip
+                else:
+                    details["body_preview"] = text[:200]
+                await session_manager.record_network_event(session_id, "attack_detected", details)
+                await adaptive_engine.profile_actor(session_id, source_ip, {
+                    "attack_type": attack_type,
+                })
+                return attack_type
+        return None
+
+    async def _serve_diverting(
+        self,
+        session_id: str,
+        method: str,
+        full_path: str,
+        path: str,
+        headers: dict,
+        body: str,
+        body_bytes: bytes,
+        source_ip: str,
+        attack: Optional[str],
+    ) -> Union[str, bytes]:
+        """Have the live or the decoy application answer, by what the client
+        has done so far (see honeypot/security/diversion.py)."""
+        agent = headers.get("user-agent", "")
+        token = request_token(headers, config.http_session_cookie)
+        mark = diversion_table.lookup(source_ip, agent, token)
+        if mark is None:
+            tool = scanner_agent(agent)
+            if attack:
+                mark = await self._divert(session_id, source_ip, headers, path, f"{attack} in the request")
+            elif tool:
+                mark = await self._divert(session_id, source_ip, headers, path, f"attack tool user agent ({tool})")
+        else:
+            await self._note_diversion(session_id, mark, path)
+
+        if mark is not None:
+            self._answered_by[session_id] = "decoy"
+            response = await self._forward(self._decoy_upstream, method, full_path, headers, body_bytes, source_ip)
+            if isinstance(response, bytes):
+                diversion_table.adopt(issued_tokens(response, config.http_session_cookie), mark)
+            return response
+
+        response = await self._forward(self._upstream, method, full_path, headers, body_bytes, source_ip)
+        limit = diversion_table.failed_login_limit
+        if limit and _status_line(response).split()[1:2] in (["401"], ["403"]) and (
+            _basic_credentials(headers) or _form_credentials(headers, body) or _json_credentials(headers, body)
+        ):
+            failures = diversion_table.failed_login(source_ip, agent)
+            if failures >= limit:
+                # This answer was the live application's; the next one won't be.
+                await self._divert(
+                    session_id, source_ip, headers, path,
+                    f"{failures} failed logins in {FAILED_LOGIN_WINDOW // 60} minutes",
+                )
+        return response
+
+    async def _divert(
+        self, session_id: str, source_ip: str, headers: dict, path: str, reason: str
+    ) -> Mark:
+        """Send this client to the decoy application from now on."""
+        agent = headers.get("user-agent", "")
+        token = request_token(headers, config.http_session_cookie)
+        mark = diversion_table.lookup(source_ip, agent, token)
+        if mark is None:
+            mark = diversion_table.divert(source_ip, agent, token, reason)
+            logger.info(f"HTTP client {source_ip} diverted to the decoy application: {reason}")
+        await self._note_diversion(session_id, mark, path)
+        return mark
+
+    async def _note_diversion(self, session_id: str, mark: Mark, path: str) -> None:
+        """Record, once per session, that the decoy application answered it
+        and why the client was diverted."""
+        session = await session_manager.get_session(session_id)
+        if session is None or session.metadata.get("diverted"):
+            return
+        session.metadata["diverted"] = True
+        await session_manager.record_network_event(session_id, "http_diversion", {
+            "reason": mark.reason,
+            "path": redact_card_data(path),
+            "since": mark.since,
+        })
+
+    def _is_bait(self, path: str) -> bool:
+        return path in self._bait_paths or path.startswith(("/wp-content/", "/wp-includes/"))
+
+    async def _send_response(self, writer: asyncio.StreamWriter, response: Union[str, bytes]):
+        if isinstance(response, bytes):
+            # An application's own answer: its timing is real, so no jitter.
+            writer.write(response)
+            await writer.drain()
+            return
+        await super()._send_response(writer, response)
+
+    async def _forward(
+        self,
+        upstream: tuple[str, int],
+        method: str,
+        target: str,
+        headers: dict,
+        body: bytes,
+        source_ip: str,
+    ) -> Union[str, bytes]:
+        """Have an upstream application answer, and relay its response.
+
+        One upstream connection per request (Connection: close), so nothing an
+        attacker sends can be smuggled into another client's exchange. The
+        client's connection is kept alive unless it asked otherwise: a browser
+        loads a page over a few connections instead of one per asset, which
+        keeps a real visit under the per-address rate limit.
+        """
+        host, port = upstream
+        lines = [f"{method} {target} HTTP/1.1"]
+        for name, value in headers.items():
+            if name in HOP_BY_HOP or name in ("content-length", "x-forwarded-for", "x-forwarded-proto"):
+                continue
+            lines.append(f"{name}: {value}")
+        lines += [
+            f"X-Forwarded-For: {source_ip}",
+            f"X-Forwarded-Proto: {'https' if self.use_tls else 'http'}",
+            "Connection: close",
+        ]
+        if body or method in ("POST", "PUT", "PATCH"):
+            lines.append(f"Content-Length: {len(body)}")
+        request = ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + body
+
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
+        except (OSError, asyncio.TimeoutError) as exc:
+            logger.warning(f"HTTP upstream {host}:{port} unreachable: {exc}")
+            return self._bad_gateway(headers)
+        try:
+            writer.write(request)
+            await writer.drain()
+            status = await asyncio.wait_for(reader.readline(), timeout=30)
+            if not status.startswith(b"HTTP/1."):
+                return self._bad_gateway(headers)
+            response_headers: list[tuple[str, str]] = []
+            while len(response_headers) < self.MAX_HEADER_COUNT:
+                line = await asyncio.wait_for(reader.readline(), timeout=30)
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                name, _, value = line.decode("latin-1").partition(":")
+                response_headers.append((name.strip(), value.strip()))
+            found = {name.lower(): value for name, value in response_headers}
+            code = status.split()[1:2]
+            if method == "HEAD" or code in ([b"204"], [b"304"]) or code[:1] and code[0].startswith(b"1"):
+                payload = b""
+            elif "chunked" in found.get("transfer-encoding", "").lower():
+                payload = await self._read_chunked(reader)
+            elif "content-length" in found:
+                length = int(found["content-length"])
+                if length > MAX_UPSTREAM_RESPONSE_BYTES:
+                    return self._bad_gateway(headers)
+                payload = await asyncio.wait_for(reader.readexactly(length), timeout=60)
+            else:
+                payload = await asyncio.wait_for(self._read_to_end(reader), timeout=60)
+        except (OSError, ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError) as exc:
+            logger.warning(f"HTTP upstream {host}:{port} failed: {exc}")
+            return self._bad_gateway(headers)
+        finally:
+            writer.close()
+
+        out = [status.decode("latin-1").rstrip("\r\n")]
+        for name, value in response_headers:
+            if name.lower() in HOP_BY_HOP or (name.lower() == "content-length" and method != "HEAD"):
+                continue
+            out.append(f"{name}: {value}")
+        if "server" not in found:
+            out.append(f"Server: {self.get_banner()}")
+        if method != "HEAD":
+            out.append(f"Content-Length: {len(payload)}")
+        keep_alive = headers.get("connection", "").lower() != "close"
+        out.append(f"Connection: {'keep-alive' if keep_alive else 'close'}")
+        return ("\r\n".join(out) + "\r\n\r\n").encode("latin-1") + payload
+
+    async def _read_chunked(self, reader: asyncio.StreamReader) -> bytes:
+        payload = b""
+        while True:
+            size_line = await asyncio.wait_for(reader.readline(), timeout=30)
+            size = int(size_line.split(b";", 1)[0].strip() or b"0", 16)
+            if size == 0:
+                while (await asyncio.wait_for(reader.readline(), timeout=30)) not in (b"\r\n", b"\n", b""):
+                    pass
+                return payload
+            if len(payload) + size > MAX_UPSTREAM_RESPONSE_BYTES:
+                raise ValueError("upstream response too large")
+            payload += await asyncio.wait_for(reader.readexactly(size), timeout=60)
+            await reader.readline()
+
+    async def _read_to_end(self, reader: asyncio.StreamReader) -> bytes:
+        payload = b""
+        while chunk := await reader.read(65536):
+            payload += chunk
+            if len(payload) > MAX_UPSTREAM_RESPONSE_BYTES:
+                raise ValueError("upstream response too large")
+        return payload
+
+    def _bad_gateway(self, headers: dict) -> str:
+        return self._build_response(
+            502, "Bad Gateway",
+            '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n'
+            "<html><head>\n<title>502 Bad Gateway</title>\n</head><body>\n"
+            "<h1>Bad Gateway</h1>\n"
+            "<p>The proxy server received an invalid response from an upstream server.</p>\n"
+            "</body></html>\n",
+            {"Content-Type": "text/html; charset=UTF-8"},
         )
 
     async def _handle_head(

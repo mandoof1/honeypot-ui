@@ -73,6 +73,22 @@ cd /opt/honeysentinel && sudo git pull
 sudo bash deploy/server/install.sh
 ```
 
+## A real website behind the HTTP decoys
+
+`HONEYPOT_HTTP_UPSTREAM=http://host:port` makes the HTTP and HTTPS decoys front a real application. Each request is recorded exactly as before (transcript, JSON or form logins as credentials, uploads, probe detection), then forwarded to the application, and its response is relayed back. Bait paths (`/.env`, `/wp-login.php`, `/phpmyadmin`, ...) are still answered by the decoy; `HONEYPOT_HTTP_UPSTREAM_OWNS` hands named bait paths to the application instead. Card numbers (Luhn-valid digit runs) and CVC fields are masked in everything the engine stores; the forwarded request is untouched. Client connections are kept alive, so a browser stays under the per-address connection limit.
+
+The reference server uses this to serve the Bolt & Batten practice shop, a separate project built from `/opt/bolt-and-batten`. Its setup is `docker-compose.override.example.yml`: copy it to `docker-compose.override.yml` (git ignores that name; Compose merges it automatically), add `SHOP_ADMIN_PASSWORD` and `SHOP_SEED_TIME` (an ISO date) to `.env`, and re-run `install.sh`. Remove the override file and run `docker compose up -d --remove-orphans` to go back to the decoy's own pages.
+
+### Diverting attackers to a decoy copy
+
+`HONEYPOT_HTTP_DECOY_UPSTREAM=http://host:port` adds a second copy of the application, and the override runs the shop twice: `shop` (live) and `shop-decoy`. Every client starts on the live copy. One that gives itself away is answered by the decoy copy from then on: a request for a bait path (`/.env`, `/wp-login.php`, ...; not `/robots.txt` or `/sitemap.xml`), an attack pattern in the path, query or body, an attack tool's user agent (sqlmap, nikto, nuclei, ...), or `HONEYPOT_HTTP_DIVERT_FAILED_LOGINS` (10) failed logins within ten minutes. A client is its address plus user agent, so other people behind the same address are not diverted with it, and the session cookie named by `HONEYPOT_HTTP_SESSION_COOKIE` (`sid`) follows it if its address changes. The mark lapses after `HONEYPOT_HTTP_DIVERT_TTL` seconds (6 h) without a request, and an engine restart clears it. Diverted sessions carry an `http_diversion` event with the reason, shown on the dashboard as "Diverted to decoy", and each request the decoy copy answered is marked in the transcript.
+
+The copies come from the same generator (`SHOP_ROLE` in the shop's `server/seed.js`): identical catalog, prices and reviews, dated as of `SHOP_SEED_TIME` so their pages match, but the decoy's customers have different emails, phones and addresses and its orders different shipping details and card digits. The decoy keeps the demo passwords (`admin1234`, `password123`) as bait; on the live copy no account has a known password, and the admin's is `SHOP_ADMIN_PASSWORD` (in `.env`; also in `state/shop-admin-credentials`, root only). Each copy is on its own internal network with the engine, so a compromised decoy cannot reach the live one.
+
+What it cannot do: an attack none of those signals recognises reaches the live copy, as does everything an attacker sends before the first request that gives them away. A client signed in on the live copy appears signed out once diverted, since the decoy does not know its session.
+
+`honeysentinel-shop-reset.timer` (enabled by `install.sh` when the override defines `shop`) runs `reset-shop.sh` nightly at about 04:15. It backs up the live copy without stopping it and regenerates the decoy copy, keeping the decoy's database as it stood (both to `/var/backups/honeysentinel/shop/`, 14 days), so nothing an attacker changed survives the night. The decoy copy is down for about 20 seconds meanwhile. With a single shop and no decoy copy, it resets that shop instead. Run `./reset-shop.sh` by hand to do it immediately.
+
 ## Exposing the honeypot to the internet
 
 The emulators listen on high ports on every interface. To receive real
