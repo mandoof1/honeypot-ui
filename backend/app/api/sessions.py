@@ -416,7 +416,9 @@ async def ingest_session(
     session_data: dict,
     node_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_role("analyst")),
+    # Admin only: this writes a session that is indistinguishable from a
+    # capture and can raise alerts, so it is not an analyst capability.
+    current_user: dict = Depends(require_role("admin")),
 ):
     node_result = await db.execute(select(HoneypotNode).where(HoneypotNode.id == node_id))
     node = node_result.scalar_one_or_none()

@@ -16,6 +16,8 @@ export function AuthProvider({ children }) {
   const mounted = useRef(true)
 
   const logout = useCallback(() => {
+    // Tell the server first (it reads the token from storage), then clear.
+    api.auth.logout?.()
     clearTokens()
     setUser(null)
   }, [])

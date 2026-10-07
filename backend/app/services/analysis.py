@@ -637,18 +637,7 @@ class DashboardService:
         top_ips_result = await db.execute(top_ips_q)
         top_attacker_ips = [{"ip": ip, "country": country, "count": count} for ip, country, count in top_ips_result.all()]
 
-        top_tools_q = select(HoneypotSession.detected_tools).where(HoneypotSession.detected_tools.isnot(None))
-        top_tools_result = await db.execute(top_tools_q)
-        tool_counts = {}
-        for row in top_tools_result.scalars().all():
-            if isinstance(row, list):
-                for tool in row:
-                    tool_counts[tool] = tool_counts.get(tool, 0) + 1
-        top_tools_detected = sorted(
-            [{"tool": k, "count": v} for k, v in tool_counts.items()],
-            key=lambda x: x["count"],
-            reverse=True,
-        )[:10]
+        top_tools_detected = await self._top_tools(db)
 
         return DashboardStats(
             total_sessions=total,
@@ -664,6 +653,44 @@ class DashboardService:
             top_attacker_ips=top_attacker_ips,
             top_tools_detected=top_tools_detected,
         )
+
+    async def _top_tools(self, db: AsyncSession) -> List[Dict]:
+        """Tool frequency across sessions.
+
+        On Postgres the JSONB array is unnested and counted in SQL; the old
+        version pulled every session's list into Python on each dashboard
+        poll, which does not scale past a few thousand sessions. SQLite (the
+        test database) keeps the Python fallback.
+        """
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            from sqlalchemy import text
+
+            rows = (
+                await db.execute(
+                    text(
+                        "SELECT tool, COUNT(*) AS n FROM honeypot_sessions, "
+                        "jsonb_array_elements_text(detected_tools) AS tool "
+                        "WHERE detected_tools IS NOT NULL AND jsonb_typeof(detected_tools) = 'array' "
+                        "GROUP BY tool ORDER BY n DESC LIMIT 10"
+                    )
+                )
+            ).all()
+            return [{"tool": r.tool, "count": int(r.n)} for r in rows]
+
+        result = await db.execute(
+            select(HoneypotSession.detected_tools).where(HoneypotSession.detected_tools.isnot(None))
+        )
+        tool_counts: Dict[str, int] = {}
+        for row in result.scalars().all():
+            if isinstance(row, list):
+                for tool in row:
+                    tool_counts[tool] = tool_counts.get(tool, 0) + 1
+        return sorted(
+            [{"tool": k, "count": v} for k, v in tool_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:10]
 
     async def get_live_events(self, db: AsyncSession, limit: int = 50) -> List[Dict]:
         q = (

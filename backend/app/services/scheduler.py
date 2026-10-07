@@ -224,6 +224,7 @@ async def housekeeping_tick(db: AsyncSession) -> dict:
     summary["outbox_pruned"] = await outbox.prune(db)
     summary["otp_cleaned"] = await _cleanup_otp(db)
     summary["payloads_requeued"] = await _requeue_pending_payloads(db)
+    summary["refresh_tokens_pruned"] = await _prune_refresh_tokens(db)
     if any(summary.values()):
         logger.info("Housekeeping: %s", summary)
     return summary
@@ -276,6 +277,22 @@ async def _cleanup_otp(db: AsyncSession) -> int:
     await db.commit()
     after = (await db.execute(select(func.count(OTPVerification.id)))).scalar() or 0
     return max(0, before - after)
+
+
+async def _prune_refresh_tokens(db: AsyncSession) -> int:
+    """Expired rows, and revoked rows older than a week (kept briefly so a
+    reuse attempt can still be recognised and audited)."""
+    from app.models import RefreshToken
+
+    now = _now()
+    result = await db.execute(
+        delete(RefreshToken).where(
+            (RefreshToken.expires_at < now)
+            | (RefreshToken.revoked_at.isnot(None)) & (RefreshToken.revoked_at < now - timedelta(days=7))
+        )
+    )
+    await db.commit()
+    return result.rowcount or 0
 
 
 async def _requeue_pending_payloads(db: AsyncSession) -> int:

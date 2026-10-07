@@ -101,6 +101,10 @@ append_env WOLFRAM_THREADS           "# WOLFRAM_THREADS=6               # CPU th
 WEB_PORT=$(grep -E '^WEB_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || true)
 WEB_PORT=${WEB_PORT:-8088}
 
+if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+  echo "WARNING: the clock is not NTP-synchronised; authenticator codes and evidence timestamps depend on it (timedatectl set-ntp true)." >&2
+fi
+
 echo "==> 2/7  TLS certificates"
 tls="$STATE/pg-tls"
 if [[ ! -f "$tls/server.key" ]]; then
@@ -121,8 +125,11 @@ fi
 decoy_tls="$STATE/decoy-tls"
 if [[ ! -f "$decoy_tls/server.key" ]]; then
   install -d -m 0755 "$decoy_tls"
+  # A different plausible name per install: one CN on every deployment of
+  # this project would let them be grouped from a certificate scan.
+  decoy_cn=$(printf '%s\n' web01 web-prod-02 app-node-1 srv-web-03 edge-01 www2 portal-01 | shuf -n1)
   openssl req -x509 -newkey rsa:2048 -nodes -days 1095 -sha256 \
-    -subj "/CN=web-server-01" -addext "subjectAltName=DNS:web-server-01" \
+    -subj "/CN=${decoy_cn}" -addext "subjectAltName=DNS:${decoy_cn}" \
     -keyout "$decoy_tls/server.key" -out "$decoy_tls/server.crt" 2>/dev/null
   # uid 10001 is the engine's user in honeypot/Dockerfile.
   chown 10001:10001 "$decoy_tls/server.key" "$decoy_tls/server.crt"

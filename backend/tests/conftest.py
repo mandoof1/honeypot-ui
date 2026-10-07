@@ -51,6 +51,17 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def fresh_user_state_cache():
+    """The revocation-state cache is process-wide and keyed by user id;
+    every test database restarts ids at 1, so entries would leak across."""
+    from app.core import security
+
+    security._user_state_cache.clear()
+    yield
+    security._user_state_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def disable_rate_limiting():
     """Every test shares one client address, so the per-IP limits would
     otherwise bleed across tests. Rate limiting itself is covered explicitly

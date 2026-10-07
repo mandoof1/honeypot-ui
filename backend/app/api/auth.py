@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -19,11 +19,13 @@ from app.core.security import (
     decode_token,
     get_current_user,
     get_password_hash,
+    invalidate_user_state,
     needs_rehash,
+    new_jti,
     require_role,
     verify_password,
 )
-from app.models import AuditLog, User, UserRole
+from app.models import AuditLog, RefreshToken, User, UserRole
 from app.schemas import (
     AdminPasswordReset,
     PasswordChange,
@@ -66,13 +68,53 @@ def _client_ip(request: Request) -> str | None:
     return client_ip(request)
 
 
-def _token_pair(user: User) -> dict:
-    claims = {"sub": str(user.id), "email": user.email, "role": user.role.value}
+def _claims(user: User) -> dict:
+    return {
+        "sub": str(user.id),
+        "email": user.email,
+        "role": user.role.value,
+        "ver": int(user.token_version or 0),
+    }
+
+
+async def _issue_tokens(
+    db: AsyncSession, user: User, request: Request | None, family: str | None = None
+) -> dict:
+    """Mint an access/refresh pair and record the refresh token.
+
+    The row is what makes sign-out, rotation and reuse detection possible;
+    a refresh token with no row (minted before this existed) is refused.
+    """
+    cfg = get_settings()
+    jti = new_jti()
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            jti=jti,
+            family=family or jti,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=cfg.REFRESH_TOKEN_EXPIRE_DAYS),
+            ip_address=_client_ip(request) if request is not None else None,
+        )
+    )
+    await db.commit()
+    claims = _claims(user)
     return {
         "access_token": create_access_token(claims),
-        "refresh_token": create_refresh_token(claims),
+        "refresh_token": create_refresh_token(claims, jti=jti),
         "token_type": "bearer",
     }
+
+
+async def _sign_out_everywhere(db: AsyncSession, user: User, reason: str) -> None:
+    """Revoke the user's refresh tokens and invalidate their access tokens."""
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=now, replaced_by=reason[:64])
+    )
+    user.token_version = int(user.token_version or 0) + 1
+    invalidate_user_state(user.id)
 
 
 @router.post(
@@ -243,6 +285,7 @@ async def reset_password(
         raise HTTPException(status_code=400, detail=verification["reason"])
 
     user.hashed_password = get_password_hash(data.new_password)
+    await _sign_out_everywhere(db, user, "password-reset")
     db.add(
         AuditLog(
             user_id=user.id,
@@ -362,7 +405,7 @@ async def login(
     )
     await db.commit()
 
-    return _token_pair(user)
+    return await _issue_tokens(db, user, request)
 
 
 def _verify_second_factor(user: User, code: str) -> bool:
@@ -511,6 +554,12 @@ async def refresh_token(
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+    row = (
+        await db.execute(select(RefreshToken).where(RefreshToken.jti == str(claims.get("jti", ""))))
+    ).scalar_one_or_none()
+    if row is None or row.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active or not user.is_verified:
@@ -518,7 +567,82 @@ async def refresh_token(
             status_code=401, detail="User not found or disabled"
         )
 
-    return _token_pair(user)
+    now = datetime.now(timezone.utc)
+    if row.revoked_at is not None:
+        # A token that was already exchanged is being presented again. One
+        # of the two holders is not the user; neither can keep the family.
+        await db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.family == row.family, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=now, replaced_by="reuse")
+        )
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action="refresh_token_reuse",
+                resource_type="user",
+                resource_id=user.id,
+                ip_address=_client_ip(request),
+                details={"family": row.family},
+            )
+        )
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+
+    # Rotate: the presented token is spent, its successor continues the family.
+    row.revoked_at = now
+    tokens = await _issue_tokens(db, user, request, family=row.family)
+    row.replaced_by = decode_token(tokens["refresh_token"], REFRESH_TOKEN_TYPE)["jti"]
+    await db.commit()
+    return tokens
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    payload: RefreshRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a refresh token (and its family). Idempotent; no session needed."""
+    try:
+        claims = decode_token(payload.refresh_token, REFRESH_TOKEN_TYPE)
+    except HTTPException:
+        return {"message": "Signed out"}
+    row = (
+        await db.execute(select(RefreshToken).where(RefreshToken.jti == str(claims.get("jti", ""))))
+    ).scalar_one_or_none()
+    if row is not None:
+        await db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.family == row.family, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc), replaced_by="logout")
+        )
+        db.add(
+            AuditLog(user_id=row.user_id, action="user_logout", resource_type="user",
+                     resource_id=row.user_id, ip_address=_client_ip(request))
+        )
+        await db.commit()
+    return {"message": "Signed out"}
+
+
+@router.post("/logout-all")
+async def logout_everywhere(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Sign out of every device: every refresh token revoked, every access
+    token invalidated. The caller must sign in again too."""
+    user = (await db.execute(select(User).where(User.id == current_user["id"]))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await _sign_out_everywhere(db, user, "logout-all")
+    db.add(
+        AuditLog(user_id=user.id, action="user_logout_all", resource_type="user",
+                 resource_id=user.id, ip_address=_client_ip(request))
+    )
+    await db.commit()
+    return {"message": "Signed out everywhere"}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -606,6 +730,7 @@ async def update_user_role(
         )
 
     user.role = UserRole(payload.role.value)
+    invalidate_user_state(user.id)
     db.add(
         AuditLog(
             user_id=current_user["id"],
@@ -644,6 +769,9 @@ async def update_user(
     if changes.get("is_active"):
         user.failed_login_count = 0
         user.locked_until = None
+    if changes.get("is_active") is False:
+        await _sign_out_everywhere(db, user, "deactivated")
+    invalidate_user_state(user.id)
     db.add(
         AuditLog(
             user_id=current_user["id"],
@@ -675,6 +803,7 @@ async def admin_reset_mfa(
     user.totp_secret_encrypted = None
     user.totp_recovery_hashes = None
     user.totp_enrolled_at = None
+    await _sign_out_everywhere(db, user, "mfa-reset")
     db.add(
         AuditLog(
             user_id=current_user["id"],
@@ -705,6 +834,7 @@ async def admin_reset_password(
     user.hashed_password = get_password_hash(payload.new_password)
     user.failed_login_count = 0
     user.locked_until = None
+    await _sign_out_everywhere(db, user, "admin-reset")
     db.add(
         AuditLog(
             user_id=current_user["id"],
@@ -736,6 +866,7 @@ async def change_password(
     if payload.current_password == payload.new_password:
         raise HTTPException(status_code=400, detail="New password must differ from the current one")
     user.hashed_password = get_password_hash(payload.new_password)
+    await _sign_out_everywhere(db, user, "password-change")
     db.add(
         AuditLog(
             user_id=user.id,
