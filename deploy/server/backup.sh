@@ -7,9 +7,9 @@
 #   db.sql.gz          logical dump of Postgres (sessions, alerts, samples;
 #                      transcripts and payload bytes are encrypted inside it)
 #   config.tar.gz      deploy/server/.env, docker-compose.override.yml and
-#                      state/ (TLS keys, admin credentials, GeoIP) — WITHOUT
-#                      these, and ENCRYPTION_KEY in particular, the dump is
-#                      unreadable
+#                      state/ (TLS keys, admin credentials, GeoIP; not the
+#                      model file) — WITHOUT these, and ENCRYPTION_KEY in
+#                      particular, the dump is unreadable
 #   engine-data.tar.gz the engine's volume: SSH host keys and identity (so a
 #                      rebuilt box looks like the same box), local captures,
 #                      uploads, spool
@@ -36,8 +36,10 @@ docker compose exec -T postgres pg_dump -U honeypot -d honeysentinel --clean --i
 gunzip -c "$work/db.sql.gz" | tail -n 5 | grep -q 'PostgreSQL database dump complete' \
   || { echo "pg_dump did not complete" >&2; exit 1; }
 
+# state/models holds the multi-gigabyte analysis model, which is not
+# configuration and is kept elsewhere; copy it back by hand on a rebuild.
 tar -czf "$work/config.tar.gz" \
-  --exclude='state/geoip/*.part' \
+  --exclude='state/geoip/*.part' --exclude='state/models' \
   .env state $(ls docker-compose.override.yml 2>/dev/null)
 
 volume="$(docker compose config --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["volumes"]["honeypot_data"]["name"])' 2>/dev/null || echo honeysentinel_honeypot_data)"

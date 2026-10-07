@@ -21,9 +21,10 @@
 		# Tailscale Serve terminates TLS; this is what the browser sees.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		# Tokens live in localStorage, so script injection is the thing to
-		# shut out: scripts and styles only from this origin (Vite inlines
-		# nothing), map tiles from OpenStreetMap, API calls to self only.
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# shut out: scripts only from this origin (Vite inlines nothing),
+		# styles and fonts from here and Google Fonts (index.html), map tiles
+		# from OpenStreetMap, API calls to self only.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 
