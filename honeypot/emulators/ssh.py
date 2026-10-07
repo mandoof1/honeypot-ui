@@ -32,15 +32,16 @@ import asyncssh
 from honeypot.capture.flow import FlowMeter
 from honeypot.capture.sftp import DecoySFTPServer, wait_for_transfers
 from honeypot.capture.shell_capture import capture_command, flush_session_files
-from honeypot.capture.shell_writes import needs_continuation
+from honeypot.capture.shell_writes import HeredocBuffer, needs_continuation
 from honeypot.core.config import config
 from honeypot.core.session import session_manager
 from honeypot.core.shell_state import shell_states
-from honeypot.adaptive.ssh_profile import apply_extra_kex_algs, get_profile
+from honeypot.adaptive.ssh_profile import apply_extra_kex_algs, apply_host_key_algs, get_profile
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
 from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.adaptive.response import adaptive_engine
+from honeypot.security.rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,16 @@ SOFT_ACCEPT_AFTER = 3
 _failures_by_ip: dict[str, int] = {}
 _MAX_TRACKED_IPS = 4096
 
+#: Session-closing tasks spawned from connection_lost. asyncio keeps only a
+#: weak reference to a task, so an unreferenced one can be collected before
+#: it runs — and these are the tasks that flush captured files and deliver
+#: the session.
+_close_tasks: set[asyncio.Task] = set()
+
+#: Default idle timeout for an interactive shell when HONEYPOT_CONN_TIMEOUT
+#: is unset.
+DEFAULT_IDLE_TIMEOUT = 300
+
 
 class _SessionState:
     def __init__(self) -> None:
@@ -102,24 +113,50 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         self.source_ip = "0.0.0.0"
         self.source_port = 0
         self.flow: Optional[FlowMeter] = None
+        self.admitted = False
+        self.connected_at = 0.0
+        self._conn: Optional[asyncssh.SSHServerConnection] = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         peer = conn.get_extra_info("peername")
         if peer:
             self.source_ip, self.source_port = peer[0], peer[1]
+        self._conn = conn
+        self.connected_at = asyncio.get_running_loop().time()
         conn.set_extra_info(honeypot_server=self)
+        # Admission before the key exchange: a blocked or over-quota address
+        # used to be refused only in begin_auth, after it had cost a full KEX
+        # on the event loop.
+        self.admitted = rate_limiter.admit(self.source_ip)
+        if not self.admitted:
+            logger.warning("SSH connection from %s refused at accept", self.source_ip)
+            conn.abort()
+            return
+        self._emulator.track(conn)
         # Before asyncssh sends its version string, so the key exchange is
         # counted too.
         self.flow = FlowMeter.for_ssh(conn)
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
+        if self.admitted:
+            rate_limiter.release(self.source_ip)
+            self.admitted = False
+        if self._conn is not None:
+            self._emulator.untrack(self._conn)
         if self.state.session_id:
             # connection_lost is synchronous; hand the close off to the loop.
             # The shell state is taken *now*, before anything else can drop
             # it: it holds the content of every file the session wrote, and
             # the session must not be finalised until those are recorded.
             shell = shell_states.pop(self.state.session_id)
-            asyncio.create_task(_close_session(self.state.session_id, shell))
+            task = asyncio.create_task(_close_session(self.state.session_id, shell))
+            _close_tasks.add(task)
+            task.add_done_callback(_close_tasks.discard)
+
+    def seconds_left(self) -> float:
+        """Time remaining before the connection hits the session cap."""
+        elapsed = asyncio.get_running_loop().time() - self.connected_at
+        return max(0.0, config.max_session_seconds - elapsed)
 
     async def begin_auth(self, username: str) -> bool:
         """Open the session here — the first point with a username and a loop.
@@ -129,7 +166,7 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         valuable thing an SSH honeypot collects.
         """
         if self.state.session_id is None:
-            if not await self._emulator.rate_limit_ok(self.source_ip):
+            if not self.admitted or not await self._emulator.rate_limit_ok(self.source_ip):
                 logger.warning("SSH rate limit exceeded for %s", self.source_ip)
                 raise asyncssh.DisconnectError(
                     asyncssh.DISC_TOO_MANY_CONNECTIONS, "Too many connections"
@@ -239,6 +276,17 @@ class SSHHoneypot(BaseEmulator):
         super().__init__("ssh", config.ssh_port)
         self._hostname = fingerprint_engine.get_fake_hostname()
         self._acceptor: Optional[asyncssh.SSHAcceptor] = None
+        self._connections: set[asyncssh.SSHServerConnection] = set()
+
+    def track(self, conn: asyncssh.SSHServerConnection) -> None:
+        self._connections.add(conn)
+
+    def untrack(self, conn: asyncssh.SSHServerConnection) -> None:
+        self._connections.discard(conn)
+
+    @property
+    def active_connections(self) -> int:
+        return len(self._connections)
 
     def get_banner(self) -> str:
         return fingerprint_engine.get_ssh_banner()
@@ -307,6 +355,7 @@ class SSHHoneypot(BaseEmulator):
         # offers nine. Pinning the proposal is what makes the banner true.
         profile = get_profile(config.ssh_profile)
         apply_extra_kex_algs(profile)
+        apply_host_key_algs(profile)
 
         self._acceptor = await asyncssh.listen(
             config.bind_address,
@@ -340,6 +389,17 @@ class SSHHoneypot(BaseEmulator):
         if self._acceptor:
             self._acceptor.close()
             await self._acceptor.wait_closed()
+        # The acceptor only stops listening; open connections used to live
+        # on until the process was killed, which skipped their session close
+        # and lost whatever they had captured.
+        for conn in list(self._connections):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        pending = list(_close_tasks)
+        if pending:
+            await asyncio.wait(pending, timeout=5)
         logger.info("SSH honeypot stopped")
 
     async def _handle_process(self, process: asyncssh.SSHServerProcess) -> None:
@@ -347,6 +407,27 @@ class SSHHoneypot(BaseEmulator):
         server: _HoneypotSSHServer = conn.get_extra_info("honeypot_server")
         state = server.state
 
+        try:
+            # The whole channel, exec or shell, lives within the session cap.
+            await asyncio.wait_for(
+                self._serve_process(process, server, state), timeout=server.seconds_left()
+            )
+        except asyncio.TimeoutError:
+            try:
+                process.stdout.write(b"\r\nConnection closed by remote host.\r\n")
+            except Exception:
+                pass
+        except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
+            pass
+        except (BrokenPipeError, ConnectionResetError, asyncio.CancelledError):
+            pass
+        except Exception as exc:
+            logger.error("SSH session error: %s", exc, exc_info=True)
+        finally:
+            if not process.is_closing():
+                process.exit(0)
+
+    async def _serve_process(self, process, server, state) -> None:
         try:
             if process.command:
                 # `ssh host 'command'` — how most automated campaigns arrive.
@@ -365,13 +446,6 @@ class SSHHoneypot(BaseEmulator):
                 await self._interactive_shell(process, server, state)
         except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
             pass
-        except (BrokenPipeError, ConnectionResetError, asyncio.CancelledError):
-            pass
-        except Exception as exc:
-            logger.error("SSH session error: %s", exc)
-        finally:
-            if not process.is_closing():
-                process.exit(0)
 
     async def _run_command(self, process, server, state, command: str) -> None:
         command = command[:MAX_COMMAND_LENGTH]
@@ -406,12 +480,13 @@ class SSHHoneypot(BaseEmulator):
 
         buffer = ""
         #: Lines of a heredoc still waiting for their delimiter.
-        pending = ""
+        pending: Optional[HeredocBuffer] = None
         #: Without a terminal the input is a script, where tabs are content.
         keep_tabs = process.get_terminal_type() is None
+        idle_timeout = config.connection_timeout or DEFAULT_IDLE_TIMEOUT
         while not process.stdin.at_eof():
             try:
-                data = await asyncio.wait_for(process.stdin.read(1024), timeout=300)
+                data = await asyncio.wait_for(process.stdin.read(1024), timeout=idle_timeout)
             except asyncio.TimeoutError:
                 process.stdout.write(b"\r\nConnection timed out.\r\n")
                 return
@@ -426,21 +501,23 @@ class SSHHoneypot(BaseEmulator):
 
                 if char in ("\r", "\n"):
                     process.stdout.write(b"\r\n")
-                    if pending:
+                    if pending is not None:
                         # Inside a heredoc: the line is content, whitespace
-                        # and all, until the delimiter closes it.
-                        pending += buffer + "\n"
+                        # and all, until the delimiter closes it. Each line
+                        # is checked against the delimiter owed, not re-lexed
+                        # with everything before it.
+                        pending.feed(buffer)
                         buffer = ""
-                        if needs_continuation(pending) and len(pending) < MAX_COMMAND_LENGTH:
+                        if pending.open:
                             process.stdout.write(b"> ")
                             continue
-                        command, pending = pending.rstrip("\n"), ""
+                        command, pending = pending.text(), None
                     else:
                         command = buffer.strip()
                         buffer = ""
                         if command and needs_continuation(command):
                             # bash keeps reading until the heredoc closes.
-                            pending = command + "\n"
+                            pending = HeredocBuffer(command, MAX_COMMAND_LENGTH)
                             process.stdout.write(b"> ")
                             continue
                     if not command:

@@ -54,24 +54,35 @@ def _generate_self_signed() -> Optional[tuple[str, str]]:
     except ImportError:
         return None
 
-    from honeypot.adaptive.fingerprint import fingerprint_engine
+    from honeypot.core.identity import get_identity
 
-    common_name = fingerprint_engine.get_fake_hostname()
+    identity = get_identity()
+    common_name = identity.fqdn
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name(
         [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
     )
-    now = datetime.datetime.now(datetime.timezone.utc)
+    # Validity is anchored to the identity, not to boot time: a NotBefore that
+    # tracked each restart leaked exactly when the honeypot was restarted. A
+    # self-signed host certificate that is a few months old and valid for a
+    # year is what an ordinary box presents.
+    import random as _random
+
+    span = _random.Random(identity.seed).randint(60, 300)
+    anchor = datetime.datetime.fromtimestamp(identity.boot_time, tz=datetime.timezone.utc)
+    not_before = anchor - datetime.timedelta(days=span)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=365))
+        .not_valid_before(not_before)
+        .not_valid_after(not_before + datetime.timedelta(days=397))
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(common_name)]),
+            x509.SubjectAlternativeName(
+                [x509.DNSName(common_name), x509.DNSName(identity.hostname)]
+            ),
             critical=False,
         )
         .sign(key, hashes.SHA256())

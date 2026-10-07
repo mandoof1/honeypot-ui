@@ -62,11 +62,22 @@ class SSHProfile:
     #: 8.2p1 source, so an 8.2 server sends neither.
     extra_kex_algs: tuple[str, ...] = ()
 
-    #: Host key types a stock install of this release actually has. Ubuntu and
-    #: Debian generate all three at package install, so a server offering only
-    #: ed25519 is already unusual.
+    #: The server host-key algorithm name-list, in the order OpenSSH 8.2 sends
+    #: it when ed25519, RSA and ECDSA-p256 keys are present — which a stock
+    #: Ubuntu/Debian install has, because the package postinst generates all
+    #: three. asyncssh instead derives this from the RSA keypair's signature
+    #: algorithms, which include ``ssh-rsa-sha256@ssh.com`` and three more
+    #: ``@ssh.com`` names that no OpenSSH has ever offered — a one-packet tell
+    #: in the very KEXINIT this profile exists to make honest. Applied by
+    #: :func:`apply_host_key_algs`.
     host_key_algs: tuple[str, ...] = field(
-        default=("ssh-ed25519", "rsa-sha2-512", "rsa-sha2-256", "ecdsa-sha2-nistp256")
+        default=(
+            "ecdsa-sha2-nistp256",
+            "ssh-ed25519",
+            "rsa-sha2-512",
+            "rsa-sha2-256",
+            "ssh-rsa",
+        )
     )
 
     @property
@@ -209,4 +220,56 @@ def apply_extra_kex_algs(profile: SSHProfile) -> bool:
         setattr(self, _STORE, value)
 
     SSHConnection._strict_kex = property(_get_strict, _set_strict)
+    return True
+
+
+def apply_host_key_algs(profile: SSHProfile) -> bool:
+    """Pin the advertised server host-key name-list to the profile's order.
+
+    asyncssh builds ``_server_host_key_algs`` from the signature algorithms of
+    the loaded keypairs (connection.py, ``SSHServerConnection.__init__``). For
+    an RSA key that set includes ``ssh-rsa-sha224@ssh.com`` and the three other
+    ``@ssh.com`` names, which OpenSSH never advertises; the list also comes out
+    in asyncssh's order rather than OpenSSH's. Both are read straight off the
+    wire in the KEXINIT.
+
+    So after the connection initialises, the list is replaced with the
+    profile's — filtered to the algorithms the loaded keys can actually sign
+    with, so key exchange still succeeds — in the profile's order. Guarded: if
+    a future asyncssh renames the attribute, the honeypot keeps working and
+    logs that this disguise slipped.
+
+    Returns True when the patch was applied.
+    """
+    import logging
+
+    from asyncssh.connection import SSHServerConnection
+
+    logger = logging.getLogger(__name__)
+
+    if not hasattr(SSHServerConnection, "__init__"):  # pragma: no cover
+        return False
+
+    pinned = [a.encode() for a in profile.host_key_algs]
+    original_init = SSHServerConnection.__init__
+    if getattr(original_init, "_honeypot_wrapped", False):
+        return True
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        current = getattr(self, "_server_host_key_algs", None)
+        if not current:
+            return
+        supported = set(current)
+        reordered = [a for a in pinned if a in supported]
+        if reordered:
+            self._server_host_key_algs = reordered
+        else:  # pragma: no cover - key set we did not expect
+            logger.warning(
+                "No profile host-key algorithm matched the loaded keys; "
+                "the KEXINIT host-key list will carry asyncssh's defaults"
+            )
+
+    __init__._honeypot_wrapped = True
+    SSHServerConnection.__init__ = __init__
     return True

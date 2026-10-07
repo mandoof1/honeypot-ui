@@ -7,6 +7,7 @@ from typing import Optional
 
 from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
+from honeypot.core.identity import get_identity
 from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
@@ -14,6 +15,34 @@ from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.adaptive.response import adaptive_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _stable_meta(name: str) -> tuple[int, float]:
+    """A size and mtime for a listed file, stable for its name on this host.
+
+    Derived from the host identity's seed, so LIST, SIZE and MDTM agree with
+    one another and do not change between two listings — random sizes on every
+    call were a giveaway that nothing was really there.
+    """
+    import hashlib
+    import time
+
+    seed = f"{get_identity().seed}:{name}".encode()
+    digest = hashlib.sha256(seed).digest()
+    size = 180 + int.from_bytes(digest[:4], "big") % 240_000
+    # Between ~30 and ~400 days old, stable per name.
+    age = 30 * 86400 + int.from_bytes(digest[4:8], "big") % (370 * 86400)
+    mtime = time.time() - age
+    return size, mtime
+
+
+def _list_date(mtime: float) -> str:
+    """The date column as `ls`/LIST formats it: time if recent, else year."""
+    import time
+
+    now = time.time()
+    fmt = "%b %e %H:%M" if (now - mtime) < 180 * 86400 else "%b %e  %Y"
+    return time.strftime(fmt, time.gmtime(mtime))
 
 
 #: How long to wait for the client to open the data connection, and for a
@@ -340,11 +369,22 @@ class FTPHoneypot(BaseEmulator):
     ) -> str:
         state.password = arg
         username = state.username or "anonymous"
-        accepted = username in self._fake_users
 
-        # Log the credentials the attacker tried together with whether the
-        # emulator accepted them. Recording every attempt as a success would
-        # make the captured brute-force data useless.
+        # The password is actually checked now. Anonymous and ftp accept any
+        # string, as real anonymous FTP does. A named account is accepted on
+        # its advertised weak password, or — like the SSH decoy — after a few
+        # failures, so a brute-forcer that never guesses the exact password
+        # still gets in and reveals what it does next. Accepting every
+        # password on the first try was its own fingerprint.
+        state.auth_failures = getattr(state, "auth_failures", 0)
+        if username in ("anonymous", "ftp"):
+            accepted = True
+        else:
+            expected = self._fake_users.get(username)
+            accepted = expected is not None and (
+                arg == expected or state.auth_failures >= 3
+            )
+
         await session_manager.record_auth_attempt(
             session_id, username, arg, accepted
         )
@@ -353,6 +393,7 @@ class FTPHoneypot(BaseEmulator):
             state.authenticated = True
             return "230 Login successful.\r\n"
 
+        state.auth_failures += 1
         return "530 Login incorrect.\r\n"
 
     @staticmethod
@@ -469,10 +510,17 @@ class FTPHoneypot(BaseEmulator):
                 continue
             full_path = os.path.join(path, entry)
             if full_path in self._fake_fs:
-                lines.append(f"drwxr-xr-x    2 0        0            4096 Jan 15 10:30 {entry}\r\n")
+                _, mtime = _stable_meta(full_path)
+                lines.append(
+                    f"drwxr-xr-x    2 0        0            4096 {_list_date(mtime)} {entry}\r\n"
+                )
             else:
-                size = uploaded.get(entry) or random.randint(100, 100000)
-                lines.append(f"-rw-r--r--    1 0        0        {size:>8} Jan 15 10:30 {entry}\r\n")
+                size = uploaded.get(entry)
+                stable_size, mtime = _stable_meta(full_path)
+                size = size if size is not None else stable_size
+                lines.append(
+                    f"-rw-r--r--    1 0        0        {size:>8} {_list_date(mtime)} {entry}\r\n"
+                )
         return "".join(lines)
 
     async def _send_data(self, state, writer, preamble: str, data: bytes, done: str) -> str:
@@ -597,17 +645,35 @@ class FTPHoneypot(BaseEmulator):
     def _cmd_mkd(self, arg: str) -> str:
         return f'257 "{arg}" created.\r\n'
 
+    def _resolve(self, arg: str, state: FTPSessionState) -> str:
+        return os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
+
     def _cmd_size(self, arg: str, state: FTPSessionState) -> str:
-        return f"213 {random.randint(100, 100000)}\r\n"
+        path = self._resolve(arg, state)
+        if path in state.uploaded:
+            return f"213 {state.uploaded[path][1]}\r\n"
+        if os.path.basename(path) in self._fake_fs.get(os.path.dirname(path), []):
+            size, _ = _stable_meta(path)
+            return f"213 {size}\r\n"
+        return "550 Could not get file size.\r\n"
 
     def _cmd_mdtm(self, arg: str, state: FTPSessionState) -> str:
-        return "213 20240115103000\r\n"
+        import time
+
+        path = self._resolve(arg, state)
+        if path in state.uploaded or os.path.basename(path) in self._fake_fs.get(
+            os.path.dirname(path), []
+        ):
+            _, mtime = _stable_meta(path)
+            return "213 " + time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime)) + "\r\n"
+        return "550 Could not get modification time.\r\n"
 
     def _cmd_stat(self, state: FTPSessionState) -> str:
+        identity = get_identity()
         return (
-            "211-FTP server status:\r\n"
-            "     Connected to 0.0.0.0\r\n"
-            "     Logged in as anonymous\r\n"
+            f"211-FTP server status:\r\n"
+            f"     Connected to {identity.ip}\r\n"
+            f"     Logged in as {state.username or 'anonymous'}\r\n"
             "     TYPE: Binary\r\n"
             f"     Current directory: {state.cwd}\r\n"
             "211 End\r\n"
