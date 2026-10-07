@@ -51,7 +51,7 @@ async def test_list_export_parity(client, auth_headers, records, filters, expect
 
 
 @pytest.mark.parametrize("filters,status", [
-    ({"protocol": "telnet"}, 400),
+    ({"protocol": "smb"}, 400),
     ({"status": "invalid"}, 400),
     ({"date_from": "not-a-date"}, 422),
     ({"date_from": "2026-02-01", "date_to": "2026-01-01"}, 400),

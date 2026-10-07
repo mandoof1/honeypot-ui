@@ -21,7 +21,7 @@ and a workspace for investigating suspicious activity.
 
 | Workflow | Capabilities |
 |---|---|
-| **Capture** | SSH, FTP, HTTP and HTTPS emulators record interactions, attempted credentials (shell, FTP, web login forms and HTTP Basic auth), files attackers upload, and each connection's flow statistics. Passive mode records without answering, on every protocol. |
+| **Capture** | SSH, Telnet, FTP, HTTP and HTTPS emulators record interactions, attempted credentials (shell, FTP, web login forms and HTTP Basic auth), files attackers upload, and each connection's flow statistics. Passive mode records without answering, on every protocol. |
 | **Investigate** | Search sessions, filter by protocol and time, inspect transcripts (shell commands, FTP commands and HTTP requests with their bodies), and review ATT&CK mappings. |
 | **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
 | **Protect a website** | Put a real web application behind the HTTP/HTTPS decoys. Every request is recorded, card numbers masked, and a client that gives itself away is answered by a decoy copy of the site from then on, while everyone else keeps reaching the live one. |
@@ -51,7 +51,7 @@ The local Compose configuration enables demo seeding for an empty database.
 | Dashboard | http://localhost:5173 |
 | Interactive API documentation | http://localhost:8000/docs |
 | API health | http://localhost:8000/health |
-| SSH / FTP emulation | `localhost:2222` / `localhost:2121` |
+| SSH / FTP / Telnet emulation | `localhost:2222` / `localhost:2121` / `localhost:2323` |
 | HTTP / HTTPS emulation | http://localhost:8080 / https://localhost:8443 |
 
 Retrieve the generated demo admin credentials from the backend startup log:
@@ -334,7 +334,8 @@ Start with [`.env.example`](.env.example). The key settings are:
 | `CORS_ORIGINS` | Allowed frontend origins. |
 | `VITE_API_URL` | Frontend API endpoint, including `/api/v1`. |
 | `GEOIP_DB_PATH` | Optional MaxMind GeoLite2 or DB-IP City Lite database path. |
-| `HONEYPOT_PROTOCOLS` | Emulators to run: any of `ssh,ftp,http,https`. |
+| `HONEYPOT_PROTOCOLS` | Emulators to run: any of `ssh,ftp,telnet,http,https`. |
+| `HONEYPOT_TELNET_PORT` | Telnet decoy port (default `2323`; forward 23 to it). Same login policy and shell as SSH, which is what Mirai-family bots expect. |
 | `HONEYPOT_OPERATIONAL_MODE` | Starting mode, `active` or `passive`; a mode saved in Settings takes precedence once the engine registers. |
 | `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
 | `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ENGINE_TIMEOUT = 5.0
-VALID_PROTOCOLS = {"ssh", "ftp", "http", "https"}
+VALID_PROTOCOLS = {"ssh", "ftp", "http", "https", "telnet"}
 
 
 class HoneypotStatusResponse(BaseModel):

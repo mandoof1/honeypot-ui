@@ -241,9 +241,10 @@ services:
       HONEYPOT_CONTROL_PORT: "8000"
       HONEYPOT_SSH_PORT: "2222"
       HONEYPOT_FTP_PORT: "2121"
+      HONEYPOT_TELNET_PORT: "2323"
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
-      HONEYPOT_PROTOCOLS: ssh,ftp,http,https
+      HONEYPOT_PROTOCOLS: ssh,ftp,telnet,http,https
       HONEYPOT_OPERATIONAL_MODE: active
       HONEYPOT_MAX_CONN_PER_IP: "5"
       HONEYPOT_RATE_LIMIT: "60"
@@ -273,6 +274,7 @@ services:
       # We saw exactly that in production. The forwarded ports are IPv4.
       - "0.0.0.0:2222:2222"
       - "0.0.0.0:2121:2121"
+      - "0.0.0.0:2323:2323"
       - "0.0.0.0:8080:8080"
       - "0.0.0.0:8443:8443"
       - "0.0.0.0:50000-50009:50000-50009"
