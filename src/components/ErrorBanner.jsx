@@ -5,7 +5,13 @@ import { RotateCw } from 'lucide-react'
  * broke and offers the one action that might fix it — no apology, no vague
  * "something went wrong".
  */
-export default function ErrorBanner({ message, onRetry }) {
+export default function ErrorBanner({ message, onRetry, title }) {
+  // Says which kind of failure this was: a load that produced nothing, or a
+  // change that was not applied. The previous banner called every error
+  // "Could not load this data", including a failed save.
+  const heading = title || (/^(update|save|export|delete|feed|change)/i.test(message || '')
+    ? 'The change was not applied'
+    : 'Could not load this data')
   return (
     <div
       role="alert"
@@ -13,7 +19,7 @@ export default function ErrorBanner({ message, onRetry }) {
     >
       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-s4" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold text-paper">Could not load this data</p>
+        <p className="text-[13px] font-semibold text-paper">{heading}</p>
         <p className="readout mt-0.5 text-[13px] break-words text-paper-2">{message}</p>
       </div>
       {onRetry && (

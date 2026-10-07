@@ -111,6 +111,8 @@ export default function Payloads() {
   const [error, setError] = useState(null)
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState(null)
+  const [statsError, setStatsError] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const [reload, setReload] = useState(0)
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 1023px)').matches)
@@ -166,7 +168,11 @@ export default function Payloads() {
   }, [queryKey, reload])
 
   useEffect(() => {
-    api.payloads.stats().then(setStats).catch(() => setStats(null))
+    let cancelled = false
+    api.payloads.stats()
+      .then((data) => { if (!cancelled) { setStats(data); setStatsError(null) } })
+      .catch((err) => { if (!cancelled) { setStats(null); setStatsError(err.message || 'Could not load totals') } })
+    return () => { cancelled = true }
   }, [reload])
 
   // The detail is its own request: a sample carries its full report and the
@@ -179,11 +185,17 @@ export default function Payloads() {
         return
       }
       setDetailLoading(true)
+      setDetailError(null)
       try {
         const data = await api.payloads.get(requested, { signal: controller.signal })
         if (!controller.signal.aborted) setDetail(data)
-      } catch {
-        if (!controller.signal.aborted) setDetail(null)
+      } catch (err) {
+        // A bad or stale link used to fall back silently to "Select a
+        // sample", which read as if nothing had been asked for.
+        if (!controller.signal.aborted) {
+          setDetail(null)
+          setDetailError(err.message || 'Could not load this sample')
+        }
       } finally {
         if (!controller.signal.aborted) setDetailLoading(false)
       }
@@ -227,6 +239,14 @@ export default function Payloads() {
       )}
 
       {error && <ErrorBanner message={error} onRetry={refresh} />}
+      {statsError && !error && <ErrorBanner message={statsError} onRetry={refresh} />}
+      {detailError && (
+        <ErrorBanner
+          title="Could not open the linked sample"
+          message={detailError}
+          onRetry={() => setParam({ sha: requested }, true)}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-0">

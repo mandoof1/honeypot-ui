@@ -1,5 +1,8 @@
+import { Link } from 'react-router-dom'
 import { ExternalLink, X } from 'lucide-react'
 import { CategoryTag } from './Severity'
+import EnrichmentBlock from './EnrichmentBlock'
+import { clean } from '../lib/text'
 import { PROFILE_LABEL } from '../lib/severity'
 import SessionTranscript, {
   CredentialsBlock,
@@ -66,7 +69,7 @@ function TagRow({ items, color, empty, transform }) {
     <div className="flex flex-wrap gap-1.5">
       {items.map((item) => (
         <span key={item} className="tag" style={{ color }}>
-          {transform ? transform(item) : item}
+          {clean(transform ? transform(item) : item)}
         </span>
       ))}
     </div>
@@ -92,7 +95,13 @@ export default function SessionDetail({ session, onClose }) {
       <header className="flex items-start justify-between gap-3 px-4 pb-3 pt-4">
         <div className="min-w-0">
           <h2 className="readout truncate text-[17px] font-semibold text-paper">
-            {session.attacker_ip}
+            <Link
+              to={`/attackers/${encodeURIComponent(session.attacker_ip)}`}
+              className="transition-colors hover:underline"
+              title="Everything this address has done"
+            >
+              {clean(session.attacker_ip)}
+            </Link>
           </h2>
           <p className="readout mt-1 truncate text-[11px] text-paper-3">
             {session.session_uuid}
@@ -174,7 +183,13 @@ export default function SessionDetail({ session, onClose }) {
           <p className="mt-2.5 text-[12px] leading-relaxed text-paper-3">
             The flow model read this session as benign; the category above comes
             from signature rules over the recorded commands, logins and uploads.
-            See the detected tools and intents below for what matched.
+            {session.rule_reason ? (
+              <>
+                {' '}Matched: <span className="text-paper-2">{clean(session.rule_reason)}</span>.
+              </>
+            ) : (
+              ' See the detected tools and intents below for what matched.'
+            )}
           </p>
         )}
         {session.cluster?.fitted && (
@@ -190,7 +205,7 @@ export default function SessionDetail({ session, onClose }) {
       {session.command_summary && (
         <Block title="Summary">
           <p className="whitespace-pre-line text-[13px] leading-relaxed text-paper-2">
-            {session.command_summary.slice(0, 600)}
+            {clean(session.command_summary.slice(0, 600))}
           </p>
         </Block>
       )}
@@ -235,7 +250,7 @@ export default function SessionDetail({ session, onClose }) {
                     {technique.id}
                   </span>
                   <span className="min-w-0 flex-1 text-[13px] text-paper">
-                    {technique.name}
+                    {clean(technique.name)}
                   </span>
                   {technique.source === 'chimera' && (
                     <span
@@ -243,7 +258,7 @@ export default function SessionDetail({ session, onClose }) {
                       style={{ color: 'var(--color-s2)' }}
                       title="Inferred by the language model, not matched by the rule map"
                     >
-                      inferred
+                      model
                     </span>
                   )}
                   <ExternalLink
@@ -257,6 +272,7 @@ export default function SessionDetail({ session, onClose }) {
         </Block>
       )}
 
+      <EnrichmentBlock key={`e${session.id}`} session={session} />
       <DiversionBlock session={session} />
       <RetrievalBlock session={session} />
       {/* Keyed so switching sessions remounts them and their loaded state
@@ -269,7 +285,7 @@ export default function SessionDetail({ session, onClose }) {
           <ul className="space-y-1">
             {session.uploaded_files.map((file) => (
               <li key={file} className="readout text-[12px] break-all text-paper-2">
-                {file}
+                {clean(file)}
               </li>
             ))}
           </ul>

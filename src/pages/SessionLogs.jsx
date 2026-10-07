@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Download, Search, SlidersHorizontal, RefreshCw, Link as LinkIcon } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
@@ -11,6 +12,8 @@ import { diversionOf } from '../lib/diversion'
 import { networkLabel } from '../lib/origin'
 import Dialog from '../components/Dialog'
 import { LoadingRegion } from '../components/Loading'
+import { useVisiblePoll } from '../hooks/useVisiblePoll'
+import { clean } from '../lib/text'
 
 import {
   CATEGORY_COLOR, CATEGORY_LABEL, HANDS_ON_PROFILES,
@@ -88,11 +91,19 @@ function SessionRow({ session, selected, onSelect }) {
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
             <span className="readout truncate text-[13px] text-paper">
-              {session.attacker_ip}
+              {clean(session.attacker_ip)}
             </span>
             <span className="readout shrink-0 text-[11px] uppercase text-paper-3">
               {session.protocol || '—'}
             </span>
+            <Link
+              to={`/attackers/${encodeURIComponent(session.attacker_ip)}`}
+              onClick={(e) => e.stopPropagation()}
+              className="shrink-0 text-[11px] text-paper-3 hover:text-paper"
+              title="Everything this address has done"
+            >
+              profile
+            </Link>
             {handsOn && (
               <span className="tag shrink-0" style={{ color: 'var(--color-s4)' }}>
                 {PROFILE_LABEL_SHORT[session.attacker_profile]}
@@ -214,25 +225,28 @@ export default function SessionLogs() {
   // toggles the loading state, so the list doesn't flash or lose the reader's
   // place. User actions (paging, filtering, selecting) still go through the
   // effect above.
-  useEffect(() => {
-    if (REFRESH_MS <= 0) return undefined
-    let cancelled = false
-    const poll = async () => {
-      try {
-        const data = await api.sessions.list({ page, page_size: PAGE_SIZE, ...query })
-        if (cancelled) return
-        setSessions(data.sessions || [])
-        setTotal(data.total || 0)
-        setError(null)
-      } catch {
-        // Keep the last good list; the next tick (or a manual reload) retries.
-      }
+  // Polls only while the tab is visible, never overlaps itself, and keeps the
+  // last good list on failure; the next tick or a manual reload retries.
+  useVisiblePoll(async () => {
+    try {
+      const data = await api.sessions.list({ page, page_size: PAGE_SIZE, ...query })
+      setSessions(data.sessions || [])
+      setTotal(data.total || 0)
+      setError(null)
+    } catch {
+      // keep the last good list
     }
-    const interval = setInterval(poll, REFRESH_MS)
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [page, query])
+  }, REFRESH_MS, [page, query])
 
   // Missing or slow deep-link details must not hide a successful list result.
+  //
+  // Keyed on the requested id and the page's *row ids*, not on the rows
+  // themselves: the background refresh replaces the array every 15 s, and
+  // re-running this on each one cleared the open panel for a session that
+  // lives on another page — exactly the kind an alert links to — then
+  // fetched it again, collapsing the transcript and re-logging every
+  // credential reveal.
+  const rowIds = sessions.map((item) => item.id).join(',')
   useEffect(() => {
     if (loading) return
     const controller = new AbortController()
@@ -240,10 +254,16 @@ export default function SessionLogs() {
       setDetailError(null)
       const row = sessions.find((item) => item.id === requested)
       if (!requested || row) {
-        setSelected(row || sessions[0] || null)
+        // Refreshed rows carry newer analysis (category, enrichment); adopt
+        // them, but keep the panel open on whatever is already selected.
+        setSelected((current) => {
+          if (row) return current?.id === row.id ? { ...current, ...row } : row
+          if (current && !requested) return current
+          return sessions[0] || null
+        })
         return
       }
-      setSelected(null)
+      setSelected((current) => (current?.id === requested ? current : null))
       try {
         const detail = await api.sessions.get(requested, { signal: controller.signal })
         if (!controller.signal.aborted) setSelected(detail)
@@ -255,7 +275,9 @@ export default function SessionLogs() {
     }
     const timer = setTimeout(loadDetail, 0)
     return () => { controller.abort(); clearTimeout(timer) }
-  }, [requested, sessions, loading])
+    // `sessions` is read through rowIds on purpose; see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requested, rowIds, loading])
 
   useEffect(() => {
     const desktop = window.matchMedia('(min-width: 1024px)')

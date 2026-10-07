@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
 import { api } from '../services/api'
@@ -8,6 +8,7 @@ import AuthShell, { Field, Notice, SubmitButton } from '../components/AuthShell'
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [form, setForm] = useState({ email: '', password: '', code: '' })
   // Set once the password has been accepted and the account wants its
   // authenticator code; the email and password are resent with it.
@@ -42,7 +43,9 @@ export default function Login() {
     setResendMsg('')
     try {
       await login(form.email, form.password, needsCode ? form.code.replace(/\s+/g, '') : undefined)
-      navigate('/')
+      // Back to the page that needed signing in for, if it is one of ours.
+      const next = searchParams.get('next') || ''
+      navigate(next.startsWith('/') && !next.startsWith('//') ? next : '/', { replace: true })
     } catch (err) {
       const msg = err.message || 'That email and password did not match.'
       if (err.mfaRequired) {

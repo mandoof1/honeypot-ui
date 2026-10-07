@@ -1,6 +1,11 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Copy, Download, ExternalLink, X } from 'lucide-react'
 import { api } from '../services/api'
+import { clean } from '../lib/text'
+
+/** Indicator rows rendered per group before the reader asks for the rest. */
+const INDICATOR_CAP = 50
 
 /*
  * Payload detail.
@@ -60,7 +65,7 @@ function Techniques({ items }) {
         const t = cap.technique
         return (
           <li key={cap.id || i} className="flex items-baseline gap-2 text-[13px]">
-            <span className="min-w-0 flex-1 text-paper">{cap.label}</span>
+            <span className="min-w-0 flex-1 text-paper">{clean(cap.label)}</span>
             {t?.id && (
               <a href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`}
                 target="_blank" rel="noreferrer noopener"
@@ -87,6 +92,32 @@ const IOC_GROUPS = [
   ['user_agents', 'User agents', (i) => i.value],
 ]
 
+function IndicatorGroup({ label, items, render }) {
+  const [expanded, setExpanded] = useState(false)
+  const shown = expanded ? items : items.slice(0, INDICATOR_CAP)
+  return (
+    <div>
+      <p className="eyebrow mb-1 text-paper-3">{label}</p>
+      <ul className="space-y-0.5">
+        {shown.map((item, i) => (
+          <li key={i} className="readout flex items-baseline gap-2 break-all text-[12px] text-paper-2">
+            <span className="min-w-0 flex-1">{clean(render(item))}</span>
+            {item.scope === 'private' && <span className="shrink-0 text-[10px] text-paper-3">private</span>}
+            {item.origin && item.origin !== 'strings' && (
+              <span className="shrink-0 text-[10px] text-paper-3" title="Where in the file this was found">{clean(item.origin)}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {items.length > shown.length && (
+        <button type="button" onClick={() => setExpanded(true)} className="mt-1 text-[12px] font-medium text-paper-2 hover:text-paper">
+          Show all {items.length.toLocaleString()}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Indicators({ indicators }) {
   if (!indicators) return null
   const groups = IOC_GROUPS.filter(([key]) => indicators[key]?.length)
@@ -94,20 +125,7 @@ function Indicators({ indicators }) {
   return (
     <div className="space-y-3">
       {groups.map(([key, label, render]) => (
-        <div key={key}>
-          <p className="eyebrow mb-1 text-paper-3">{label}</p>
-          <ul className="space-y-0.5">
-            {indicators[key].map((item, i) => (
-              <li key={i} className="readout flex items-baseline gap-2 break-all text-[12px] text-paper-2">
-                <span className="min-w-0 flex-1">{render(item)}</span>
-                {item.scope === 'private' && <span className="shrink-0 text-[10px] text-paper-3">private</span>}
-                {item.origin && item.origin !== 'strings' && (
-                  <span className="shrink-0 text-[10px] text-paper-3" title="Where in the file this was found">{item.origin}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <IndicatorGroup key={key} label={label} items={indicators[key]} render={render} />
       ))}
     </div>
   )
@@ -127,7 +145,7 @@ function Sections({ sections }) {
         <tbody>
           {notable.map((s, i) => (
             <tr key={i} className="border-t border-line">
-              <td className="readout py-1 pr-3 text-paper-2">{s.name || '(unnamed)'}</td>
+              <td className="readout py-1 pr-3 text-paper-2">{clean(s.name) || '(unnamed)'}</td>
               <td className="readout py-1 pr-3 tabular-nums text-paper-3">{(s.size ?? s.raw_size ?? 0).toLocaleString()}</td>
               <td className={`readout py-1 tabular-nums ${s.entropy >= 7.2 ? 'text-s3' : 'text-paper-3'}`}>{s.entropy?.toFixed(2)}</td>
             </tr>
@@ -146,7 +164,7 @@ function KeyValues({ data, limit = 12 }) {
       {entries.map(([key, value]) => (
         <div key={key} className="contents">
           <dt className="eyebrow text-paper-3">{key}</dt>
-          <dd className="readout break-words text-paper-2">{String(value)}</dd>
+          <dd className="readout break-words text-paper-2">{clean(String(value))}</dd>
         </div>
       ))}
     </dl>
@@ -187,10 +205,10 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
       <header className="flex items-start justify-between gap-3 px-4 pb-3 pt-4">
         <div className="min-w-0">
           <h2 className="text-[15px] font-semibold text-paper">
-            {detail.summary || detail.file_type || 'Sample'}
+            {clean(detail.summary || detail.file_type || 'Sample')}
           </h2>
           <p className="mt-1 flex flex-wrap items-center gap-1.5">
-            {detail.family && <span className="tag" style={{ color: 'var(--color-s3)' }}>{detail.family}</span>}
+            {detail.family && <span className="tag" style={{ color: 'var(--color-s3)' }}>{clean(detail.family)}</span>}
             <span className="tag" style={{ color: 'var(--color-paper-3)' }}>{detail.analysis_status}</span>
             {detail.analysis?.file_type?.basis === 'heuristic' && (
               <span className="tag" style={{ color: 'var(--color-paper-3)' }} title="Type inferred from content, not a magic number">by content</span>
@@ -216,7 +234,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
       )}
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line px-4 py-3.5">
-        <Fact label="Type" mono={false}>{detail.file_type || detail.file_kind || 'Unknown'}</Fact>
+        <Fact label="Type" mono={false}>{clean(detail.file_type || detail.file_kind || 'Unknown')}</Fact>
         <Fact label="Size">{(detail.size ?? 0).toLocaleString()} bytes</Fact>
         <Fact label="Entropy" title="Bits per byte; ~8 means encrypted or packed">
           {typeof a.entropy === 'number' ? a.entropy.toFixed(2) : '—'}
@@ -235,7 +253,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
 
       {detail.analysis_status === 'failed' && (
         <Block title="Analysis">
-          <p className="text-[13px] text-paper-2">This sample could not be analysed: {detail.analysis_error || 'unknown error'}.</p>
+          <p className="text-[13px] text-paper-2">This sample could not be analysed: {clean(detail.analysis_error) || 'unknown error'}.</p>
         </Block>
       )}
       {detail.analysis_status === 'metadata_only' && (
@@ -250,7 +268,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
             {a.notable.map((note, i) => (
               <li key={i} className="flex items-baseline gap-2 text-[13px] text-paper">
                 <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-s3" aria-hidden="true" />
-                <span className="min-w-0">{note}</span>
+                <span className="min-w-0">{clean(note)}</span>
               </li>
             ))}
           </ul>
@@ -260,11 +278,11 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
       {detail.family && a.family && (
         <Block title="Family" note={`${Math.round((a.family.confidence || 0) * 100)}% · heuristic`}>
           <p className="text-[13px] text-paper-2">
-            Resembles <span className="text-paper">{a.family.family}</span> ({a.family.kind}). This is a heuristic match on {a.family.evidence?.length || 0} marker(s), not a verdict:
+            Resembles <span className="text-paper">{clean(a.family.family)}</span> ({clean(a.family.kind)}). This is a heuristic match on {a.family.evidence?.length || 0} marker(s), not a verdict:
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {(a.family.evidence || []).map((e, i) => (
-              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[11px] text-paper-3">{e}</span>
+              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[11px] text-paper-3">{clean(e)}</span>
             ))}
           </div>
         </Block>
@@ -282,7 +300,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
             </p>
           )}
           {elf.libraries?.length > 0 && (
-            <p className="mt-2 text-[12px] text-paper-3">Links: <span className="readout text-paper-2">{elf.libraries.join(', ')}</span></p>
+            <p className="mt-2 text-[12px] text-paper-3">Links: <span className="readout text-paper-2">{clean(elf.libraries.join(', '))}</span></p>
           )}
           {elf.build && Object.keys(elf.build).length > 0 && (
             <div className="mt-2">
@@ -304,7 +322,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
           </dl>
           {pe.compile_time_note && <p className="mt-1.5 text-[12px] text-s3">Compile time {pe.compile_time_note}</p>}
           {pe.pdb_path && (
-            <p className="mt-2 text-[12px] text-paper-3">Build path <span className="normal-case">(forgeable)</span>: <span className="readout break-all text-paper-2">{pe.pdb_path}</span></p>
+            <p className="mt-2 text-[12px] text-paper-3">Build path <span className="normal-case">(forgeable)</span>: <span className="readout break-all text-paper-2">{clean(pe.pdb_path)}</span></p>
           )}
           <Techniques items={pe.capabilities} />
           {pe.version_info && Object.keys(pe.version_info).length > 0 && (
@@ -334,7 +352,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
           <ul className="space-y-0.5">
             {(archive.members || []).slice(0, 30).map((m, i) => (
               <li key={i} className="readout flex items-baseline justify-between gap-3 text-[12px]">
-                <span className="min-w-0 truncate text-paper-2" title={m.name}>{m.name}</span>
+                <span className="min-w-0 truncate text-paper-2" title={clean(m.name)}>{clean(m.name)}</span>
                 <span className="shrink-0 tabular-nums text-paper-3">{(m.size || 0).toLocaleString()}</span>
               </li>
             ))}
@@ -350,15 +368,23 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
         {detail.sessions?.length ? (
           <ul className="space-y-1.5">
             {detail.sessions.map((s) => (
-              <li key={`${s.session_id}:${s.filename}`}>
-                <a href={`/sessions?session=${s.session_id}`}
-                  className="group flex items-baseline gap-2 rounded-[3px] px-1.5 py-1 -mx-1.5 transition-colors hover:bg-ink-2">
-                  <span className="readout shrink-0 text-[12px] text-paper-2">{s.attacker_ip}</span>
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-paper-3" title={s.remote_path || s.filename}>
-                    {s.source} · {s.remote_path || s.filename}
+              <li key={`${s.session_id}:${s.filename}`} className="group flex items-baseline gap-2 rounded-[3px] px-1.5 py-1 -mx-1.5 transition-colors hover:bg-ink-2">
+                <Link
+                  to={`/attackers/${encodeURIComponent(s.attacker_ip)}`}
+                  className="readout shrink-0 text-[12px] text-paper-2 hover:underline"
+                  title="Everything this address has done"
+                >
+                  {clean(s.attacker_ip)}
+                </Link>
+                <Link
+                  to={`/sessions?session=${s.session_id}`}
+                  className="flex min-w-0 flex-1 items-baseline gap-2"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-paper-3" title={clean(s.remote_path || s.filename)}>
+                    {clean(s.source)} · {clean(s.remote_path || s.filename)}
                   </span>
                   <ExternalLink className="h-3 w-3 shrink-0 text-paper-3 opacity-0 transition-opacity group-hover:opacity-100" strokeWidth={2} />
-                </a>
+                </Link>
               </li>
             ))}
           </ul>

@@ -1,4 +1,5 @@
 import { useId, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { CATEGORY_COLOR, CATEGORY_LABEL, CATEGORY_ORDER } from '../lib/severity'
 
 /*
@@ -196,14 +197,23 @@ export function RankList({ items, emptyHint, mono = false }) {
 
   return (
     <ul className="px-4 pb-3.5">
-      {items.map(({ key, label, sub, value }) => (
+      {items.map(({ key, label, sub, value, href }) => (
         <li key={key} className="py-[3px]">
           <div className="flex items-baseline gap-2">
-            <span
-              className={`min-w-0 flex-1 truncate text-[13px] text-paper ${mono ? 'readout' : ''}`}
-            >
-              {label}
-            </span>
+            {href ? (
+              <Link
+                to={href}
+                className={`min-w-0 flex-1 truncate text-[13px] text-paper hover:underline ${mono ? 'readout' : ''}`}
+              >
+                {label}
+              </Link>
+            ) : (
+              <span
+                className={`min-w-0 flex-1 truncate text-[13px] text-paper ${mono ? 'readout' : ''}`}
+              >
+                {label}
+              </span>
+            )}
             {sub && <span className="readout shrink-0 text-[11px] text-paper-3">{sub}</span>}
             <span className="readout shrink-0 text-[13px] text-paper-2">
               {value.toLocaleString()}

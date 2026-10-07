@@ -3,6 +3,11 @@ import { AlertTriangle, ChevronDown, Download, Eye, Loader2, Play, Shuffle } fro
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
 import { diversionOf } from '../lib/diversion'
+import { clean } from '../lib/text'
+
+/** Output lines rendered before the reader has to ask for the rest. One
+    oversized output used to become thousands of nodes and freeze the tab. */
+const OUTPUT_LINE_CAP = 400
 
 /*
  * The transcript.
@@ -34,7 +39,10 @@ const LINE_COLOR = {
 }
 
 function Entry({ entry, index }) {
-  const lines = (entry.output || '').replace(/\n+$/, '').split('\n')
+  const [expanded, setExpanded] = useState(false)
+  const allLines = clean(entry.output || '').replace(/\n+$/, '').split('\n')
+  const lines = expanded ? allLines : allLines.slice(0, OUTPUT_LINE_CAP)
+  const hidden = allLines.length - lines.length
   return (
     <div className="group">
       <div className="flex items-baseline gap-2">
@@ -49,7 +57,7 @@ function Entry({ entry, index }) {
           $
         </span>
         <span className="min-w-0 flex-1 whitespace-pre-wrap break-all text-paper">
-          {entry.command}
+          {clean(entry.command)}
         </span>
       </div>
       {entry.output ? (
@@ -63,6 +71,15 @@ function Entry({ entry, index }) {
               {line || ' '}
             </div>
           ))}
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="mt-1 text-[12px] font-medium text-paper-2 transition-colors hover:text-paper"
+            >
+              Show all {allLines.length.toLocaleString()} lines ({hidden.toLocaleString()} more)
+            </button>
+          )}
         </div>
       ) : null}
     </div>
@@ -198,12 +215,12 @@ export function RetrievalBlock({ session }) {
                 style={{ color: 'var(--color-s3)' }}
               />
               <span className="readout min-w-0 flex-1 break-all text-[12px] text-paper">
-                {event.url}
+                {clean(event.url)}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-5 text-[12px] text-paper-3">
-              <span className="readout">{event.tool || 'fetch'}</span>
-              {event.filename && <span className="readout">{event.filename}</span>}
+              <span className="readout">{clean(event.tool) || 'fetch'}</span>
+              {event.filename && <span className="readout">{clean(event.filename)}</span>}
               {event.piped_to_shell && (
                 <span className="tag" style={{ color: 'var(--color-s4)' }}>
                   piped to shell
@@ -221,7 +238,7 @@ export function RetrievalBlock({ session }) {
               style={{ color: 'var(--color-s4)' }}
             />
             <span className="readout min-w-0 flex-1 break-all text-[12px] text-paper">
-              {event.path}
+              {clean(event.path)}
             </span>
             <span className="shrink-0 text-[12px] text-paper-3">attempted</span>
           </li>
@@ -256,11 +273,11 @@ export function DiversionBlock({ session }) {
           style={{ color: 'var(--color-s3)' }}
         />
         <span className="min-w-0 flex-1 text-[12px] text-paper">
-          Diverted: {event.reason || 'earlier attack'}
+          Diverted: {clean(event.reason) || 'earlier attack'}
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-5 text-[12px] text-paper-3">
-        {event.path && <span className="readout break-all">{event.path}</span>}
+        {event.path && <span className="readout break-all">{clean(event.path)}</span>}
         {event.since && (
           <span className="readout">
             since {new Date(event.since * 1000).toLocaleString()}
@@ -339,9 +356,9 @@ export function CredentialsBlock({ session }) {
                 }}
               />
               <span className="min-w-0 flex-1 break-all text-paper">
-                {row.username}
+                {clean(row.username)}
                 <span className="text-paper-3"> : </span>
-                {row.password}
+                {clean(row.password)}
               </span>
               {row.success && (
                 <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-s4)' }}>
