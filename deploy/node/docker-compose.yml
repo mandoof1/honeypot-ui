@@ -27,6 +27,7 @@ services:
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
       HONEYPOT_SSH_PORT: "2222"
       HONEYPOT_FTP_PORT: "2121"
+      HONEYPOT_TELNET_PORT: "2323"
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
       HONEYPOT_CONTROL_PORT: "8000"
@@ -42,6 +43,7 @@ services:
       # Emulated services, deliberately published so they can be probed.
       - "2222:2222"
       - "2121:2121"
+      - "2323:2323"
       - "8080:8080"
       - "8443:8443"
       # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.

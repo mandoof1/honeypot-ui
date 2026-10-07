@@ -57,6 +57,7 @@ class EmulationProtocol(str, Enum):
     FTP = "ftp"
     HTTP = "http"
     HTTPS = "https"
+    TELNET = "telnet"
 
 
 def _mode_from_env() -> OperationalMode:
@@ -96,6 +97,7 @@ class HoneypotConfig:
 
     ssh_port: int = _int_env("HONEYPOT_SSH_PORT", 2222)
     ftp_port: int = _int_env("HONEYPOT_FTP_PORT", 2121)
+    telnet_port: int = _int_env("HONEYPOT_TELNET_PORT", 2323)
     #: Passive-mode data ports, which must be published alongside the control
     #: port, and the address PASV advertises. Behind NAT or Docker the socket's
     #: own address is unreachable, so set this to the public one.

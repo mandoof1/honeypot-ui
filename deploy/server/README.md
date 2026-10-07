@@ -15,7 +15,7 @@ older split across Render, Vercel and a separate VM.
    postgres ◄── db ──┤                                              ├─ engine ──► honeypot
                      └──────── ingest  (session analysis, 4 workers) ┘  (internal)    │
                                                                                        │
-              :2222 :2121 :8080 :8443 :50000-50009 ◄── decoy bridge ───────────────────┘
+              :2222 :2121 :2323 :8080 :8443 :50000-50009 ◄── decoy bridge ─────────────┘
                      (inbound only; host firewall drops egress)
 ```
 
@@ -98,6 +98,7 @@ attacks, the upstream router or firewall must forward the well-known ports:
 |---|---|
 | TCP 22 | 2222 |
 | TCP 21 | 2121 |
+| TCP 23 | 2323 |
 | TCP 80 | 8080 |
 | TCP 443 | 8443 |
 | TCP 50000-50009 | 50000-50009 (FTP passive data) |

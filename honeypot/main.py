@@ -11,6 +11,7 @@ from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.ssh import SSHHoneypot
 from honeypot.emulators.ftp import FTPHoneypot
+from honeypot.emulators.telnet import TelnetHoneypot
 from honeypot.emulators.http import HTTPHoneypot
 from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.security.rate_limiter import rate_limiter
@@ -32,6 +33,7 @@ class HoneypotService:
     def __init__(self):
         self._ssh: Optional[SSHHoneypot] = None
         self._ftp: Optional[FTPHoneypot] = None
+        self._telnet: Optional[TelnetHoneypot] = None
         self._http: Optional[HTTPHoneypot] = None
         self._https: Optional[HTTPHoneypot] = None
         self._control_api = None
@@ -84,6 +86,8 @@ class HoneypotService:
             starters.append(("ssh", self._start_ssh))
         if "ftp" in config.enabled_protocols:
             starters.append(("ftp", self._start_ftp))
+        if "telnet" in config.enabled_protocols:
+            starters.append(("telnet", self._start_telnet))
         if "http" in config.enabled_protocols:
             starters.append(("http", self._start_http))
         if "https" in config.enabled_protocols:
@@ -119,6 +123,10 @@ class HoneypotService:
         self._ftp = FTPHoneypot()
         await self._ftp.start()
 
+    async def _start_telnet(self):
+        self._telnet = TelnetHoneypot()
+        await self._telnet.start()
+
     async def _start_http(self):
         self._http = HTTPHoneypot(use_tls=False)
         await self._http.start()
@@ -146,7 +154,7 @@ class HoneypotService:
         # its handler's cleanup, which ends the session and starts the
         # ingest; ending sessions before that (the previous order) sent them
         # while the connection could still add to them.
-        for emulator in (self._ssh, self._ftp, self._http, self._https):
+        for emulator in (self._ssh, self._ftp, self._telnet, self._http, self._https):
             if emulator:
                 try:
                     await emulator.stop()

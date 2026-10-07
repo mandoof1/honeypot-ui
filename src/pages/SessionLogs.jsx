@@ -423,7 +423,7 @@ export default function SessionLogs() {
             <span className="eyebrow">Protocol</span>
             <select className="control" value={filters.protocol} onChange={(e) => updateFilter('protocol', e.target.value)}>
               <option value="">All protocols</option>
-              {['ssh', 'ftp', 'http', 'https'].map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+              {['ssh', 'ftp', 'telnet', 'http', 'https'].map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
             </select>
           </label>
           {['date_from', 'date_to'].map((key) => <label key={key} className="flex flex-col gap-1">
