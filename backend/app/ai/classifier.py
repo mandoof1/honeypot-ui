@@ -206,6 +206,23 @@ class AttackClassifier:
         }
 
     def classify_flow(self, flow: Optional[Dict], protocol: str) -> Dict:
+        """Classify the measured flow, or decline when there is nothing to measure.
+
+        A session that arrives without flow statistics (older engines, the
+        manual ingest route) used to be scored on an all-zero vector, and the
+        model happily returned a confident label for it. No measurement means
+        no verdict: benign at zero confidence, and model_source says why, so
+        the rule layer is the only thing that can raise it.
+        """
+        if not isinstance(flow, dict) or not any(
+            isinstance(v, (int, float)) and v for v in flow.values()
+        ):
+            return {
+                "category": "benign",
+                "confidence": 0.0,
+                "probabilities": None,
+                "model_source": "no_flow",
+            }
         self._ensure_loaded()
         return self._predict(self.feature_extractor.extract_from_flow(flow, protocol))
 

@@ -117,6 +117,10 @@ class User(Base):
     totp_recovery_hashes = Column(_jsonb(), nullable=True)
     totp_enrolled_at = Column(DateTime(timezone=True), nullable=True)
 
+    #: Consecutive failed password attempts, and the lockout they earned.
+    failed_login_count = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+
     alerts = relationship("Alert", back_populates="user", foreign_keys="Alert.assigned_to_id")
     audit_logs = relationship("AuditLog", back_populates="user")
     otp_verifications = relationship(
@@ -138,6 +142,13 @@ class HoneypotNode(Base):
     location_lon = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_heartbeat = Column(DateTime(timezone=True), nullable=True)
+    #: Engine version and the status snapshot it sent with its last heartbeat
+    #: (mode, bound protocols, active sessions, spool depth, disk space).
+    version = Column(String(32), nullable=True)
+    last_status = Column(_jsonb(), nullable=True)
+    #: Whether a "stopped reporting" system alert is currently open for it,
+    #: so the staleness check raises one alert per outage, not one per tick.
+    offline_alerted = Column(Boolean, nullable=False, default=False, server_default="false")
 
     sessions = relationship(
         "HoneypotSession", back_populates="node", cascade="all, delete-orphan"
@@ -230,6 +241,26 @@ class HoneypotSession(Base):
     analysis_ms = Column(Float, nullable=True)
     keystroke_count = Column(Integer, default=0, nullable=False, server_default="0")
 
+    #: Why the rule layer chose the category, when it did ("3 failed logins
+    #: (brute force); exploitation signature"). Empty when the flow model stood.
+    rule_reason = Column(String(300), nullable=True)
+    #: SHA-256 of the newline-joined command list. Bots replay one script
+    #: from thousands of addresses; this is what lets identical transcripts
+    #: share a single model analysis and be counted as one campaign.
+    transcript_sha256 = Column(String(64), nullable=True, index=True)
+
+    #: Stage-2 (LLM) state. ``none`` for rows that predate the queue or were
+    #: never candidates, then pending → running → complete | failed, or
+    #: ``skipped`` when the session was judged not worth a model call. The
+    #: queue is this column: a single worker claims the oldest pending row,
+    #: so a restart loses nothing.
+    enrichment_status = Column(String(16), nullable=False, default="none", server_default="none")
+    enrichment = Column(_jsonb(), nullable=True)
+    enriched_at = Column(DateTime(timezone=True), nullable=True)
+    enrichment_error = Column(String(500), nullable=True)
+    #: Manual "analyse now" requests jump the queue.
+    enrichment_priority = Column(Integer, nullable=False, default=0, server_default="0")
+
     # Uploaded files
     uploaded_files = Column(_jsonb(), nullable=True)
 
@@ -255,7 +286,9 @@ class IndicatorOfCompromise(Base):
     __tablename__ = "indicators_of_compromise"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(Integer, ForeignKey("honeypot_sessions.id"), nullable=False)
+    session_id = Column(
+        Integer, ForeignKey("honeypot_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     ioc_type = Column(String(50), nullable=False)
     value = Column(String(500), nullable=False, index=True)
     confidence = Column(Float, nullable=True)
@@ -333,8 +366,16 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(Integer, ForeignKey("honeypot_sessions.id"), nullable=False)
-    severity = Column(_pg_enum(AttackSeverity), nullable=False)
+    #: Null for system alerts (an engine that stopped reporting, a disk
+    #: filling up), which are about the platform rather than a session.
+    session_id = Column(
+        Integer, ForeignKey("honeypot_sessions.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    #: "session" or "system".
+    kind = Column(String(16), nullable=False, default="session", server_default="session")
+    attacker_ip = Column(String(45), nullable=True, index=True)
+    node_id = Column(Integer, ForeignKey("honeypot_nodes.id", ondelete="SET NULL"), nullable=True)
+    severity = Column(_pg_enum(AttackSeverity), nullable=False, index=True)
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(_pg_enum(AlertStatus), default=AlertStatus.NEW, nullable=False)
@@ -346,9 +387,42 @@ class Alert(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
+    #: Analyst notes, free text.
+    notes = Column(Text, nullable=True)
+    #: Repeats folded into this alert while it was open: the same address at
+    #: the same category inside the dedup window bumps the count instead of
+    #: raising a new row.
+    occurrences = Column(Integer, nullable=False, default=1, server_default="1")
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    dedup_key = Column(String(160), nullable=True, index=True)
 
     session = relationship("HoneypotSession", back_populates="alerts")
     user = relationship("User", back_populates="alerts", foreign_keys=[assigned_to_id])
+
+
+class NotificationOutbox(Base):
+    """A notification waiting to be delivered.
+
+    Email and webhook sends used to run inside the ingest request, so a slow
+    SMTP server stretched the 200 ms analysis budget and a failed send was
+    simply gone. Rows here are picked up by the dispatcher, retried with
+    backoff, and keep their last error for the operator to read.
+    """
+
+    __tablename__ = "notification_outbox"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_id = Column(Integer, ForeignKey("alerts.id", ondelete="SET NULL"), nullable=True)
+    #: email | webhook
+    channel = Column(String(16), nullable=False)
+    payload = Column(_jsonb(), nullable=False)
+    #: pending | sent | failed
+    status = Column(String(16), nullable=False, default="pending", server_default="pending")
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    sent_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class AuditLog(Base):

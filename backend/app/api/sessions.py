@@ -5,9 +5,10 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
+from app.ai.llm import chimera
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role, verify_honeypot_token
-from app.models import HoneypotSession, HoneypotNode, AuditLog
+from app.models import Alert, AlertStatus, HoneypotSession, HoneypotNode, AuditLog, IndicatorOfCompromise
 from app.core.encryption import decrypt_data
 from app.schemas import (
     HoneypotSessionResponse,
@@ -17,7 +18,7 @@ from app.schemas import (
     TranscriptEntry,
     CapturedCredential,
 )
-from app.api.export import FILE_EXTENSIONS, MEDIA_TYPES, _render
+from app.api.export import FILE_EXTENSIONS, MEDIA_TYPES, _render, load_iocs
 from app.services.session_filters import session_filters
 from app.services.analysis import analysis_pipeline
 from app.services import artifacts, enrichment, payload_enrichment
@@ -36,6 +37,21 @@ async def ingest_session_from_honeypot(
     node = node_result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Honeypot node not found")
+
+    # Idempotent on the engine's session id: the engine spools and resends
+    # when the API was unreachable, and a resend must not become a second
+    # session with a second alert.
+    duplicate = await _existing_session(db, session_data.get("session_id"))
+    if duplicate is not None:
+        return {
+            "session_id": duplicate.id,
+            "session_uuid": duplicate.session_uuid,
+            "duplicate": True,
+            "ai_classification": {
+                "category": duplicate.attack_category.value if duplicate.attack_category else "benign",
+                "confidence": duplicate.attack_confidence,
+            },
+        }
 
     result = await analysis_pipeline.process_session(db, session_data, node_id)
 
@@ -60,15 +76,168 @@ async def ingest_session_from_honeypot(
     db.add(audit)
     await db.commit()
 
-    # Two detached stages run after the response, for the same reason: a slow
-    # model or a slow parser degrades the depth of analysis, never the capture.
-    # Chimera reads the transcript; payload analysis reverse-engineers the
-    # files the session uploaded, in a sandboxed subprocess.
-    enrichment.schedule(result["session_id"])
+    # Payload analysis runs detached, after the response: a slow parser
+    # degrades the depth of analysis, never the capture. The LLM stage is
+    # queued on the session row and drained by the backend's worker.
     payload_enrichment.schedule(pending_samples)
 
     result["uploads_recorded"] = len(session_data.get("uploads") or [])
     return result
+
+
+async def _existing_session(db: AsyncSession, engine_session_id) -> HoneypotSession | None:
+    import uuid as _uuid
+
+    if not engine_session_id:
+        return None
+    try:
+        key = str(_uuid.UUID(str(engine_session_id)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return (
+        await db.execute(select(HoneypotSession).where(HoneypotSession.session_uuid == key))
+    ).scalar_one_or_none()
+
+
+@router.get("/attacker/{ip}")
+async def attacker_summary(
+    ip: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Everything recorded about one source address, aggregated.
+
+    The session list could be filtered by address, but an analyst asking "who
+    is this" needs the picture across sessions: first and last seen, what
+    protocols and categories, which tools and techniques, how many credential
+    attempts and uploads, and whether anything is still open about it.
+    Usernames tried are listed; passwords are not (those stay behind the
+    admin-only, audited credentials endpoint).
+    """
+    ip = ip.strip()[:45]
+    sessions = (
+        await db.execute(
+            select(HoneypotSession)
+            .where(HoneypotSession.attacker_ip == ip)
+            .order_by(desc(HoneypotSession.started_at), desc(HoneypotSession.id))
+        )
+    ).scalars().all()
+    if not sessions:
+        raise HTTPException(status_code=404, detail="No sessions from this address")
+
+    from collections import Counter
+
+    protocols, categories, tools, intents, techniques, nodes = (
+        Counter(), Counter(), Counter(), Counter(), {}, set()
+    )
+    usernames = Counter()
+    credential_attempts = upload_count = 0
+    diverted = False
+    for s in sessions:
+        protocols[s.protocol or "unknown"] += 1
+        categories[s.attack_category.value if s.attack_category else "unknown"] += 1
+        for t in s.detected_tools or []:
+            tools[str(t)] += 1
+        for i in s.detected_intents or []:
+            intents[str(i)] += 1
+        for t in s.mitre_techniques or []:
+            if isinstance(t, dict) and t.get("id"):
+                entry = techniques.setdefault(t["id"], {"id": t["id"], "name": t.get("name") or "", "count": 0})
+                entry["count"] += 1
+                if not entry["name"] and t.get("name"):
+                    entry["name"] = t["name"]
+        nodes.add(s.node_id)
+        upload_count += len(s.uploaded_files or [])
+        if any(isinstance(e, dict) and e.get("event_type") == "http_diversion" for e in (s.network_events or [])):
+            diverted = True
+        if s.credentials_encrypted:
+            try:
+                rows = json.loads(decrypt_data(s.credentials_encrypted))
+            except (ValueError, json.JSONDecodeError):
+                rows = []
+            for row in rows:
+                if isinstance(row, dict):
+                    credential_attempts += 1
+                    if row.get("username"):
+                        usernames[str(row["username"])[:64]] += 1
+
+    node_names = []
+    if nodes:
+        node_names = (
+            await db.execute(select(HoneypotNode.name).where(HoneypotNode.id.in_(nodes)))
+        ).scalars().all()
+
+    alert_total = (
+        await db.execute(select(func.count(Alert.id)).where(Alert.attacker_ip == ip))
+    ).scalar() or 0
+    alert_open = (
+        await db.execute(
+            select(func.count(Alert.id)).where(
+                Alert.attacker_ip == ip,
+                Alert.status.in_([AlertStatus.NEW, AlertStatus.ACKNOWLEDGED]),
+            )
+        )
+    ).scalar() or 0
+
+    latest = sessions[0]
+    return {
+        "ip": ip,
+        "scanner_operator": next((s.scanner_operator for s in sessions if s.scanner_operator), None),
+        "geo": {
+            "country": latest.geo_country,
+            "country_name": latest.geo_country_name,
+            "city": latest.geo_city,
+            "lat": latest.geo_lat,
+            "lon": latest.geo_lon,
+        } if latest.geo_country else None,
+        "first_seen": min(s.started_at for s in sessions).isoformat(),
+        "last_seen": max(s.started_at for s in sessions).isoformat(),
+        "session_count": len(sessions),
+        "alert_count": alert_total,
+        "open_alert_count": alert_open,
+        "protocols": dict(protocols),
+        "categories": dict(categories),
+        "nodes": sorted(node_names),
+        "tools": [{"name": k, "count": v} for k, v in tools.most_common(20)],
+        "intents": [{"name": k, "count": v} for k, v in intents.most_common(20)],
+        "techniques": sorted(techniques.values(), key=lambda t: -t["count"])[:30],
+        "credential_attempts": credential_attempts,
+        "top_usernames": [{"username": k, "count": v} for k, v in usernames.most_common(10)],
+        "upload_count": upload_count,
+        "diverted": diverted,
+        "sessions": [HoneypotSessionResponse.from_model(s) for s in sessions[:20]],
+    }
+
+
+@router.post("/{session_id}/enrich", status_code=202)
+async def request_enrichment(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("analyst")),
+):
+    """Queue (or re-queue) a session for the language model, ahead of the backlog."""
+    if not chimera.enabled:
+        raise HTTPException(status_code=400, detail="No analysis model is configured (CHIMERA_URL)")
+    session = (
+        await db.execute(select(HoneypotSession).where(HoneypotSession.id == session_id))
+    ).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.raw_commands_encrypted:
+        raise HTTPException(status_code=400, detail="This session recorded no commands to analyse")
+    if session.enrichment_status == "running":
+        return {"session_id": session.id, "enrichment_status": "running"}
+    status = await enrichment.request(db, session)
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="enrichment_requested",
+            resource_type="session",
+            resource_id=session.id,
+        )
+    )
+    await db.commit()
+    return {"session_id": session.id, "enrichment_status": status}
 
 
 @router.get("/", response_model=SessionListResponse)
@@ -266,11 +435,6 @@ async def ingest_session(
     db.add(audit)
     await db.commit()
 
-    # Stage 2 runs detached, after the response. It reads the stored
-    # transcript and asks Chimera what the attacker was attempting; a slow or
-    # absent model degrades the depth of analysis, never the capture.
-    enrichment.schedule(result["session_id"])
-
     return result
 
 
@@ -286,7 +450,7 @@ async def export_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    content = _render(format, [session])
+    content = _render(format, [session], await load_iocs(db, [session]))
     return Response(
         content=content,
         media_type=MEDIA_TYPES[format],

@@ -57,8 +57,12 @@ def _session_to_dict(session: HoneypotSession) -> dict:
     }
 
 
-def _session_to_analysis(session: HoneypotSession) -> dict:
+def _session_to_analysis(session: HoneypotSession, iocs: list | None = None) -> dict:
     return {
+        "iocs": iocs or [],
+        "rule_reason": getattr(session, "rule_reason", None),
+        "model_source": session.model_source,
+        "enrichment": getattr(session, "enrichment", None),
         "category": (
             session.attack_category.value if session.attack_category else "unknown"
         ),
@@ -109,7 +113,7 @@ async def export_sessions(
 
     truncated = len(sessions) > MAX_EXPORT_SESSIONS
     sessions = sessions[:MAX_EXPORT_SESSIONS]
-    content = _render(format, sessions)
+    content = _render(format, sessions, await load_iocs(db, sessions))
 
     db.add(
         AuditLog(
@@ -135,7 +139,42 @@ async def export_sessions(
     )
 
 
-def _render(format: str, sessions: list[HoneypotSession]) -> str:
+async def load_iocs(db: AsyncSession, sessions: list[HoneypotSession]) -> dict[int, list[dict]]:
+    """Indicator rows for these sessions, keyed by session id.
+
+    The JSON and STIX exports always wrote an empty indicator list, because
+    nothing loaded the rows; the relationship cannot be lazy-loaded on an
+    async session.
+    """
+    from app.models import IndicatorOfCompromise
+
+    ids = [s.id for s in sessions]
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(IndicatorOfCompromise).where(IndicatorOfCompromise.session_id.in_(ids))
+        )
+    ).scalars().all()
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row.session_id, []).append(
+            {
+                "type": row.ioc_type,
+                "value": row.value,
+                "confidence": row.confidence,
+                "tags": row.tags or [],
+                "first_seen": row.first_seen.isoformat() if row.first_seen else None,
+            }
+        )
+    return grouped
+
+
+def _render(
+    format: str,
+    sessions: list[HoneypotSession],
+    iocs_by_session: dict[int, list[dict]] | None = None,
+) -> str:
     """Serialise sessions in the requested format.
 
     `import json` used to sit *inside* the branches of this function, which
@@ -159,8 +198,9 @@ def _render(format: str, sessions: list[HoneypotSession]) -> str:
             writer.writerow([_csv_cell(value) for value in values])
         return output.getvalue()
 
+    iocs_by_session = iocs_by_session or {}
     pairs = [
-        (_session_to_dict(session), _session_to_analysis(session))
+        (_session_to_dict(session), _session_to_analysis(session, iocs_by_session.get(session.id)))
         for session in sessions
     ]
 

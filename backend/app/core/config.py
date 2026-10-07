@@ -100,7 +100,51 @@ class Settings(BaseSettings):
     # locally is what keeps that claim true where a third-party API would not.
     CHIMERA_URL: str = ""
     CHIMERA_MODEL: str = "chimera-14b-v2"
-    CHIMERA_TIMEOUT: float = 90.0
+    #: Total wall-clock budget for one analysis. The production model runs on
+    #: CPU at a few tokens a second, so a full answer takes minutes, not
+    #: seconds; this is a detached stage, so that is acceptable.
+    CHIMERA_TIMEOUT: float = 300.0
+    #: Tokens the model may spend on the answer. The prompt asks for compact
+    #: JSON; reasoning is turned off through the chat template.
+    CHIMERA_MAX_TOKENS: int = 600
+    #: Characters of transcript sent for inference.
+    CHIMERA_MAX_TRANSCRIPT_CHARS: int = 6000
+
+    # Background workers: the enrichment queue, the notification outbox, node
+    # liveness checks and retention. Run them in exactly one process — the
+    # `backend` service — never in the multi-worker ingest service.
+    BACKGROUND_WORKERS: bool = False
+    #: Seconds without a heartbeat before a node is shown as offline, and
+    #: before a system alert is raised for it.
+    NODE_STALE_SECONDS: int = 180
+    NODE_OFFLINE_ALERT_SECONDS: int = 300
+    #: Below this fraction of free disk on an engine, raise a system alert.
+    NODE_DISK_ALERT_FRACTION: float = 0.10
+
+    # Alert handling.
+    #: Repeats of the same address at the same category inside this window
+    #: are folded into the open alert instead of raising another one.
+    ALERT_DEDUP_WINDOW_MINUTES: int = 60
+    #: Do not alert on sessions from known research scanners (Censys, Shodan,
+    #: Shadowserver). They are still recorded and still count as sessions.
+    ALERT_SUPPRESS_SCANNERS: bool = True
+    #: Delivery retries for email/webhook notifications before giving up.
+    NOTIFICATION_MAX_ATTEMPTS: int = 6
+
+    # Retention. 0 keeps everything, which is the right default for a
+    # research deployment where the captures are the point.
+    SESSION_RETENTION_DAYS: int = 0
+    AUDIT_RETENTION_DAYS: int = 365
+    OUTBOX_RETENTION_DAYS: int = 30
+
+    # Account lockout after repeated wrong passwords.
+    LOGIN_LOCKOUT_THRESHOLD: int = 10
+    LOGIN_LOCKOUT_MINUTES: int = 15
+
+    #: Addresses treated as reverse proxies when reading X-Forwarded-For:
+    #: walked from the right, the first address not in this list is the
+    #: client. Loopback and the Docker ranges by default.
+    TRUSTED_PROXIES: str = "127.0.0.0/8,::1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 
     # Captured payload analysis. Files an attacker uploads are stored
     # encrypted and reverse engineered statically — nothing is executed, and

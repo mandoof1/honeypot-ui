@@ -110,7 +110,85 @@ TACTIC_COLORS = {
 }
 
 
+#: Tactic for techniques the model reports that the rule map above has no
+#: entry for. The model is good at naming techniques; tactics come from here
+#: so the kill-chain view stays consistent across both stages.
+EXTRA_TECHNIQUE_TACTICS = {
+    "T1003": ("TA0006", "OS Credential Dumping"),
+    "T1005": ("TA0009", "Data from Local System"),
+    "T1016": ("TA0007", "System Network Configuration Discovery"),
+    "T1018": ("TA0007", "Remote System Discovery"),
+    "T1021": ("TA0008", "Remote Services"),
+    "T1027": ("TA0005", "Obfuscated Files or Information"),
+    "T1033": ("TA0007", "System Owner/User Discovery"),
+    "T1036": ("TA0005", "Masquerading"),
+    "T1046": ("TA0007", "Network Service Discovery"),
+    "T1053": ("TA0003", "Scheduled Task/Job"),
+    "T1057": ("TA0007", "Process Discovery"),
+    "T1059": ("TA0002", "Command and Scripting Interpreter"),
+    "T1068": ("TA0004", "Exploitation for Privilege Escalation"),
+    "T1070": ("TA0005", "Indicator Removal"),
+    "T1071": ("TA0011", "Application Layer Protocol"),
+    "T1078": ("TA0001", "Valid Accounts"),
+    "T1082": ("TA0007", "System Information Discovery"),
+    "T1083": ("TA0007", "File and Directory Discovery"),
+    "T1098": ("TA0003", "Account Manipulation"),
+    "T1105": ("TA0011", "Ingress Tool Transfer"),
+    "T1110": ("TA0006", "Brute Force"),
+    "T1136": ("TA0003", "Create Account"),
+    "T1140": ("TA0005", "Deobfuscate/Decode Files or Information"),
+    "T1190": ("TA0001", "Exploit Public-Facing Application"),
+    "T1222": ("TA0005", "File and Directory Permissions Modification"),
+    "T1486": ("TA0040", "Data Encrypted for Impact"),
+    "T1489": ("TA0040", "Service Stop"),
+    "T1490": ("TA0040", "Inhibit System Recovery"),
+    "T1496": ("TA0040", "Resource Hijacking"),
+    "T1498": ("TA0040", "Network Denial of Service"),
+    "T1499": ("TA0040", "Endpoint Denial of Service"),
+    "T1505": ("TA0003", "Server Software Component"),
+    "T1543": ("TA0003", "Create or Modify System Process"),
+    "T1548": ("TA0004", "Abuse Elevation Control Mechanism"),
+    "T1552": ("TA0006", "Unsecured Credentials"),
+    "T1555": ("TA0006", "Credentials from Password Stores"),
+    "T1562": ("TA0005", "Impair Defenses"),
+    "T1564": ("TA0005", "Hide Artifacts"),
+    "T1571": ("TA0011", "Non-Standard Port"),
+    "T1572": ("TA0011", "Protocol Tunneling"),
+    "T1573": ("TA0011", "Encrypted Channel"),
+    "T1595": ("TA0043", "Active Scanning"),
+}
+
+
+def _rule_map_index() -> Dict[str, tuple]:
+    index: Dict[str, tuple] = {}
+    for tactic_data in MITRE_ATTACK_MAP.values():
+        tactic_id = tactic_data["tactic"]["id"]
+        for technique in tactic_data["techniques"].values():
+            index.setdefault(technique["id"], (tactic_id, technique["name"]))
+    return index
+
+
+_TECHNIQUE_INDEX = _rule_map_index()
+
+
 class MitreAttckMapper:
+    def tactic_for_technique(self, technique_id: str) -> Optional[str]:
+        """Tactic id for a technique or sub-technique id, when known."""
+        tid = (technique_id or "").upper()
+        for key in (tid, tid.split(".")[0]):
+            hit = _TECHNIQUE_INDEX.get(key) or EXTRA_TECHNIQUE_TACTICS.get(key)
+            if hit:
+                return hit[0]
+        return None
+
+    def technique_name(self, technique_id: str) -> Optional[str]:
+        tid = (technique_id or "").upper()
+        hit = _TECHNIQUE_INDEX.get(tid) or EXTRA_TECHNIQUE_TACTICS.get(tid)
+        if hit:
+            return hit[1]
+        parent = _TECHNIQUE_INDEX.get(tid.split(".")[0]) or EXTRA_TECHNIQUE_TACTICS.get(tid.split(".")[0])
+        return parent[1] if parent else None
+
     def map_analysis(self, nlp_results: Dict, ai_results: Dict, session_data: Dict) -> Dict:
         detected_tactics: Set[str] = set()
         detected_techniques: List[Dict] = []

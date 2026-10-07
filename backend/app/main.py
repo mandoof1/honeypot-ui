@@ -42,9 +42,13 @@ async def lifespan(app: FastAPI):
             "schema must already be at head."
         )
     await _auto_seed()
+    from app.services import scheduler
+
+    await scheduler.start()
     logger.info("Startup complete")
     yield
     logger.info("Shutting down")
+    await scheduler.stop()
 
 
 async def _auto_seed():
@@ -112,9 +116,50 @@ async def security_headers(request: Request, call_next):
 @app.get("/health")
 @limiter.limit("60/minute")
 async def health_check(request: Request):
-    # `request` must be annotated as Request: without the annotation FastAPI
-    # treated it as a required query parameter and /health returned 422.
-    return {"status": "healthy", "version": settings.VERSION}
+    """Liveness plus the state an operator actually needs to see.
+
+    The old version returned a constant, so Docker reported the API healthy
+    with the database down. This pings the database (the one dependency
+    without which nothing works) and reports the queues; a database failure
+    is a 503 so the container health check and the dashboard both notice.
+    `request` must be annotated as Request: without the annotation FastAPI
+    treated it as a required query parameter and /health returned 422.
+    """
+    from sqlalchemy import text
+
+    from app.ai.llm import chimera
+    from app.core.database import async_session_factory
+    from app.services import enrichment, outbox, scheduler
+
+    body = {
+        "status": "healthy",
+        "version": settings.VERSION,
+        "database": "ok",
+        "enrichment": {"configured": chimera.enabled, "model": chimera.model_name if chimera.enabled else None},
+        "notifications": {},
+        "workers": bool(settings.BACKGROUND_WORKERS),
+    }
+    try:
+        async with async_session_factory() as db:
+            await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.error("Health check: database unavailable (%s)", exc)
+        body["status"] = "degraded"
+        body["database"] = "error"
+        return JSONResponse(status_code=503, content=body)
+    # Queue depths are informative, not a liveness condition.
+    try:
+        async with async_session_factory() as db:
+            body["enrichment"]["pending"] = await enrichment.pending_count(db)
+            body["notifications"] = await outbox.backlog(db)
+    except Exception as exc:
+        body["notifications"] = {"error": str(exc)[:120]}
+    started = scheduler.started_at()
+    if started is not None:
+        from datetime import datetime, timezone
+
+        body["uptime_seconds"] = int((datetime.now(timezone.utc) - started).total_seconds())
+    return body
 
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)

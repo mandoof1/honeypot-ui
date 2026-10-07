@@ -4,15 +4,43 @@ from sqlalchemy import select, func
 from typing import Optional
 from datetime import datetime, timezone
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role, verify_honeypot_token
 from app.models import AuditLog, HoneypotNode, HoneypotSession
-from app.schemas import HoneypotNodeCreate, HoneypotNodeUpdate, HoneypotNodeResponse
+from app.schemas import (
+    HoneypotNodeCreate,
+    HoneypotNodeUpdate,
+    HoneypotNodeResponse,
+    NodeHeartbeat,
+)
+from app.services import alerts as alert_service
 
 router = APIRouter()
 
+#: Keys of the engine's status report that are kept. Anything else it sends
+#: is dropped rather than stored and shown unreviewed.
+_STATUS_KEYS = {
+    "running", "mode", "protocols", "protocols_bound", "active_sessions",
+    "total_sessions", "open_connections", "blocked_ips", "refused_connections",
+    "isolation", "uptime_seconds", "spool_pending", "spool_bytes", "ingest",
+    "disk", "anti_fingerprinting", "adaptive_response", "version",
+    "node_registered",
+}
+
+
+def _heartbeat_age(node: HoneypotNode) -> Optional[int]:
+    if node.last_heartbeat is None:
+        return None
+    beat = node.last_heartbeat
+    if beat.tzinfo is None:
+        beat = beat.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - beat).total_seconds()))
+
 
 def _to_response(node: HoneypotNode) -> HoneypotNodeResponse:
+    age = _heartbeat_age(node)
+    stale_after = get_settings().NODE_STALE_SECONDS
     return HoneypotNodeResponse(
         id=node.id,
         name=node.name,
@@ -25,7 +53,24 @@ def _to_response(node: HoneypotNode) -> HoneypotNodeResponse:
         location_lon=node.location_lon,
         last_heartbeat=node.last_heartbeat,
         created_at=node.created_at,
+        online=bool(node.is_active and age is not None and age <= stale_after),
+        heartbeat_age_seconds=age,
+        version=getattr(node, "version", None),
+        status=node.last_status if isinstance(node.last_status, dict) else None,
     )
+
+
+def _clean_status(status: dict) -> dict:
+    clean = {}
+    for key in _STATUS_KEYS:
+        if key in status:
+            value = status[key]
+            if isinstance(value, (dict, list)):
+                # Bounded: the report is small, but it comes over the wire.
+                if len(str(value)) > 4000:
+                    continue
+            clean[key] = value
+    return clean
 
 
 @router.get("/", response_model=list[HoneypotNodeResponse])
@@ -104,6 +149,47 @@ async def register_node_internal(
     await db.commit()
     await db.refresh(node)
     return _to_response(node)
+
+
+@router.post("/heartbeat-internal", dependencies=[Depends(verify_honeypot_token)])
+async def node_heartbeat(
+    beat: NodeHeartbeat,
+    db: AsyncSession = Depends(get_db),
+):
+    """The engine's periodic liveness report.
+
+    Until this existed ``last_heartbeat`` was written once, at registration,
+    so the dashboard could not tell a running engine from one that died a day
+    ago. The engine posts every minute; the response carries the stored mode
+    so an operator's change in Settings reaches a running engine without a
+    restart. 404 tells the engine to register again.
+    """
+    node = None
+    if beat.node_id:
+        node = (
+            await db.execute(select(HoneypotNode).where(HoneypotNode.id == beat.node_id))
+        ).scalar_one_or_none()
+    if node is None or node.name != beat.name:
+        node = (
+            await db.execute(select(HoneypotNode).where(HoneypotNode.name == beat.name))
+        ).scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not registered")
+
+    node.last_heartbeat = datetime.now(timezone.utc)
+    node.is_active = True
+    status = _clean_status(beat.status or {})
+    node.last_status = status
+    version = beat.version or status.get("version")
+    if version:
+        node.version = str(version)[:32]
+    if node.offline_alerted:
+        await alert_service.resolve_system_alert(
+            db, f"node_offline:{node.name}", f"Engine reported again at {node.last_heartbeat.isoformat()}."
+        )
+        node.offline_alerted = False
+    await db.commit()
+    return {"id": node.id, "mode": node.mode.value, "name": node.name}
 
 
 @router.get("/{node_id}", response_model=HoneypotNodeResponse)

@@ -129,10 +129,31 @@ async def get_system_config(
     modes = set(n.mode.value for n in nodes)
     global_mode = "mixed" if len(modes) > 1 else (modes.pop() if modes else "active")
 
+    from app.ai.llm import chimera
+    from app.core.config import get_settings
+
+    cfg = get_settings()
     return {
         "honeypot_mode": global_mode,
         "active_nodes": len(nodes),
         "protocols": list(set(n.protocol for n in nodes)),
+        # Read-only view of the deployment's operational settings, so the
+        # page can say what the platform will actually do.
+        "enrichment": {"configured": chimera.enabled, "model": chimera.model_name if chimera.enabled else None},
+        "retention": {
+            "sessions_days": cfg.SESSION_RETENTION_DAYS,
+            "audit_days": cfg.AUDIT_RETENTION_DAYS,
+        },
+        "alerting": {
+            "dedup_window_minutes": cfg.ALERT_DEDUP_WINDOW_MINUTES,
+            "suppress_scanners": cfg.ALERT_SUPPRESS_SCANNERS,
+            "email_configured": bool(cfg.ALERT_EMAIL_TO and cfg.SMTP_HOST),
+            "webhook_configured": bool(cfg.WEBHOOK_URL),
+        },
+        "security": {
+            "login_lockout_threshold": cfg.LOGIN_LOCKOUT_THRESHOLD,
+            "login_lockout_minutes": cfg.LOGIN_LOCKOUT_MINUTES,
+        },
     }
 
 
