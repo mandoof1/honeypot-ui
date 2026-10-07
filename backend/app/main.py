@@ -16,10 +16,21 @@ from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.rate_limit import limiter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+def configure_logging() -> None:
+    """(Re)apply the application's logging setup.
+
+    Called at import and again after migrations: Alembic's fileConfig
+    replaces the root handlers and raises the root level to WARN, which
+    silenced every INFO line the backend process produced after startup.
+    """
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, force=True)
+    logging.getLogger().setLevel(logging.INFO)
+
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
@@ -36,6 +47,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting %s v%s", settings.PROJECT_NAME, settings.VERSION)
     if settings.RUN_MIGRATIONS_ON_STARTUP:
         await init_db()
+        configure_logging()
     else:
         logger.info(
             "Skipping migrations (RUN_MIGRATIONS_ON_STARTUP=false); the "

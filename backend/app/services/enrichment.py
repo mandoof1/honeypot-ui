@@ -320,7 +320,9 @@ def _merge_techniques(session: HoneypotSession, analysis: Dict) -> None:
     for technique in analysis.get("mitre_techniques") or []:
         if technique["id"] in known:
             continue
-        name = technique.get("name") or mitre_mapper.technique_name(technique["id"]) or ""
+        # The canonical name when the id is known; the model's own label only
+        # as a fallback (it named T1203 "Product Discovery" in production).
+        name = mitre_mapper.technique_name(technique["id"]) or technique.get("name") or ""
         existing.append({"id": technique["id"], "name": name, "source": "chimera",
                          "confidence": analysis.get("confidence")})
         known.add(technique["id"])
