@@ -140,6 +140,9 @@ class _Lexer:
         #: A heredoc was opened but its closing delimiter never arrived. An
         #: interactive shell keeps reading lines until it does.
         self.incomplete = False
+        #: The delimiters still owed when the text ran out, in order, with
+        #: whether leading tabs are stripped before comparing (``<<-``).
+        self.open_delimiters: list[tuple[str, bool]] = []
 
     # -- helpers ----------------------------------------------------------
 
@@ -213,6 +216,9 @@ class _Lexer:
         self._end_statement()
         if self._pending_heredocs:
             self.incomplete = True
+            self.open_delimiters.extend(
+                (p.delimiter, p.strip_tabs) for p in self._pending_heredocs
+            )
         return self.statements
 
     def _at_word_start(self) -> bool:
@@ -300,6 +306,7 @@ class _Lexer:
             pending.stage.heredoc = body.encode("utf-8", errors="surrogateescape")
             if not terminated:
                 self.incomplete = True
+                self.open_delimiters.append((pending.delimiter, pending.strip_tabs))
         self._pending_heredocs = []
 
     def _read_word(self) -> Optional[str]:
@@ -794,3 +801,55 @@ def needs_continuation(command_line: str) -> bool:
     lexer = _Lexer(command_line)
     lexer.run()
     return lexer.incomplete
+
+
+def open_heredoc_delimiters(command_line: str) -> list[tuple[str, bool]]:
+    """The heredoc delimiters a command line is still waiting for, in order."""
+    lexer = _Lexer(command_line)
+    lexer.run()
+    return list(lexer.open_delimiters) if lexer.incomplete else []
+
+
+class HeredocBuffer:
+    """Lines of a command whose heredoc has not closed yet.
+
+    The interactive shell used to re-lex the whole accumulated text on every
+    new line to ask whether the heredoc was still open, which made a body of
+    L lines cost L²/2 work on the event loop every other connection shares:
+    twenty thousand blank lines after ``cat > x <<EOF`` froze the engine for
+    minutes. The delimiters are now worked out once, when the heredoc opens,
+    and each new line is compared against the next one owed.
+    """
+
+    #: Lines one heredoc may run to before it is closed by force. Droppers
+    #: that arrive this way are a few hundred lines; the byte cap below is
+    #: the real bound on content.
+    MAX_LINES = 5000
+
+    def __init__(self, first_line: str, max_bytes: int) -> None:
+        self._lines = [first_line]
+        self._size = len(first_line) + 1
+        self._max_bytes = max_bytes
+        self._delimiters = open_heredoc_delimiters(first_line)
+
+    @property
+    def open(self) -> bool:
+        """Whether bash would still be reading lines."""
+        return bool(self._delimiters) and not self.exhausted
+
+    @property
+    def exhausted(self) -> bool:
+        return len(self._lines) >= self.MAX_LINES or self._size >= self._max_bytes
+
+    def feed(self, line: str) -> None:
+        self._lines.append(line)
+        self._size += len(line) + 1
+        if not self._delimiters:
+            return
+        delimiter, strip_tabs = self._delimiters[0]
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate.rstrip("\r") == delimiter:
+            self._delimiters.pop(0)
+
+    def text(self) -> str:
+        return "\n".join(self._lines)

@@ -7,12 +7,16 @@ import ErrorBanner from '../components/ErrorBanner'
 import EmptyState from '../components/EmptyState'
 import { LoadingRegion } from '../components/Loading'
 import { SeverityRail } from '../components/Severity'
+import EnginesPanel from '../components/EnginesPanel'
+import UsersPanel, { ChangePasswordPanel } from '../components/UsersPanel'
 import { SEVERITY_ORDER } from '../lib/severity'
 
 const BLANK_THRESHOLD = {
   name: '',
   min_severity: 'medium',
-  anomaly_score_threshold: 0.7,
+  // The anomaly score is on a 0–1 scale where the detector's own boundary
+  // sits near 0.6; the old default of 0.7 was above anything it ever produced.
+  anomaly_score_threshold: 0.6,
   email_enabled: true,
   webhook_enabled: false,
 }
@@ -151,8 +155,9 @@ function ThresholdRow({ threshold, onUpdate, onDelete, canEdit }) {
   }
 
   const save = async () => {
-    await onUpdate(threshold.id, form)
-    setEditing(false)
+    // Stay in the editor on failure, so a rejected change is not lost.
+    const ok = await onUpdate(threshold.id, form)
+    if (ok) setEditing(false)
   }
 
   if (editing) {
@@ -583,9 +588,9 @@ export default function Settings() {
 
         <dl className="grid grid-cols-2 divide-line border-t border-line sm:grid-cols-3 sm:divide-x">
           <div className="px-4 py-3">
-            <dt className="eyebrow">Registered nodes</dt>
+            <dt className="eyebrow">Engines</dt>
             <dd className="readout mt-1 text-sm text-paper">
-              {systemConfig?.active_nodes ?? 0}
+              <a href="#engines" className="hover:underline">{systemConfig?.active_nodes ?? 0} registered</a>
             </dd>
           </div>
           <div className="px-4 py-3">
@@ -604,6 +609,10 @@ export default function Settings() {
           </div>
         </dl>
       </Panel>
+
+      <div id="engines">
+        <EnginesPanel />
+      </div>
 
       <Panel
         title="Alert thresholds"
@@ -673,15 +682,48 @@ export default function Settings() {
             {/* JSON, CEF and STIX 2.1 are what the export route actually
                 serves. This previously advertised TAXII, which is not
                 implemented anywhere in the backend. */}
-            <dd className="readout text-[13px] text-paper">JSON · CEF · STIX 2.1</dd>
+            <dd className="readout text-[13px] text-paper">CSV · JSON · CEF · STIX 2.1</dd>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
             <dt className="eyebrow">Alert delivery</dt>
-            <dd className="readout text-[13px] text-paper">Email · Signed webhook</dd>
+            <dd className="readout text-[13px] text-paper">In-app · Email · Signed webhook</dd>
           </div>
+          {systemConfig?.enrichment && (
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
+              <dt className="eyebrow">Model analysis</dt>
+              <dd className="readout text-[13px] text-paper">
+                {systemConfig.enrichment.configured
+                  ? `On · ${systemConfig.enrichment.model || 'local model'}`
+                  : 'Not configured (CHIMERA_URL unset)'}
+              </dd>
+            </div>
+          )}
+          {systemConfig?.retention && (
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
+              <dt className="eyebrow">Retention</dt>
+              <dd className="readout text-[13px] text-paper">
+                {systemConfig.retention.sessions_days ? `sessions ${systemConfig.retention.sessions_days} d` : 'sessions kept'}
+                {' · '}
+                {systemConfig.retention.audit_days ? `audit log ${systemConfig.retention.audit_days} d` : 'audit log kept'}
+              </dd>
+            </div>
+          )}
+          {systemConfig?.alerting && (
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
+              <dt className="eyebrow">Alert grouping</dt>
+              <dd className="readout text-[13px] text-paper">
+                {systemConfig.alerting.dedup_window_minutes
+                  ? `repeat within ${systemConfig.alerting.dedup_window_minutes} min grouped`
+                  : 'no grouping'}
+                {systemConfig.alerting.suppress_scanners ? ' · research scanners suppressed' : ''}
+              </dd>
+            </div>
+          )}
         </dl>
       </Panel>
       <TwoFactorPanel />
+      <ChangePasswordPanel />
+      {isAdmin && <UsersPanel />}
     </div>
   )
 }

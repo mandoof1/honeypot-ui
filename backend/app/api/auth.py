@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
 from app.core.security import (
@@ -24,6 +25,9 @@ from app.core.security import (
 )
 from app.models import AuditLog, User, UserRole
 from app.schemas import (
+    AdminPasswordReset,
+    PasswordChange,
+    UserAdminUpdate,
     AdminUserCreate,
     MFACodeRequest,
     OTPResendRequest,
@@ -57,7 +61,9 @@ _TIMING_DECOY = get_password_hash("timing-equalisation-decoy")
 
 
 def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
+    from app.core.clientip import client_ip
+
+    return client_ip(request)
 
 
 def _token_pair(user: User) -> dict:
@@ -269,10 +275,45 @@ async def login(
             status_code=401, detail="Invalid email or password"
         )
 
+    now = datetime.now(timezone.utc)
+    locked_until = user.locked_until
+    if locked_until is not None and locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    if locked_until and locked_until > now:
+        remaining = int((locked_until - now).total_seconds() // 60) + 1
+        raise HTTPException(
+            status_code=423,
+            detail=f"Account temporarily locked after repeated failed sign-ins. Try again in {remaining} minute(s).",
+        )
+
     if not verify_password(credentials.password, user.hashed_password):
+        # Per-account lockout, in addition to the per-address rate limit: a
+        # distributed guess at one account used to be unlimited.
+        cfg = get_settings()
+        user.failed_login_count = (user.failed_login_count or 0) + 1
+        locked = False
+        if user.failed_login_count >= cfg.LOGIN_LOCKOUT_THRESHOLD:
+            user.locked_until = now + timedelta(minutes=cfg.LOGIN_LOCKOUT_MINUTES)
+            user.failed_login_count = 0
+            locked = True
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action="login_failed",
+                resource_type="user",
+                resource_id=user.id,
+                ip_address=_client_ip(request),
+                details={"locked": locked},
+            )
+        )
+        await db.commit()
         raise HTTPException(
             status_code=401, detail="Invalid email or password"
         )
+
+    if user.failed_login_count or user.locked_until:
+        user.failed_login_count = 0
+        user.locked_until = None
 
     if not user.is_verified:
         raise HTTPException(
@@ -578,3 +619,131 @@ async def update_user_role(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+@router.patch("/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: int,
+    request: Request,
+    payload: UserAdminUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Deactivate, reactivate or rename an account."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    if changes.get("is_active") is False and user.id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+    for key, value in changes.items():
+        setattr(user, key, value)
+    if changes.get("is_active"):
+        user.failed_login_count = 0
+        user.locked_until = None
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="user_updated",
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=_client_ip(request),
+            details=changes,
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/users/{user_id}/reset-mfa", response_model=UserResponse)
+async def admin_reset_mfa(
+    user_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Remove a user's authenticator so they can sign in and enrol again."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.totp_enabled = False
+    user.totp_secret_encrypted = None
+    user.totp_recovery_hashes = None
+    user.totp_enrolled_at = None
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="mfa_reset_by_admin",
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=_client_ip(request),
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/users/{user_id}/reset-password", response_model=UserResponse)
+async def admin_reset_password(
+    user_id: int,
+    request: Request,
+    payload: AdminPasswordReset,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Set a temporary password for a user, on a deployment without email."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.hashed_password = get_password_hash(payload.new_password)
+    user.failed_login_count = 0
+    user.locked_until = None
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="password_reset_by_admin",
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=_client_ip(request),
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/change-password")
+async def change_password(
+    request: Request,
+    payload: PasswordChange,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Change your own password; requires the current one."""
+    result = await db.execute(select(User).where(User.id == current_user["id"]))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="New password must differ from the current one")
+    user.hashed_password = get_password_hash(payload.new_password)
+    db.add(
+        AuditLog(
+            user_id=user.id,
+            action="password_changed",
+            resource_type="user",
+            resource_id=user.id,
+            ip_address=_client_ip(request),
+        )
+    )
+    await db.commit()
+    return {"message": "Password changed"}

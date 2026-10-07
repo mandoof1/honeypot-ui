@@ -76,6 +76,19 @@ class AlertingService:
             return True
         return any(results)
 
+    async def send_email(self, alert_data: Dict) -> bool:
+        """Deliver one email; True on success. Used by the outbox dispatcher."""
+        if not (settings.ALERT_EMAIL_TO and settings.SMTP_HOST):
+            logger.debug("Email channel not configured; dropping notification")
+            return False
+        return await self._send_email(alert_data)
+
+    async def send_webhook(self, alert_data: Dict) -> bool:
+        """Deliver one webhook; True on success. Used by the outbox dispatcher."""
+        if not settings.WEBHOOK_URL:
+            return False
+        return await self._send_webhook(alert_data)
+
     async def _send_email(self, alert_data: Dict) -> bool:
         # smtplib is synchronous; calling it inline blocked the event loop for
         # the full duration of the SMTP conversation.
@@ -111,7 +124,10 @@ class AlertingService:
         try:
             payload = {
                 "source": "HoneySentinel",
-                "event_type": "high_severity_alert",
+                "event_type": (
+                    "system_alert" if alert_data.get("kind") == "system"
+                    else f"{alert_data.get('severity', 'high')}_severity_alert"
+                ),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "data": alert_data,
             }

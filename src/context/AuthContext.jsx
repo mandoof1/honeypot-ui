@@ -31,8 +31,11 @@ export function AuthProvider({ children }) {
     try {
       const me = await api.auth.me()
       if (mounted.current) setUser(me)
-    } catch {
-      clearTokens()
+    } catch (err) {
+      // Only a rejected token ends the session. A network blip at startup
+      // used to clear both tokens and send the user back to the login page,
+      // which signed them out for the API being briefly unreachable.
+      if (err?.status === 401 || err?.status === 403) clearTokens()
       if (mounted.current) setUser(null)
     } finally {
       if (mounted.current) setLoading(false)

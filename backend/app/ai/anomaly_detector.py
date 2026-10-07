@@ -77,14 +77,21 @@ class AnomalyDetector:
         score = self.model.score_samples(feature_vector)[0]
         prediction = -1 if score - self.model.offset_ < 0 else 1
 
-        anomaly_score = float(-score)
-        normalized_score = min(max(anomaly_score / 1.5, 0), 1)
+        # score_samples returns the negated average path-length score, in
+        # (-1, 0): closer to -1 is more isolated. Negating it gives a 0..1
+        # anomaly score directly. It used to be divided by 1.5 as well, which
+        # capped every stored score at 0.67 and made the 0.7 alert threshold
+        # the settings page shipped with impossible to reach.
+        normalized_score = min(max(float(-score), 0.0), 1.0)
+        # The model's own decision boundary, on the same scale, so a threshold
+        # an operator sets can be compared with where "anomalous" begins.
+        boundary = min(max(float(-self.model.offset_), 0.0), 1.0)
 
         return {
             "is_anomalous": bool(prediction == -1),
             "anomaly_score": round(normalized_score, 4),
             "raw_score": round(float(score), 4),
-            "threshold": 0.6,
+            "threshold": round(boundary, 4),
             "model_source": self.model_source,
         }
 

@@ -238,6 +238,36 @@ ones that matter most:
 | `CHIMERA_URL` | Local OpenAI-compatible endpoint for semantic stage-2 analysis; unset disables it |
 | `PAYLOAD_ANALYSIS_ENABLED` | Reverse-engineer uploaded files in the detached stage (default on) |
 
+### Operations settings (backend)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BACKGROUND_WORKERS` | `false` | Run the enrichment worker, notification outbox, engine-liveness check and retention in this process. Exactly one process per deployment (the `backend` service). |
+| `CHIMERA_URL` / `CHIMERA_MODEL` / `CHIMERA_TIMEOUT` | unset / `chimera-14b-v2` / `300` | OpenAI-compatible endpoint for the stage-2 model, its name, and the per-call budget in seconds. Unset disables the stage. |
+| `CHIMERA_MAX_TOKENS` / `CHIMERA_MAX_TRANSCRIPT_CHARS` | `600` / `6000` | Answer length and how much transcript is sent. |
+| `NODE_STALE_SECONDS` / `NODE_OFFLINE_ALERT_SECONDS` | `180` / `300` | When a node shows as offline, and when a system alert is raised for it. |
+| `NODE_DISK_ALERT_FRACTION` | `0.10` | Free-disk fraction on an engine below which a system alert is raised. |
+| `ALERT_DEDUP_WINDOW_MINUTES` | `60` | Repeats of one address at one category inside this window fold into the open alert. |
+| `ALERT_SUPPRESS_SCANNERS` | `true` | Sessions attributed to a research scanner never alert. |
+| `NOTIFICATION_MAX_ATTEMPTS` | `6` | Email/webhook delivery attempts before an outbox row is marked failed. |
+| `SESSION_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` / `OUTBOX_RETENTION_DAYS` | `0` / `365` / `30` | Hourly deletion of rows older than this; 0 keeps everything. |
+| `LOGIN_LOCKOUT_THRESHOLD` / `LOGIN_LOCKOUT_MINUTES` | `10` / `15` | Per-account lockout after repeated wrong passwords. |
+| `TRUSTED_PROXIES` | loopback + RFC1918 | Addresses skipped (right to left) when reading `X-Forwarded-For`; the first other address is the client. Only used with `TRUST_PROXY_HEADERS=true`. |
+
+### Engine limits and durability
+
+Set on the honeypot engine's environment. Bad numbers fall back to the default
+with a warning instead of stopping the engine.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HONEYPOT_SPOOL_MAX_FILES` / `HONEYPOT_SPOOL_MAX_BYTES` | `5000` / 512 MiB | On-disk retry queue for sessions the backend could not take; replayed oldest first, de-duplicated by the engine's session id |
+| `HONEYPOT_HEARTBEAT_INTERVAL` | `60` | Seconds between status heartbeats to the backend |
+| `HONEYPOT_MAX_CONN_PER_IP` / `HONEYPOT_MAX_CONNECTIONS` | `5` / `500` | Concurrent connections per address and in total, enforced at accept |
+| `HONEYPOT_MAX_SESSION_SECONDS` | `1800` | Hard cap on a connection's lifetime |
+| `HONEYPOT_CONN_TIMEOUT` | unset | Idle timeout for all protocols (defaults: SSH 300 s, FTP 120 s, HTTP 60 s) |
+| `HONEYPOT_CAPTURE_RETENTION_DAYS` / `HONEYPOT_UPLOAD_RETENTION_DAYS` | `7` / `30` | Pruning of the engine's local session copies and captured upload bytes |
+
 Generate each secret separately:
 
 ```bash

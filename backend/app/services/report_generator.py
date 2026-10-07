@@ -96,7 +96,8 @@ class ReportGenerator:
             "mitre_attack": analysis.get("mitre", {}),
             "indicators_of_compromise": analysis.get("iocs", []),
             "raw_data_summary": {
-                "command_count": len(session_data.get("commands", [])),
+                "command_count": len(session_data.get("commands") or [])
+                or analysis.get("command_count") or 0,
                 "upload_count": len(session_data.get("uploads", [])),
                 "packet_summary": session_data.get("packet_summary"),
             },

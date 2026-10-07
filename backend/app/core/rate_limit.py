@@ -15,14 +15,19 @@ from app.core.config import get_settings
 def _client_key(request) -> str:
     """Identify the client, honouring a trusted proxy header when configured.
 
-    Behind Render/Vercel the socket address is the proxy, so without this every
-    request shares one bucket.
+    Behind a proxy the socket address is the proxy, so without this every
+    request shares one bucket. The header is read right-to-left past the
+    trusted hops (see core/clientip.py); the leftmost value is client-chosen
+    and was what the limiter keyed on before, which let anyone pick their own
+    bucket.
     """
+    from app.core.clientip import client_ip
+
     settings = get_settings()
     if settings.TRUST_PROXY_HEADERS:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        resolved = client_ip(request)
+        if resolved:
+            return resolved
     return get_remote_address(request)
 
 

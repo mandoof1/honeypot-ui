@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Copy, Download, Search } from 'lucide-react'
 import { api } from '../services/api'
 import { useDebounced } from '../hooks/useDebounced'
 import EmptyState from '../components/EmptyState'
 import ErrorBanner from '../components/ErrorBanner'
 import { LoadingRegion } from '../components/Loading'
+import { clean } from '../lib/text'
 
 /*
  * Indicators.
@@ -56,29 +58,37 @@ export default function Indicators() {
   const [total, setTotal] = useState(0)
   const [type, setType] = useState('')
   const [search, setSearch] = useState('')
-  const [minSessions, setMinSessions] = useState(1)
+  // Two is the backend's own default for the feed: one sighting is a
+  // footnote, the same host across sessions is the finding.
+  const [minSessions, setMinSessions] = useState(2)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [copied, setCopied] = useState(null)
 
   const debouncedSearch = useDebounced(search)
+  // Only the newest request may commit: a slow response for an earlier
+  // filter must not overwrite the current one.
+  const requestId = useRef(0)
 
   const load = useCallback(async () => {
+    const id = ++requestId.current
     setLoading(true)
     try {
       const params = { page, page_size: PAGE_SIZE, min_sessions: minSessions }
       if (type) params.ioc_type = type
       if (debouncedSearch) params.search = debouncedSearch
       const data = await api.iocs.list(params)
+      if (id !== requestId.current) return
       setRows(data.indicators || [])
       setTotal(data.total || 0)
       setError(null)
     } catch (err) {
+      if (id !== requestId.current) return
       setError(err.message || 'Could not load indicators')
       setRows([])
     } finally {
-      setLoading(false)
+      if (id === requestId.current) setLoading(false)
     }
   }, [page, type, debouncedSearch, minSessions])
 
@@ -89,7 +99,9 @@ export default function Indicators() {
 
   const copy = async (value) => {
     try {
-      await navigator.clipboard.writeText(value)
+      // The sanitised value: hidden characters an attacker put in an
+      // indicator must not travel into a blocklist via the clipboard.
+      await navigator.clipboard.writeText(clean(value))
       setCopied(value)
       setTimeout(() => setCopied(null), 1200)
     } catch {
@@ -111,7 +123,7 @@ export default function Indicators() {
       document.body.appendChild(link)
       link.click()
       link.remove()
-      URL.revokeObjectURL(url)
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (err) {
       setError(`Feed download failed: ${err.message}`)
     }
@@ -175,7 +187,7 @@ export default function Indicators() {
           title="One value per line — the shape ipset, pf, Suricata datasets and Splunk lookups read"
         >
           <Download className="h-3.5 w-3.5" strokeWidth={2} />
-          Blocklist
+          {type ? 'Blocklist' : 'Blocklist (IPs only)'}
         </button>
       </div>
 
@@ -216,9 +228,19 @@ export default function Indicators() {
                     className="group border-b border-line last:border-b-0 hover:bg-ink-2"
                   >
                     <td className="max-w-0 px-3.5 py-2">
-                      <span className="readout block truncate text-[12px] text-paper" title={row.value}>
-                        {row.value}
-                      </span>
+                      {row.type === 'ip' ? (
+                        <Link
+                          to={`/attackers/${encodeURIComponent(row.value)}`}
+                          className="readout block truncate text-[12px] text-paper hover:underline"
+                          title="Everything this address has done"
+                        >
+                          {clean(row.value)}
+                        </Link>
+                      ) : (
+                        <span className="readout block truncate text-[12px] text-paper" title={clean(row.value)}>
+                          {clean(row.value)}
+                        </span>
+                      )}
                     </td>
                     <td className="hidden px-3.5 py-2 sm:table-cell">
                       <span className="tag" style={{ color: 'var(--color-paper-3)' }}>

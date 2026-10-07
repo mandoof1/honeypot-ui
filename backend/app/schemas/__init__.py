@@ -98,6 +98,15 @@ class UserRoleUpdate(BaseModel):
     role: UserRole
 
 
+class UserAdminUpdate(BaseModel):
+    is_active: Optional[bool] = None
+    name: Optional[str] = Field(None, max_length=255)
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(..., min_length=12, max_length=128)
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -187,6 +196,31 @@ class HoneypotNodeResponse(BaseModel):
     location_lon: Optional[float]
     last_heartbeat: Optional[datetime]
     created_at: datetime
+    #: Liveness, derived from the heartbeat age against NODE_STALE_SECONDS.
+    online: bool = False
+    heartbeat_age_seconds: Optional[int] = None
+    version: Optional[str] = None
+    #: The engine's last status report: mode, bound protocols, active
+    #: sessions, spool depth, disk space.
+    status: Optional[dict] = None
+
+
+class NodeHeartbeat(BaseModel):
+    node_id: Optional[int] = None
+    name: str
+    status: dict = {}
+    version: Optional[str] = None
+
+
+class SessionEnrichment(BaseModel):
+    intent: Optional[str] = None
+    objectives: List[str] = []
+    sophistication: Optional[str] = None
+    confidence: Optional[float] = None
+    model: Optional[str] = None
+    analysed_at: Optional[str] = None
+    reused_from_session: Optional[int] = None
+    error: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -309,10 +343,42 @@ class HoneypotSessionResponse(BaseModel):
     class_probabilities: Optional[dict] = None
     #: Wall-clock analysis time in milliseconds, against NFR-2's 200 ms budget.
     analysis_ms: Optional[float] = None
+    #: Why the rule layer chose the category, when model_source is "rules".
+    rule_reason: Optional[str] = None
+    #: Stage-2 state: not_configured, pending, running, complete, failed, skipped.
+    enrichment_status: str = "not_configured"
+    enrichment: Optional[SessionEnrichment] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+    @staticmethod
+    def _enrichment_status(obj) -> str:
+        from app.ai.llm import chimera
+
+        raw = getattr(obj, "enrichment_status", None) or "none"
+        if raw == "none":
+            return "not_configured" if not chimera.enabled else "skipped"
+        return raw
+
+    @staticmethod
+    def _enrichment(obj):
+        data = getattr(obj, "enrichment", None)
+        error = getattr(obj, "enrichment_error", None)
+        if not isinstance(data, dict) and not error:
+            return None
+        data = data if isinstance(data, dict) else {}
+        return SessionEnrichment(
+            intent=data.get("intent"),
+            objectives=[str(o) for o in (data.get("objectives") or [])],
+            sophistication=data.get("sophistication"),
+            confidence=data.get("confidence"),
+            model=data.get("model"),
+            analysed_at=data.get("analysed_at"),
+            reused_from_session=data.get("reused_from_session"),
+            error=error,
+        )
 
     @classmethod
     def from_model(cls, obj):
@@ -364,6 +430,9 @@ class HoneypotSessionResponse(BaseModel):
             scanner_operator=obj.scanner_operator,
             class_probabilities=obj.class_probabilities,
             analysis_ms=obj.analysis_ms,
+            rule_reason=getattr(obj, "rule_reason", None),
+            enrichment_status=cls._enrichment_status(obj),
+            enrichment=cls._enrichment(obj),
             created_at=obj.created_at,
         )
 
@@ -377,15 +446,25 @@ class SessionListResponse(BaseModel):
 
 class AlertResponse(BaseModel):
     id: int
-    session_id: int
+    #: Null for system alerts.
+    session_id: Optional[int] = None
+    kind: str = "session"
+    attacker_ip: Optional[str] = None
+    node_id: Optional[int] = None
     severity: AttackSeverity
     title: str
     description: Optional[str]
     status: AlertStatusEnum
     assigned_to_id: Optional[int]
+    assigned_to_name: Optional[str] = None
     auto_generated: bool
     mitre_tactics: Optional[List[str]]
     mitre_techniques: Optional[List[MitreTechnique]]
+    notes: Optional[str] = None
+    occurrences: int = 1
+    last_seen_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime]
 
@@ -396,6 +475,15 @@ class AlertResponse(BaseModel):
 class AlertUpdate(BaseModel):
     status: Optional[AlertStatusEnum] = None
     assigned_to_id: Optional[int] = None
+    #: Clear the assignee. A null assigned_to_id cannot express this, because
+    #: an omitted field and an explicit null look the same to the handler.
+    unassign: bool = False
+    notes: Optional[str] = Field(None, max_length=4000)
+
+
+class AlertBulkUpdate(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=200)
+    status: AlertStatusEnum
 
 
 class AlertListResponse(BaseModel):
@@ -451,7 +539,7 @@ class LiveSessionEvent(BaseModel):
 class AlertThresholdCreate(BaseModel):
     name: str
     min_severity: AttackSeverity = AttackSeverity.MEDIUM
-    anomaly_score_threshold: float = 0.7
+    anomaly_score_threshold: float = 0.6
     email_enabled: bool = True
     webhook_enabled: bool = False
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   CircleMarker, MapContainer, Popup, TileLayer, Tooltip, ZoomControl,
 } from 'react-leaflet'
@@ -6,6 +7,8 @@ import 'leaflet/dist/leaflet.css'
 import { api } from '../services/api'
 import ErrorBanner from '../components/ErrorBanner'
 import { LoadingRegion } from '../components/Loading'
+import { useVisiblePoll } from '../hooks/useVisiblePoll'
+import { clean } from '../lib/text'
 import { SEVERITY_COLOR, SEVERITY_ORDER, CATEGORY_LABEL } from '../lib/severity'
 
 const REFRESH_MS = 10000
@@ -39,12 +42,9 @@ export default function LiveMap() {
 
   useEffect(() => {
     const timer = setTimeout(fetchEvents, 0)
-    const interval = setInterval(fetchEvents, REFRESH_MS)
-    return () => {
-      clearTimeout(timer)
-      clearInterval(interval)
-    }
+    return () => clearTimeout(timer)
   }, [fetchEvents])
+  useVisiblePoll(fetchEvents, REFRESH_MS)
 
   // An event is mappable only when geolocation actually resolved. Sessions
   // without a location are counted separately rather than silently dropped.
@@ -139,7 +139,7 @@ export default function LiveMap() {
                   >
                     <Tooltip direction="top" offset={[0, -10]}>
                       <span className="readout text-xs font-semibold">
-                        {event.attacker_ip}
+                        {clean(event.attacker_ip)}
                       </span>
                       <br />
                       <span className="text-xs">
@@ -148,7 +148,11 @@ export default function LiveMap() {
                     </Tooltip>
                     <Popup>
                       <div className="min-w-44 space-y-1">
-                        <p className="readout text-xs font-semibold">{event.attacker_ip}</p>
+                        <p className="readout text-xs font-semibold">
+                          <Link to={`/attackers/${encodeURIComponent(event.attacker_ip)}`} title="Everything this address has done">
+                            {clean(event.attacker_ip)}
+                          </Link>
+                        </p>
                         <p className="text-xs">
                           {event.geo_country_name || event.geo_country || 'Unknown origin'}
                         </p>
@@ -162,6 +166,9 @@ export default function LiveMap() {
                         </p>
                         <p className="readout text-[11px] opacity-70">
                           {new Date(event.timestamp).toLocaleString()}
+                        </p>
+                        <p className="text-xs">
+                          <Link to={`/sessions?session=${event.session_id}`}>Open session</Link>
                         </p>
                       </div>
                     </Popup>

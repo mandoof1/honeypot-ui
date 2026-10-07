@@ -15,7 +15,11 @@ settings = get_settings()
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep the application's loggers alive. fileConfig defaults to disabling
+    # every existing logger, which silenced the whole backend (workers,
+    # enrichment, errors) from the moment migrations ran at startup; only
+    # uvicorn's own access log survived.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -14,4 +14,4 @@ RemainAfterExit=yes
 ExecStart=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh
 
 [Install]
-WantedBy=multi-user.target docker.service
+WantedBy=multi-user.target

@@ -6,6 +6,9 @@ import ErrorBanner from '../components/ErrorBanner'
 import { SkeletonBlock } from '../components/Loading'
 import { CompositionBar, HourTrace, RankList } from '../components/charts'
 import { SeverityRail } from '../components/Severity'
+import { useVisiblePoll } from '../hooks/useVisiblePoll'
+import { networkLabel } from '../lib/origin'
+import { clean } from '../lib/text'
 import {
   CATEGORY_COLOR, CATEGORY_LABEL, HANDS_ON_PROFILES,
   PROFILE_LABEL_SHORT, timeAgo,
@@ -101,9 +104,20 @@ function FeedRow({ event }) {
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="readout truncate text-[13px] text-paper">
-            {event.attacker_ip}
-          </span>
+          <Link
+            to={`/attackers/${encodeURIComponent(event.attacker_ip)}`}
+            className="readout truncate text-[13px] text-paper hover:underline"
+            title="Everything this address has done"
+          >
+            {clean(event.attacker_ip)}
+          </Link>
+          <Link
+            to={`/sessions?session=${event.session_id}`}
+            className="shrink-0 text-[11px] text-paper-3 hover:text-paper"
+            title="Open this session"
+          >
+            open
+          </Link>
           <span className="readout shrink-0 text-[11px] uppercase text-paper-3">
             {event.protocol || '—'}
           </span>
@@ -114,7 +128,7 @@ function FeedRow({ event }) {
           </span>
           <span aria-hidden="true">·</span>
           <span className="truncate">
-            {event.geo_country_name || event.geo_country || 'Unknown origin'}
+            {event.geo_country_name || event.geo_country || networkLabel(event.attacker_ip) || 'Unknown origin'}
           </span>
         </div>
       </div>
@@ -177,18 +191,16 @@ export default function Dashboard() {
 
   useEffect(() => {
     const timer = setTimeout(fetchData, 0)
-    const interval = setInterval(fetchData, REFRESH_MS)
-    return () => {
-      clearTimeout(timer)
-      clearInterval(interval)
-    }
+    return () => clearTimeout(timer)
   }, [fetchData])
+  // Polls only while the tab is visible and never overlaps itself.
+  useVisiblePoll(fetchData, REFRESH_MS)
 
   if (loading) return <LoadingSkeleton />
 
   const countries = Object.entries(
     liveEvents.reduce((acc, e) => {
-      const name = e.geo_country_name || e.geo_country
+      const name = e.geo_country_name || e.geo_country || networkLabel(e.attacker_ip)
       if (name) acc[name] = (acc[name] || 0) + 1
       return acc
     }, {}),
@@ -205,8 +217,9 @@ export default function Dashboard() {
 
   const repeats = (stats?.top_attacker_ips || []).slice(0, 6).map((a) => ({
     key: a.ip,
-    label: a.ip,
-    sub: a.country || undefined,
+    label: clean(a.ip),
+    href: `/attackers/${encodeURIComponent(a.ip)}`,
+    sub: a.country || networkLabel(a.ip) || undefined,
     value: a.count,
   }))
 

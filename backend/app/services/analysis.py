@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import ipaddress
 import json
 import logging
@@ -15,8 +16,9 @@ from app.models import (
 from app.schemas import DashboardStats
 # AI modules imported lazily below
 from app.services.geoip import geoip_service
-from app.services.alerting import alerting_service
 from app.services import thresholds
+from app.services import alerts as alert_service
+from app.services import enrichment
 from app.services.scanners import scanner_registry
 from app.core.encryption import encrypt_data
 
@@ -103,19 +105,36 @@ _RECON_SIGNALS = {
 }
 _EXPLOIT_SIGNALS = {
     "sql_injection", "xss", "command_injection", "log4shell", "lfi_rfi",
-    "webshell", "exploitation_framework", "reverse_shell", "c2_framework",
+    "webshell", "ssrf", "exploitation_framework", "reverse_shell", "c2_framework",
     "credential_theft", "password_cracker", "privilege_modification",
-    "persistence", "lateral_movement", "web_proxy",
+    "persistence", "lateral_movement", "web_proxy", "cryptomining", "iot_botnet",
 }
 _EXFIL_SIGNALS = {"exfiltration"}
 _EXPLOIT_INTENTS = {
     "credential_harvesting", "privilege_escalation", "lateral_movement",
     "persistence", "ransomware", "botnet", "defacement", "denial_of_service",
-    "web_exploitation",
+    "web_exploitation", "cryptomining",
 }
 
 #: Failed logins at or above this in one session read as a brute-force attempt.
 _BRUTE_FORCE_THRESHOLD = 3
+
+
+def _valid_uuid(value) -> Optional[str]:
+    """The engine's own session id, when it sent a well-formed one.
+
+    Used as the stored session_uuid so a retried ingest (the engine spools
+    and resends when the backend was unreachable) is recognised as the same
+    session rather than stored twice.
+    """
+    if not value:
+        return None
+    try:
+        import uuid as _uuid
+
+        return str(_uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _looks_like_ip(value: str) -> bool:
@@ -163,7 +182,8 @@ class AnalysisPipeline:
             session_data.get("flow"), str(session_data.get("protocol") or "")
         )
 
-        nlp_result = nlp_engine.analyze_commands(commands)
+        protocol = str(session_data.get("protocol") or "")
+        nlp_result = nlp_engine.analyze_commands(commands, protocol)
 
         payload = str(session_data.get("payload") or "")[:MAX_PAYLOAD_CHARS]
         if payload:
@@ -234,7 +254,6 @@ class AnalysisPipeline:
         iocs = self._extract_iocs(attacker_ip, nlp_result, session_data)
 
         severity = self._determine_severity(ai_result, anomaly_result, nlp_result)
-        alert_payload = None
 
         raw_commands_encrypted = encrypt_data("\n".join(commands)) if commands else None
         raw_payloads_encrypted = encrypt_data(payload) if payload else None
@@ -252,7 +271,10 @@ class AnalysisPipeline:
             encrypt_data(json.dumps(credentials)) if credentials else None
         )
 
+        engine_uuid = _valid_uuid(session_data.get("session_id"))
+
         db_session = HoneypotSession(
+            **({"session_uuid": engine_uuid} if engine_uuid else {}),
             node_id=node_id,
             protocol=str(session_data.get("protocol") or "unknown")[:20],
             attacker_ip=attacker_ip,
@@ -294,6 +316,11 @@ class AnalysisPipeline:
             network_events=session_data.get("events") or [],
             keystroke_count=int(session_data.get("keystroke_count") or 0),
             scanner_operator=scanner_registry.identify(attacker_ip),
+            rule_reason=(rule_reason or None) and rule_reason[:300],
+            transcript_sha256=(
+                hashlib.sha256("\n".join(commands).encode("utf-8", "replace")).hexdigest()
+                if commands else None
+            ),
             class_probabilities=ai_result.get("probabilities"),
             # The packet summary column has been indexed since the first
             # migration and never written.
@@ -324,42 +351,29 @@ class AnalysisPipeline:
             db, severity, anomaly_result["anomaly_score"]
         )
 
+        alert_outcome = None
         if decision.should_alert:
-            alert = Alert(
-                session_id=db_session.id,
+            alert_outcome = await alert_service.raise_session_alert(
+                db,
+                session=db_session,
                 severity=severity,
-                title=f"{ai_result['category'].title()} attack from {attacker_ip}",
-                description=f"AI classified session as {ai_result['category']} with {ai_result['confidence']:.1%} confidence. "
-                            f"Profile: {profile_result['profile']}. "
-                            f"Tools: {', '.join(nlp_result.get('tool_names', ['none']))}.",
-                mitre_tactics=mitre_result.get("tactic_ids", []),
-                mitre_techniques=mitre_result.get("techniques", []),
+                category=ai_result["category"],
+                confidence=float(ai_result.get("confidence") or 0.0),
+                profile=profile_result["profile"],
+                tools=nlp_result.get("tool_names", []),
+                mitre_result=mitre_result,
+                geo=geo,
+                decision=decision,
+                rule_reason=rule_reason,
             )
-            db.add(alert)
-            await db.flush()
 
-            alert_payload = {
-                "severity": severity.value,
-                "title": alert.title,
-                "description": alert.description,
-                "attacker_ip": attacker_ip,
-                "geo": geo,
-                "attack_category": ai_result["category"],
-                "attacker_profile": profile_result["profile"],
-                "detected_tools": nlp_result.get("tool_names", []),
-                "mitre_techniques": mitre_result.get("techniques", []),
-                "timestamp": db_session.started_at.isoformat(),
-                "session_uuid": db_session.session_uuid,
-                # Which rule fired, so the operator reading the notification
-                # knows why it reached them.
-                "matched_thresholds": decision.matched,
-                "channels": {"email": decision.email, "webhook": decision.webhook},
-            }
+        # Queue stage 2 for the sessions worth a model's time. The worker in
+        # the backend service drains this; nothing here waits on it.
+        db_session.enrichment_status = enrichment.initial_status(
+            db_session, nlp_result, session_data
+        )
 
         await db.commit()
-
-        if alert_payload is not None:
-            await alerting_service.send_alert(alert_payload)
 
         analysis_ms = (time.perf_counter() - started) * 1000.0
         if analysis_ms > ANALYSIS_BUDGET_MS:
@@ -390,6 +404,8 @@ class AnalysisPipeline:
             "mitre_attack": mitre_result,
             "severity": severity.value,
             "iocs": iocs,
+            "alert": alert_outcome,
+            "enrichment_status": db_session.enrichment_status,
         }
 
     def _extract_iocs(self, attacker_ip: str, nlp_result: Dict, session_data: Dict) -> List[Dict]:

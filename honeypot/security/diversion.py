@@ -57,6 +57,20 @@ HARMLESS_BAIT = frozenset({"/robots.txt", "/sitemap.xml"})
 #: Failed logins are counted over this many seconds.
 FAILED_LOGIN_WINDOW = 600
 
+#: Longest user agent and session token kept as table keys. Both are
+#: attacker-supplied; unbounded, one keep-alive connection could fill each
+#: table's 10k entries with 64 KiB strings.
+MAX_AGENT_KEY = 512
+MAX_TOKEN_KEY = 256
+
+
+def _key(ip: str, agent: str) -> tuple[str, str]:
+    return ip, (agent or "")[:MAX_AGENT_KEY]
+
+
+def _token_key(token: Optional[str]) -> Optional[str]:
+    return token[:MAX_TOKEN_KEY] if token else None
+
 
 def scanner_agent(agent: str) -> Optional[str]:
     """The attack tool a user agent names, if it names one."""
@@ -121,7 +135,8 @@ class DiversionTable:
     def lookup(self, ip: str, agent: str, token: Optional[str]) -> Optional[Mark]:
         """The client's mark, renewed, if it is being diverted."""
         now = self._clock()
-        mark = self._live(self._clients, (ip, agent), now)
+        token = _token_key(token)
+        mark = self._live(self._clients, _key(ip, agent), now)
         if mark is None and token:
             mark = self._live(self._tokens, token, now)
         if mark is None:
@@ -130,28 +145,31 @@ class DiversionTable:
         # Whichever way it was recognised, remember it the other way too: a
         # session seen from a new address keeps that address diverted even if
         # the cookie is later dropped.
-        self._remember(self._clients, (ip, agent), mark)
+        self._remember(self._clients, _key(ip, agent), mark)
         if token:
             self._remember(self._tokens, token, mark)
         return mark
 
     def divert(self, ip: str, agent: str, token: Optional[str], reason: str) -> Mark:
         mark = Mark(reason=reason, since=time.time(), expires=self._clock() + self.ttl)
-        self._remember(self._clients, (ip, agent), mark)
+        token = _token_key(token)
+        self._remember(self._clients, _key(ip, agent), mark)
         if token:
             self._remember(self._tokens, token, mark)
-        self._failures.pop((ip, agent), None)
+        self._failures.pop(_key(ip, agent), None)
         return mark
 
     def adopt(self, tokens: Iterable[str], mark: Mark) -> None:
         """Divert the sessions the decoy application issued to a client."""
         for token in tokens:
-            self._remember(self._tokens, token, mark)
+            token = _token_key(token)
+            if token:
+                self._remember(self._tokens, token, mark)
 
     def failed_login(self, ip: str, agent: str) -> int:
         """Count a failed login; the number in the current window."""
         now = self._clock()
-        key = (ip, agent)
+        key = _key(ip, agent)
         recent = [t for t in self._failures.get(key, []) if t > now - FAILED_LOGIN_WINDOW]
         recent.append(now)
         self._failures[key] = recent

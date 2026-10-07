@@ -3,6 +3,8 @@ Description=HoneySentinel: database backup
 Requires=docker.service
 After=docker.service
 
+OnFailure=honeysentinel-backup-failed.service
+
 [Service]
 Type=oneshot
 ExecStart=/opt/honeysentinel/deploy/server/backup.sh

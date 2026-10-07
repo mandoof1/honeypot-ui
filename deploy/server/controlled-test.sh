@@ -33,6 +33,8 @@ create temp table t on commit drop as
 create temp table t_samples on commit drop as
   select distinct sample_id from session_artifacts where session_id in (select id from t);
 delete from alerts where session_id in (select id from t);
+-- System alerts about the test engine itself (it stops reporting by design).
+delete from alerts where kind = 'system' and node_id in (select id from honeypot_nodes where name = '$NODE');
 delete from indicators_of_compromise where session_id in (select id from t);
 delete from honeypot_sessions where id in (select id from t);  -- artifacts cascade
 -- A sample also seen in a real session stays; one only the test produced goes.
@@ -59,7 +61,14 @@ docker run -d --name hs-test --network "$NET" \
   -e HONEYPOT_LOG_DIR=/app/data/logs \
   -e BACKEND_API_URL=http://ingest:8000/api/v1 -e HONEYPOT_INGEST_TOKEN="$HONEYPOT_INGEST_TOKEN" \
   "$IMAGE" >/dev/null
-trap 'docker rm -f hs-test >/dev/null 2>&1 || true' EXIT
+# On exit the test engine is gone, so mark its node inactive: the liveness
+# check only watches active nodes, and a throwaway engine that stopped
+# heartbeating is not an outage worth an alert.
+retire_node() {
+  docker rm -f hs-test >/dev/null 2>&1 || true
+  psql -q -c "update honeypot_nodes set is_active = false, offline_alerted = false where name = '$NODE';" 2>/dev/null || true
+}
+trap retire_node EXIT
 
 for _ in $(seq 1 30); do
   docker logs hs-test 2>&1 | grep -q "All honeypot services started" && break

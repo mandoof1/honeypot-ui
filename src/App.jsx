@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -16,6 +16,15 @@ const Alerts = lazy(() => import('./pages/Alerts'))
 const Indicators = lazy(() => import('./pages/Indicators'))
 const Payloads = lazy(() => import('./pages/Payloads'))
 const Settings = lazy(() => import('./pages/Settings'))
+const AttackerProfile = lazy(() => import('./pages/AttackerProfile'))
+
+/** Send an unauthenticated visitor to sign in, remembering where they were going. */
+function RedirectToLogin() {
+  const location = useLocation()
+  const target = `${location.pathname}${location.search}`
+  const next = target && target !== '/' ? `?next=${encodeURIComponent(target)}` : ''
+  return <Navigate to={`/login${next}`} replace />
+}
 
 function AuthRoutes() {
   const { user, loading } = useAuth()
@@ -34,7 +43,7 @@ function AuthRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<RedirectToLogin />} />
       </Routes>
     )
   }
@@ -45,6 +54,7 @@ function AuthRoutes() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/map" element={<LiveMap />} />
         <Route path="/sessions" element={<SessionLogs />} />
+        <Route path="/attackers/:ip" element={<AttackerProfile />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/indicators" element={<Indicators />} />
         <Route path="/payloads" element={<Payloads />} />

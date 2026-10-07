@@ -31,6 +31,8 @@ services:
       dockerfile: Dockerfile
     container_name: honeysentinel-backend
     environment:
+      # Single process locally, so it also runs the queue/outbox/liveness workers.
+      BACKGROUND_WORKERS: "true"
       ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://honeypot:${POSTGRES_PASSWORD:-honeypot}@postgres:5432/honeysentinel
       DATABASE_URL_SYNC: postgresql+psycopg2://honeypot:${POSTGRES_PASSWORD:-honeypot}@postgres:5432/honeysentinel
@@ -89,7 +91,6 @@ services:
       HONEYPOT_FTP_PASV_ADDRESS: ${HONEYPOT_FTP_PASV_ADDRESS:-127.0.0.1}
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
-      HONEYPOT_LOG_DIR: /app/data/logs
       BACKEND_API_URL: http://backend:8000/api/v1
       HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:-local-dev-ingest-token}
     ports:
@@ -118,13 +119,16 @@ services:
       - honeypot_data:/app/data
     cap_drop:
       - ALL
-    cap_add:
-      - NET_BIND_SERVICE
     read_only: true
     tmpfs:
       - /tmp:noexec,nosuid,size=100M
     security_opt:
       - no-new-privileges:true
+    # Long enough for open sessions to be closed and delivered (the engine
+    # drains for 8 s) before Docker sends SIGKILL.
+    stop_grace_period: 20s
+    mem_limit: 1g
+    pids_limit: 256
     restart: unless-stopped
 
   frontend:

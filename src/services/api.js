@@ -195,6 +195,28 @@ export const api = {
         body: JSON.stringify(data),
       }),
     me: () => request('/auth/me'),
+    changePassword: (current_password, new_password) =>
+      request('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password, new_password }),
+      }),
+    // Administration. Sign-up needs email this deployment cannot send, so
+    // accounts are created here instead.
+    users: {
+      list: () => request('/auth/users'),
+      create: (data) =>
+        request('/auth/users', { method: 'POST', body: JSON.stringify(data) }),
+      setRole: (id, role) =>
+        request(`/auth/users/${id}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }),
+      update: (id, data) =>
+        request(`/auth/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      resetMfa: (id) => request(`/auth/users/${id}/reset-mfa`, { method: 'POST' }),
+      resetPassword: (id, new_password) =>
+        request(`/auth/users/${id}/reset-password`, {
+          method: 'POST',
+          body: JSON.stringify({ new_password }),
+        }),
+    },
   },
 
   dashboard: {
@@ -209,6 +231,10 @@ export const api = {
     transcript: (id) => request(`/sessions/${id}/transcript`),
     // Admin only, and the read is audit-logged server side.
     credentials: (id) => request(`/sessions/${id}/credentials`),
+    // Queue the language-model analysis stage for one session.
+    enrich: (id) => request(`/sessions/${id}/enrich`, { method: 'POST' }),
+    // Everything one source address has done, aggregated.
+    attacker: (ip, options = {}) => request(`/sessions/attacker/${encodeURIComponent(ip)}`, options),
   },
 
   alerts: {
@@ -216,6 +242,8 @@ export const api = {
     get: (id) => request(`/alerts/${id}`),
     update: (id, data) =>
       request(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    bulk: (ids, status) =>
+      request('/alerts/bulk', { method: 'POST', body: JSON.stringify({ ids, status }) }),
     stats: () => request('/alerts/stats'),
   },
 
@@ -235,7 +263,7 @@ export const api = {
   },
 
   nodes: {
-    list: (activeOnly = false) => request(`/nodes/?active_only=${activeOnly}`),
+    list: (activeOnly = false, options = {}) => request(`/nodes/?active_only=${activeOnly}`, options),
     get: (id) => request(`/nodes/${id}`),
     create: (data) =>
       request('/nodes/', { method: 'POST', body: JSON.stringify(data) }),

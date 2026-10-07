@@ -1,10 +1,12 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { Bell, ChevronUp, LogOut, Menu, X } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { LoadingRegion } from '../components/Loading'
 import { api } from '../services/api'
+import { useVisiblePoll } from '../hooks/useVisiblePoll'
+import { nodeLiveness, relativeTime } from '../lib/format'
 
 const NAV = [
   { to: '/', label: 'Overview' },
@@ -17,6 +19,7 @@ const NAV = [
 ]
 
 const STATUS_POLL_MS = 30000
+const BASE_TITLE = 'HoneySentinel — Honeypot Console'
 
 /** The console's mark: a cell, drawn rather than pulled from an icon set. */
 function Mark({ className = '' }) {
@@ -38,11 +41,17 @@ function Mark({ className = '' }) {
  * down, nothing else on screen is being updated. It sits above the account
  * block so it is the last thing in the reading order before the fold.
  */
-function EngineReadout({ engine, nodeCount }) {
+function EngineReadout({ engine, nodes, now }) {
   const state =
     engine === null ? 'unknown'
       : !engine.reachable ? 'unreachable'
         : engine.running ? 'running' : 'stopped'
+
+  const nodeCount = nodes === null ? null : nodes.length
+  const liveness = (nodes || []).map((n) => nodeLiveness(n, now))
+  const online = liveness.filter((l) => l.state === 'online').length
+  const stale = liveness.filter((l) => l.state === 'stale')
+  const oldest = stale.reduce((max, l) => Math.max(max, l.ageSeconds || 0), 0)
 
   const tone = {
     unknown: 'var(--color-paper-3)',
@@ -68,19 +77,27 @@ function EngineReadout({ engine, nodeCount }) {
         />
         <span className="text-[13px] font-medium text-paper">{text}</span>
       </div>
-      <div className="mt-2 flex items-baseline gap-1.5">
-        <span className="readout text-[11px] text-paper-2">
-          {nodeCount === null ? '—' : nodeCount}
+      <NavLink
+        to="/settings#engines"
+        className="mt-2 flex items-baseline gap-1.5 transition-colors hover:text-paper"
+        title={stale.length ? `${stale.length} engine(s) not reporting` : 'Engine status'}
+        data-testid="engines-chip"
+      >
+        <span
+          className="readout text-[11px]"
+          style={{ color: stale.length ? 'var(--color-s4)' : 'var(--color-paper-2)' }}
+        >
+          {nodeCount === null ? '—' : `${online}/${nodeCount}`}
         </span>
         <span className="text-[11px] text-paper-3">
-          {nodeCount === 1 ? 'node' : 'nodes'}
+          {stale.length ? `engines · stale ${relativeTime(now - oldest * 1000, now)}` : 'engines online'}
         </span>
-        {engine?.protocols?.length > 0 && (
+        {!stale.length && engine?.protocols?.length > 0 && (
           <span className="readout ml-auto truncate text-[11px] uppercase text-paper-3">
             {engine.protocols.join(' ')}
           </span>
         )}
-      </div>
+      </NavLink>
     </div>
   )
 }
@@ -90,32 +107,36 @@ export default function DashboardLayout() {
   const [railOpen, setRailOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const [engine, setEngine] = useState(null)
-  const [nodeCount, setNodeCount] = useState(null)
+  const [nodes, setNodes] = useState(null)
+  const [polledAt, setPolledAt] = useState(() => Date.now())
   const [newAlerts, setNewAlerts] = useState(0)
   const location = useLocation()
 
-  useEffect(() => {
-    let cancelled = false
-
-    const poll = async () => {
-      const [status, nodes, alertStats] = await Promise.all([
-        api.honeypot.status().catch(() => ({ reachable: false })),
-        api.nodes.list(true).catch(() => null),
-        api.alerts.stats().catch(() => null),
-      ])
-      if (cancelled) return
-      setEngine(status)
-      setNodeCount(nodes ? nodes.length : null)
-      setNewAlerts(alertStats?.new ?? 0)
-    }
-
-    poll()
-    const interval = setInterval(poll, STATUS_POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
+  const poll = useCallback(async () => {
+    const [status, nodeRows, alertStats] = await Promise.all([
+      api.honeypot.status().catch(() => ({ reachable: false })),
+      api.nodes.list(true).catch(() => null),
+      api.alerts.stats().catch(() => null),
+    ])
+    setEngine(status)
+    setNodes(Array.isArray(nodeRows) ? nodeRows : null)
+    setPolledAt(Date.now())
+    setNewAlerts(alertStats?.new ?? 0)
   }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(poll, 0)
+    return () => clearTimeout(timer)
+  }, [poll])
+  useVisiblePoll(poll, STATUS_POLL_MS)
+
+  // The unread count belongs in the tab title too: an analyst with the
+  // console in a background tab should see "(3) HoneySentinel" without
+  // switching to it.
+  useEffect(() => {
+    document.title = newAlerts > 0 ? `(${newAlerts > 99 ? '99+' : newAlerts}) ${BASE_TITLE}` : BASE_TITLE
+    return () => { document.title = BASE_TITLE }
+  }, [newAlerts])
 
   useEffect(() => {
     if (!accountOpen && !railOpen) return undefined
@@ -199,7 +220,7 @@ export default function DashboardLayout() {
           ))}
         </nav>
 
-        <EngineReadout engine={engine} nodeCount={nodeCount} />
+        <EngineReadout engine={engine} nodes={nodes} now={polledAt} />
 
         <div className="relative border-t border-line">
           <button

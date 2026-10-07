@@ -56,6 +56,19 @@ class ShellState:
     cwd: str = "/home/user"
     files: dict[str, DroppedFile] = field(default_factory=dict)
     last_used: float = field(default_factory=time.time)
+    #: The logged-in user's home, so ``~`` and the prompt agree with the
+    #: account that authenticated rather than always meaning /home/user.
+    home: str = "/home/user"
+    #: Directories the attacker created with mkdir, so ``mkdir d && cd d``
+    #: works; and ones they removed, so the fake tree forgets them.
+    dirs: set[str] = field(default_factory=set)
+    removed: set[str] = field(default_factory=set)
+    #: Command lines in order, for ``history``.
+    history: list[str] = field(default_factory=list)
+    #: Exit status of the last command, for ``$?``.
+    last_status: int = 0
+    #: Environment the attacker exported this session.
+    env: dict[str, str] = field(default_factory=dict)
     #: Bytes written through the shell, by path.
     contents: dict[str, bytearray] = field(default_factory=dict)
     #: How each path's bytes arrived — echo, base64, heredoc — in order.
@@ -106,8 +119,27 @@ class ShellState:
             if content
         ]
 
-    def display_cwd(self, home: str = "/home/user") -> str:
+    def remember(self, command: str) -> None:
+        if len(self.history) >= 500:
+            del self.history[: len(self.history) - 499]
+        self.history.append(command)
+
+    def remove_path(self, path: str, recursive: bool) -> None:
+        """Forget a file, or with ``recursive`` everything beneath a directory."""
+        self.files.pop(path, None)
+        self.contents.pop(path, None)
+        self.methods.pop(path, None)
+        if recursive:
+            prefix = path.rstrip("/") + "/"
+            for store in (self.files, self.contents, self.methods):
+                for key in [k for k in store if k.startswith(prefix)]:
+                    store.pop(key, None)
+            self.dirs = {d for d in self.dirs if d != path and not d.startswith(prefix)}
+        self.dirs.discard(path)
+
+    def display_cwd(self, home: str | None = None) -> str:
         """The prompt form: ``~`` for home, ``~/x`` beneath it."""
+        home = home or self.home
         if self.cwd == home:
             return "~"
         if self.cwd.startswith(home + "/"):

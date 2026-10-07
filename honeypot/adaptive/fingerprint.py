@@ -1,68 +1,39 @@
+"""Service banners, tied to one consistent machine.
+
+This used to keep its own pools and rotate them hourly: the SSH banner, the
+FTP greeting, the HTTP ``Server`` header, ``X-Powered-By`` and the OS reported
+by ``uname`` were each chosen independently and re-chosen on a timer. So a
+scanner could see an Apache ``Server`` header beside a vsftpd greeting beside a
+CentOS kernel, none of which agreed, and a returning visitor saw the box change
+underneath them. Independent randomness across services is itself the tell.
+
+Now every banner is derived from the engine's :class:`HostIdentity`, which is
+decided once and persisted, so the FTP greeting, the HTTP server string and the
+kernel ``uname`` reports all describe the same host and stay put across
+restarts. The rotation machinery is kept as a no-op shim so the callers that
+start and stop it do not need to change, but nothing rotates: a honeypot that
+changes its fingerprint every hour is easier to spot, not harder.
+"""
+
 import asyncio
 import logging
 import random
-import time
 from typing import Optional
 
 from honeypot.core.config import config
+from honeypot.core.identity import get_identity
 
 logger = logging.getLogger(__name__)
 
 
 class FingerprintEngine:
     def __init__(self):
-        self._ssh_banners = [
-            "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
-            "SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.9",
-            "SSH-2.0-OpenSSH_7.6p1 Ubuntu-4ubuntu0.7",
-            "SSH-2.0-OpenSSH_9.0p1 Ubuntu-1ubuntu1",
-            "SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u3",
-            "SSH-2.0-OpenSSH_7.4p1 CentOS-7",
-            "SSH-2.0-OpenSSH_8.0p1 RHEL-8",
-        ]
-        self._ftp_banners = [
-            "220 (vsFTPd 3.0.5)",
-            "220 (vsFTPd 3.0.3)",
-            "220 (vsFTPd 2.3.5)",
-            "220 ProFTPD 1.3.7a Server",
-            "220 ProFTPD 1.3.6c Server",
-            "220 (FTPd 1.0.0)",
-            "220 Microsoft FTP Service",
-        ]
-        self._http_servers = [
-            "Apache/2.4.52 (Ubuntu)",
-            "Apache/2.4.41 (Ubuntu)",
-            "Apache/2.4.38 (Debian)",
-            "nginx/1.24.0",
-            "nginx/1.18.0 (Ubuntu)",
-            "Apache/2.4.57 (Unix)",
-        ]
-        self._x_powered_by = [
-            "PHP/8.1.2",
-            "PHP/8.0.30",
-            "PHP/7.4.33",
-            "PHP/8.2.12",
-            "Express",
-            "ASP.NET",
-        ]
-        self._os_signatures = [
-            {"name": "Ubuntu 22.04", "kernel": "5.15.0-91-generic", "arch": "x86_64"},
-            {"name": "Ubuntu 20.04", "kernel": "5.4.0-150-generic", "arch": "x86_64"},
-            {"name": "Debian 11", "kernel": "5.10.0-26-amd64", "arch": "x86_64"},
-            {"name": "CentOS 7", "kernel": "3.10.0-1160.el7.x86_64", "arch": "x86_64"},
-            {"name": "RHEL 8", "kernel": "4.18.0-477.el8.x86_64", "arch": "x86_64"},
-        ]
-        self._current_ssh_banner = random.choice(self._ssh_banners)
-        self._current_ftp_banner = random.choice(self._ftp_banners)
-        self._current_http_server = random.choice(self._http_servers)
-        self._current_x_powered_by = random.choice(self._x_powered_by)
-        self._current_os = random.choice(self._os_signatures)
-        self._last_rotation = time.time()
         self._rotation_task: Optional[asyncio.Task] = None
 
     async def start_rotation(self):
-        self._rotation_task = asyncio.create_task(self._rotate_profiles())
-        logger.info("Anti-fingerprinting profile rotation started")
+        # Retained for callers; the identity is stable by design, so there is
+        # nothing to rotate. Logged once so operators are not surprised.
+        logger.info("Service banners pinned to the host identity (no rotation)")
 
     async def stop_rotation(self):
         if self._rotation_task:
@@ -71,86 +42,52 @@ class FingerprintEngine:
                 await self._rotation_task
             except asyncio.CancelledError:
                 pass
-        logger.info("Anti-fingerprinting profile rotation stopped")
 
-    async def _rotate_profiles(self):
-        while True:
-            await asyncio.sleep(config.banner_rotation_interval)
-            self._rotate()
-            logger.info("Honeypot profiles rotated")
-
-    def _rotate(self):
-        self._current_ssh_banner = random.choice(self._ssh_banners)
-        self._current_ftp_banner = random.choice(self._ftp_banners)
-        self._current_http_server = random.choice(self._http_servers)
-        self._current_x_powered_by = random.choice(self._x_powered_by)
-        self._current_os = random.choice(self._os_signatures)
-        self._last_rotation = time.time()
+    # -- banners, all from the one identity ------------------------------
 
     def get_ssh_banner(self) -> str:
-        if config.enable_anti_fingerprinting:
-            return self._current_ssh_banner
-        return "SSH-2.0-HoneySentinel-1.0"
+        # The authoritative SSH identity is the transport profile in
+        # ssh_profile.py, which pins banner and KEXINIT together; this mirrors
+        # it for any caller that only wants the string.
+        if not config.enable_anti_fingerprinting:
+            return "SSH-2.0-HoneySentinel-1.0"
+        from honeypot.adaptive.ssh_profile import get_profile
+
+        return get_profile(config.ssh_profile).banner
 
     def get_ftp_banner(self) -> str:
-        if config.enable_anti_fingerprinting:
-            return self._current_ftp_banner
-        return "220 (HoneySentinel FTP 1.0)"
+        if not config.enable_anti_fingerprinting:
+            return "220 (HoneySentinel FTP 1.0)"
+        return get_identity().ftp_banner_text()
 
     def get_http_server_header(self) -> str:
-        if config.enable_anti_fingerprinting:
-            return self._current_http_server
-        return "HoneySentinel/1.0"
+        if not config.enable_anti_fingerprinting:
+            return "HoneySentinel/1.0"
+        return get_identity().http_server
 
-    def get_x_powered_by(self) -> str:
-        if config.enable_anti_fingerprinting:
-            return self._current_x_powered_by
-        return "HoneySentinel/1.0"
+    def get_x_powered_by(self) -> Optional[str]:
+        if not config.enable_anti_fingerprinting:
+            return "HoneySentinel/1.0"
+        # Only PHP stacks send X-Powered-By, and nginx/static sites send none.
+        return get_identity().php_version
 
     def get_os_signature(self) -> dict:
-        if config.enable_anti_fingerprinting:
-            return self._current_os
-        return {"name": "HoneySentinel", "kernel": "1.0", "arch": "x86_64"}
+        identity = get_identity()
+        if not config.enable_anti_fingerprinting:
+            return {"name": "HoneySentinel", "kernel": "1.0", "arch": "x86_64"}
+        return {
+            "name": f"{identity.os_name} {identity.os_version}",
+            "kernel": identity.kernel,
+            "arch": identity.arch,
+        }
 
     def get_response_delay(self) -> float:
         if config.enable_anti_fingerprinting:
-            return random.uniform(
-                config.response_delay_min, config.response_delay_max
-            )
+            return random.uniform(config.response_delay_min, config.response_delay_max)
         return 0.0
 
-    def get_fake_mac(self) -> str:
-        return ":".join(
-            [f"{random.randint(0, 255):02x}" for _ in range(6)]
-        )
-
     def get_fake_hostname(self) -> str:
-        hostnames = [
-            "web-server-01",
-            "db-primary",
-            "app-node-03",
-            "mail-server",
-            "file-server",
-            "dev-server",
-            "staging-01",
-            "prod-web-02",
-            "ubuntu-server",
-            "centos-box",
-        ]
-        return random.choice(hostnames)
-
-    def get_fake_uptime(self) -> str:
-        days = random.randint(1, 365)
-        hours = random.randint(0, 23)
-        minutes = random.randint(0, 59)
-        return f"{days} days, {hours:02d}:{minutes:02d}"
-
-    def get_fake_pid(self) -> int:
-        return random.randint(100, 65535)
-
-    def get_fake_port(self) -> int:
-        common_ports = [22, 80, 443, 8080, 8443, 3000, 5000, 9090]
-        return random.choice(common_ports)
+        return get_identity().hostname
 
 
 fingerprint_engine = FingerprintEngine()

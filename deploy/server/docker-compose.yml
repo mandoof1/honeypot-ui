@@ -21,6 +21,48 @@
 
 name: honeysentinel
 
+# Shared by the `backend` and `ingest` services (same image, same code).
+x-backend-env: &backend_env
+  ENVIRONMENT: production
+  DATABASE_URL: postgresql+asyncpg://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel
+  # psycopg2 (used by Alembic) takes the libpq spelling; asyncpg gets
+  # ssl=require from ENVIRONMENT=production.
+  DATABASE_URL_SYNC: postgresql+psycopg2://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel?sslmode=require
+  SECRET_KEY: ${SECRET_KEY:?run install.sh first}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run install.sh first}
+  HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run install.sh first}
+  HONEYPOT_CONTROL_URL: http://honeypot:8000
+  CORS_ORIGINS: ${DASHBOARD_ORIGIN:?run install.sh first}
+  # Caddy is the only thing that can reach the API, and it sets
+  # X-Forwarded-For itself.
+  TRUST_PROXY_HEADERS: "true"
+  # Never: the seed inserts 150 synthetic sessions. install.sh creates
+  # the administrator without them.
+  SEED_ON_STARTUP: "false"
+  GEOIP_DB_PATH: /app/geoip/city.mmdb
+  # The language model (stage 2). Points at the `wolfram` service below
+  # when the `llm` profile is on; empty disables the stage cleanly.
+  CHIMERA_URL: ${CHIMERA_URL:-}
+  CHIMERA_MODEL: ${CHIMERA_MODEL:-wolfram}
+  CHIMERA_TIMEOUT: ${CHIMERA_TIMEOUT:-300}
+  # Alert handling, retention and lockout; see deploy/server/README.md.
+  ALERT_DEDUP_WINDOW_MINUTES: ${ALERT_DEDUP_WINDOW_MINUTES:-60}
+  ALERT_SUPPRESS_SCANNERS: ${ALERT_SUPPRESS_SCANNERS:-true}
+  SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-0}
+  AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+  NODE_OFFLINE_ALERT_SECONDS: ${NODE_OFFLINE_ALERT_SECONDS:-300}
+  # Caddy (app network) and Tailscale Serve (loopback) are the proxies in
+  # front of the API; X-Forwarded-For is walked past these to the client.
+  TRUSTED_PROXIES: 127.0.0.0/8,::1,172.16.0.0/12
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+  ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+  WEBHOOK_URL: ${WEBHOOK_URL:-}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -59,43 +101,23 @@ services:
     build:
       context: ../../backend
     image: honeysentinel-backend
-    environment: &backend_env
-      ENVIRONMENT: production
-      DATABASE_URL: postgresql+asyncpg://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel
-      # psycopg2 (used by Alembic) takes the libpq spelling; asyncpg gets
-      # ssl=require from ENVIRONMENT=production.
-      DATABASE_URL_SYNC: postgresql+psycopg2://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel?sslmode=require
-      SECRET_KEY: ${SECRET_KEY:?run install.sh first}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run install.sh first}
-      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run install.sh first}
-      HONEYPOT_CONTROL_URL: http://honeypot:8000
-      CORS_ORIGINS: ${DASHBOARD_ORIGIN:?run install.sh first}
-      # Caddy is the only thing that can reach the API, and it sets
-      # X-Forwarded-For itself.
-      TRUST_PROXY_HEADERS: "true"
-      # Never: the seed inserts 150 synthetic sessions. install.sh creates
-      # the administrator without them.
-      SEED_ON_STARTUP: "false"
-      GEOIP_DB_PATH: /app/geoip/city.mmdb
-      CHIMERA_URL: ${CHIMERA_URL:-}
-      CHIMERA_MODEL: ${CHIMERA_MODEL:-chimera-14b-v2}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
-      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
-      WEBHOOK_URL: ${WEBHOOK_URL:-}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
     # One process: the per-address login and API rate limits live in its
-    # memory, and several workers would each keep their own count.
+    # memory, and several workers would each keep their own count. It is also
+    # the only process running the background workers (the LLM queue, the
+    # notification outbox, engine liveness, retention), for the same reason.
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    environment:
+      <<: *backend_env
+      BACKGROUND_WORKERS: "true"
     volumes:
       - models:/app/models
       - ./state/geoip:/app/geoip:ro
-    networks: [app, db, engine]
+    networks: [app, db, engine, llm]
     depends_on:
       postgres:
         condition: service_healthy
+    mem_limit: 2g
+    pids_limit: 512
     restart: unless-stopped
     logging: *logging
 
@@ -114,6 +136,7 @@ services:
     environment:
       <<: *backend_env
       RUN_MIGRATIONS_ON_STARTUP: "false"
+      BACKGROUND_WORKERS: "false"
     command: ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${INGEST_WORKERS:-4}"]
     volumes:
       - models:/app/models
@@ -122,6 +145,56 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    mem_limit: 3g
+    pids_limit: 1024
+    restart: unless-stopped
+    logging: *logging
+
+  # Stage-2 analysis model: the project's own fine-tune, served by llama.cpp
+  # on the CPU. On an internal network with only the backend as a client, so
+  # transcripts never leave the machine and the model has no way out either.
+  # Optional: enabled with COMPOSE_PROFILES=llm once the GGUF is in
+  # state/models (install.sh does both when it finds the file).
+  wolfram:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["llm"]
+    command:
+      - -m
+      - /models/${WOLFRAM_MODEL:-wolfram-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - ${CHIMERA_MODEL:-wolfram}
+      - -t
+      - ${WOLFRAM_THREADS:-6}
+      - -c
+      - "4096"
+      - --parallel
+      - "1"
+      - --jinja
+      # Reasoning off: the budget goes to the JSON answer.
+      - --reasoning-budget
+      - "0"
+      - -n
+      - "600"
+      - --no-webui
+    volumes:
+      - ./state/models:/models:ro
+    networks: [llm]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    mem_limit: ${WOLFRAM_MEM_LIMIT:-10g}
+    cpus: ${WOLFRAM_CPUS:-6}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
     logging: *logging
 
@@ -145,6 +218,12 @@ services:
       - /data:uid=1000,gid=1000
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 256m
     restart: unless-stopped
     logging: *logging
 
@@ -180,18 +259,23 @@ services:
       HONEYPOT_TLS_KEY: /run/decoy-tls/server.key
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
-      HONEYPOT_LOG_DIR: /app/data/logs
       BACKEND_API_URL: http://ingest:8000/api/v1
       HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN}
     ports:
       # Emulated services, deliberately reachable. The router forwards the
       # well-known ports (22, 21, 80, 443) to these; the host's real sshd
       # keeps port 22 on the LAN and tailnet.
-      - "2222:2222"
-      - "2121:2121"
-      - "8080:8080"
-      - "8443:8443"
-      - "50000-50009:50000-50009"
+      #
+      # IPv4 only, on purpose. Without a host address Docker also publishes
+      # on [::], and IPv6 clients reach the container through docker-proxy,
+      # which connects from the bridge gateway: every such session was
+      # recorded as coming from 172.30.66.1, the attacker's address lost.
+      # We saw exactly that in production. The forwarded ports are IPv4.
+      - "0.0.0.0:2222:2222"
+      - "0.0.0.0:2121:2121"
+      - "0.0.0.0:8080:8080"
+      - "0.0.0.0:8443:8443"
+      - "0.0.0.0:50000-50009:50000-50009"
     networks:
       decoy: {}
       engine:
@@ -202,12 +286,24 @@ services:
     volumes:
       - honeypot_data:/app/data
       - ./state/decoy-tls:/run/decoy-tls:ro
+    # Every listener binds above 1024, so no capability is needed at all.
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     read_only: true
     tmpfs:
       - /tmp:noexec,nosuid,size=100M
     security_opt: [no-new-privileges:true]
+    # The control API answers /healthz without the token; see honeypot/Dockerfile.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    # Long enough for open sessions to be closed and delivered (the engine
+    # drains ingests for 8 s) before Docker sends SIGKILL.
+    stop_grace_period: 20s
+    mem_limit: 1g
+    pids_limit: 256
     depends_on:
       ingest:
         condition: service_healthy
@@ -235,6 +331,8 @@ networks:
     ipam:
       config:
         - subnet: 172.30.67.0/24
+  llm:
+    internal: true
 
 volumes:
   pgdata:

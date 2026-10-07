@@ -167,3 +167,122 @@ journalctl -k | grep 'hs-decoy egress blocked'      # anything the engine tried 
 The backend has no internet access, so email and webhook alerts stay off
 until it is attached to a network with egress. That is deliberate: the payload
 analyser runs attacker-supplied files through parsers in that container.
+
+### What watches the platform itself
+
+The `backend` service runs the background workers (one process, on purpose):
+
+- **Engine liveness.** Every engine heartbeats once a minute with its status
+  (bound listeners, open connections, spool depth, disk). The Settings page
+  shows each engine online or stale; after `NODE_OFFLINE_ALERT_SECONDS`
+  (300) without a heartbeat a **system alert** is raised in the dashboard,
+  and resolved by itself when the engine reports again. Low disk on the
+  engine (<10 % free) and a spool that is not draining raise system alerts
+  the same way.
+- **Alert grouping.** Repeats of one address at the same category inside
+  `ALERT_DEDUP_WINDOW_MINUTES` (60) fold into the open alert as `×N` rather
+  than raising another row; only a severity escalation re-notifies. Known
+  research scanners (Censys, Shodan, Shadowserver) are recorded but never
+  alert (`ALERT_SUPPRESS_SCANNERS=true`).
+- **Notification outbox.** Email and webhook sends are queued, delivered by
+  a dispatcher with backoff (up to 6 attempts), and keep their last error.
+  Nothing network-bound runs inside the ingest request any more.
+- **Retention.** `SESSION_RETENTION_DAYS` (0 = keep everything) and
+  `AUDIT_RETENTION_DAYS` (365), applied hourly. Alerts, indicators and
+  payload links delete with their session.
+- **Host failures.** A failed nightly backup raises a system alert through
+  `system-alert.sh`, which any script on the host can use.
+
+`GET /health` now pings the database (503 when it is down, so the container
+health check means something) and reports the enrichment and outbox queues.
+
+### The analysis model (stage 2)
+
+The project's own fine-tune, **Wolfram**, reads each worthwhile transcript
+and answers with the attacker's intent, objectives, ATT&CK techniques and
+the indicators it names. It runs as the `wolfram` service (llama.cpp on the
+CPU, internal network, no egress) and is enabled when the GGUF is present:
+
+```bash
+sudo install -m 0644 /path/to/wolfram-Q4_K_M.gguf state/models/
+sudo bash install.sh          # turns on the llm profile and CHIMERA_URL
+```
+
+It is a queue, not a request: ingest marks a session `pending` when it is
+worth a model call (shell and FTP sessions with commands; web sessions only
+when a signature, tool, upload or non-benign category fired; never research
+scanners), and the backend's worker drains it one session at a time — a
+full answer takes about two minutes on this CPU. Identical transcripts
+(bots replaying one script) are analysed once and the answer reused. Any
+analyst can push a session to the front of the queue with **Analyse now**
+in the session view. Indicators the model names are kept only when the text
+appears in the transcript, so a transcript cannot plant indicators by
+asking. `CHIMERA_TIMEOUT` (300 s) and `WOLFRAM_THREADS` (6) are the knobs.
+
+### Re-running the rules over old sessions
+
+Verdicts are fixed at ingest, so a signature change leaves old rows on the
+old rules. The reanalysis tool rebuilds the rule inputs from what each row
+stores and rewrites the category, intents, tools, techniques and reason,
+without raising alerts or sending anything:
+
+```bash
+docker compose exec backend python -m app.tools.reanalyze --all --dry-run
+docker compose exec backend python -m app.tools.reanalyze --all
+docker compose exec backend python -m app.tools.reanalyze --since 2026-10-01 --queue-llm
+```
+
+### Accounts
+
+Sign-up needs email, which this deployment cannot send. Administrators
+create accounts in **Settings → Accounts** (temporary password shown once),
+change roles, deactivate, reset a lost authenticator or password. Everyone
+can change their own password there. Ten wrong passwords lock an account
+for fifteen minutes (`LOGIN_LOCKOUT_THRESHOLD`, `LOGIN_LOCKOUT_MINUTES`).
+
+### Backups and restore
+
+`backup.sh` runs nightly (03:30) and writes `/var/backups/honeysentinel/<stamp>/`
+with the database dump, `config.tar.gz` (`.env`, `state/`, the compose
+override — **the encryption key lives here; without it the dump is
+unreadable**), the engine's volume (host keys and identity, so a rebuilt
+machine looks like the same machine) and a manifest with checksums. Fourteen
+days are kept, on the same disk: copy them off the machine yourself.
+
+```bash
+sudo systemctl start honeysentinel-backup.service          # backup now
+sudo bash restore.sh /var/backups/honeysentinel/20261007-033307
+```
+
+On a fresh machine: clone to `/opt/honeysentinel`, copy a backup directory
+over, run `restore.sh` first (it puts `.env` and `state/` back), then
+`install.sh`. `install.sh` also takes a backup before every update.
+
+### Engine limits and durability
+
+The engine keeps delivering sessions through a backend outage and bounds
+what one client can cost it. All of these have defaults; set them in the
+`honeypot` service's environment to change them.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HONEYPOT_SPOOL_MAX_FILES` | `5000` | Sessions the backend could not take (down, timing out, 5xx, 429) wait under `<capture dir>/spool` and are resent oldest first, every 30 s (backing off to 5 min). The backend de-duplicates on the engine's session id. Past this many files the oldest are dropped and logged. |
+| `HONEYPOT_SPOOL_MAX_BYTES` | `536870912` | Byte bound on the same queue (512 MiB). |
+| `HONEYPOT_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats to `/nodes/heartbeat-internal`, which carry the engine's status (version, bound listeners, open connections, spool depth, disk). A 404 re-registers the node. |
+| `HONEYPOT_MAX_CONN_PER_IP` | `5` | Concurrent connections one address may hold open, across every protocol, enforced at accept (for SSH, before the key exchange). |
+| `HONEYPOT_MAX_CONNECTIONS` | `500` | Concurrent connections across all addresses. |
+| `HONEYPOT_MAX_SESSION_SECONDS` | `1800` | Longest a single connection may live, idle or not. |
+| `HONEYPOT_CONN_TIMEOUT` | unset | Idle timeout for every protocol. Unset, SSH uses 300 s, FTP 120 s, HTTP 60 s. |
+| `HONEYPOT_CAPTURE_RETENTION_DAYS` | `7` | Local JSON copies of ingested sessions are pruned after this many days (hourly pass). The spool, `failed/` and the SSH host keys are never touched. |
+| `HONEYPOT_UPLOAD_RETENTION_DAYS` | `30` | Captured upload bytes in the engine's own directory are pruned after this many days; the backend keeps its encrypted copy. |
+
+Also fixed in the same round: HTTP keep-alive connections are limited to 200
+requests and 10 minutes, with 30 s for a request line plus headers; a heredoc
+typed into the SSH shell no longer costs quadratic time per line; the per-
+session command, event and credential lists are capped in memory (the
+payload's `truncated` field says what was dropped); and the container has a
+health check (`GET /healthz` on the control API, no token), a 1 GiB memory
+limit and a 20 s stop grace period so open sessions are delivered on
+shutdown. `GET /denied-connections` always answered from an in-process
+"egress filter" that no socket ever consulted; it is gone, and the isolation
+report's `egress_blocked` check now actually tries to connect out.

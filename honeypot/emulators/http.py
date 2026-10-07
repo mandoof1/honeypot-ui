@@ -143,6 +143,17 @@ def _form_credentials(headers: dict, body: str) -> Optional[tuple[str, str]]:
 class HTTPHoneypot(BaseEmulator):
     MAX_REQUEST_LINE = 8192
     MAX_HEADER_COUNT = 100
+    #: Longest header value kept. Header lines are read within asyncio's
+    #: 64 KiB line limit; storing them whole, a hundred per request, for
+    #: every request on a keep-alive connection added up.
+    MAX_HEADER_VALUE = 8192
+    #: Keep-alive bounds. A connection could previously issue requests for
+    #: ever, and the request line plus a hundred ten-second header reads gave
+    #: a slow client a thousand-second window per socket.
+    MAX_REQUESTS_PER_CONNECTION = 200
+    MAX_CONNECTION_SECONDS = 600
+    HEAD_DEADLINE_SECONDS = 30
+    DEFAULT_IDLE_TIMEOUT = 60
     #: Raised from 1 MiB, which refused most compiled payloads with a 413
     #: before a byte was read. Bounded per request; the per-IP connection and
     #: rate limits bound how many of these one source can hold open.
@@ -197,6 +208,13 @@ class HTTPHoneypot(BaseEmulator):
     def get_banner(self) -> str:
         return fingerprint_engine.get_http_server_header()
 
+    async def start(self) -> None:
+        if self.use_tls and self.ssl_context is None:
+            # Serving plaintext on the HTTPS port, which is what happened
+            # before, is both a fingerprint and a lie in the logs.
+            raise RuntimeError("no TLS context available; HTTPS listener not started")
+        await super().start()
+
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
@@ -215,23 +233,36 @@ class HTTPHoneypot(BaseEmulator):
         )
 
         if mode_handler.is_passive():
-            await self._observe_passively(session_id, reader)
-            await session_manager.end_session(session_id)
-            writer.close()
             try:
-                await writer.wait_closed()
-            except Exception:
-                pass
+                await self._observe_passively(session_id, reader)
+            finally:
+                # A request the reader refused (a line over its limit) used
+                # to raise past this point and leave the session open for
+                # ever; eviction only removes finished ones.
+                await session_manager.end_session(session_id)
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
             return
 
+        loop = asyncio.get_running_loop()
+        connection_deadline = loop.time() + self.MAX_CONNECTION_SECONDS
+        idle_timeout = config.connection_timeout or self.DEFAULT_IDLE_TIMEOUT
+        requests_served = 0
         try:
-            while True:
+            while requests_served < self.MAX_REQUESTS_PER_CONNECTION:
                 try:
+                    remaining = connection_deadline - loop.time()
+                    if remaining <= 0:
+                        break
                     request_line = await asyncio.wait_for(
-                        reader.readline(), timeout=60
+                        reader.readline(), timeout=min(idle_timeout, remaining)
                     )
                     if not request_line:
                         break
+                    head_deadline = loop.time() + self.HEAD_DEADLINE_SECONDS
 
                     request_str = request_line.decode("utf-8", errors="replace").strip()
                     if not request_str:
@@ -244,7 +275,8 @@ class HTTPHoneypot(BaseEmulator):
                         )
                         break
 
-                    headers = await self._read_headers(reader)
+                    headers = await self._read_headers(reader, head_deadline)
+                    requests_served += 1
 
                     try:
                         content_length = int(headers.get("content-length", 0))
@@ -293,7 +325,13 @@ class HTTPHoneypot(BaseEmulator):
 
                 except asyncio.TimeoutError:
                     break
-                except Exception:
+                except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError) as exc:
+                    # Short body, or a line over the reader's limit: the
+                    # request is malformed and the connection is done.
+                    logger.debug("HTTP request from %s abandoned: %s", source_ip, exc)
+                    break
+                except Exception as exc:
+                    logger.warning("HTTP request from %s failed: %s", source_ip, exc, exc_info=True)
                     break
 
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
@@ -360,7 +398,10 @@ class HTTPHoneypot(BaseEmulator):
         try:
             request_line = await asyncio.wait_for(reader.readline(), timeout=15)
             headers = await self._read_headers(reader) if request_line else {}
-        except (asyncio.TimeoutError, ConnectionError):
+        except (
+            asyncio.TimeoutError, ConnectionError, ValueError,
+            asyncio.LimitOverrunError, asyncio.IncompleteReadError,
+        ):
             request_line, headers = b"", {}
         line = request_line.decode("utf-8", errors="replace").strip()[: self.MAX_REQUEST_LINE]
         await session_manager.record_network_event(
@@ -377,13 +418,24 @@ class HTTPHoneypot(BaseEmulator):
             )
 
     async def _read_headers(
-        self, reader: asyncio.StreamReader
+        self, reader: asyncio.StreamReader, deadline: Optional[float] = None
     ) -> dict[str, str]:
+        """Read the header block, within a deadline for the whole block.
+
+        The timeout used to apply per line, so a client sending one header
+        every nine seconds held the handler for the full header count.
+        """
         headers = {}
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + self.HEAD_DEADLINE_SECONDS
         try:
             while len(headers) < self.MAX_HEADER_COUNT:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
                 line = await asyncio.wait_for(
-                    reader.readline(), timeout=10
+                    reader.readline(), timeout=min(10, remaining)
                 )
                 if not line:
                     break
@@ -392,7 +444,7 @@ class HTTPHoneypot(BaseEmulator):
                     break
                 if ":" in line_str:
                     key, value = line_str.split(":", 1)
-                    headers[key.strip().lower()] = value.strip()
+                    headers[key.strip().lower()[:256]] = value.strip()[: self.MAX_HEADER_VALUE]
         except asyncio.TimeoutError:
             pass
         return headers
@@ -487,6 +539,19 @@ class HTTPHoneypot(BaseEmulator):
         headers: dict,
         source_ip: str,
     ) -> str:
+        if path in ("/", "/index.html", "/index.nginx-debian.html"):
+            page = self._root_page()
+            return self._build_response(
+                200, "OK", page, {"Content-Type": "text/html"},
+            )
+
+        # Trailing-slash variants of the listed paths resolve to the same
+        # place; robots.txt advertises /admin/, and a 404 there contradicts it.
+        if path.endswith("/") and path != "/":
+            trimmed = path.rstrip("/")
+            if trimmed in self._vulnerable_endpoints or trimmed in self._fake_files:
+                path = trimmed
+
         if path in self._fake_files:
             content = self._fake_files[path]
             content_type = self._get_content_type(path)
@@ -513,15 +578,76 @@ class HTTPHoneypot(BaseEmulator):
 
         return self._build_response(
             404, "Not Found",
-            f'<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n'
-            f"<html><head>\n<title>404 Not Found</title>\n</head><body>\n"
-            f"<h1>Not Found</h1>\n"
-            f"<p>The requested URL {path} was not found on this server.</p>\n"
-            f"<hr>\n"
-            f"<address>{fingerprint_engine.get_http_server_header()} Server at "
-            f"{headers.get('host', 'localhost')} Port {self.port}</address>\n"
-            f"</body></html>\n",
+            self._error_page(404, "Not Found", headers.get("host", "localhost")),
             {"Content-Type": "text/html; charset=UTF-8"},
+        )
+
+    def _root_page(self) -> str:
+        """A believable landing page for the server family we claim to be.
+
+        Apache on Ubuntu ships its "It works" default; nginx ships "Welcome to
+        nginx". Returning a 404 for ``GET /`` (the old behaviour) is not what
+        a freshly installed web server does.
+        """
+        from honeypot.core.identity import get_identity
+
+        if get_identity().http_family == "nginx":
+            return (
+                "<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n"
+                "<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n"
+                "        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n"
+                "</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n"
+                "<p>If you see this page, the nginx web server is successfully "
+                "installed and\nworking. Further configuration is required.</p>\n\n"
+                '<p>For online documentation and support please refer to\n'
+                '<a href="http://nginx.org/">nginx.org</a>.<br/>\n'
+                'Commercial support is available at\n'
+                '<a href="http://nginx.com/">nginx.com</a>.</p>\n\n'
+                "<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n"
+            )
+        return (
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" "
+            "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
+            '<html xmlns="http://www.w3.org/1999/xhtml">\n  <head>\n'
+            '    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />\n'
+            "    <title>Apache2 Ubuntu Default Page: It works</title>\n  </head>\n"
+            "  <body>\n    <div class=\"main_page\">\n"
+            "      <div class=\"page_header\">\n"
+            "        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\n"
+            "      </div>\n      <div class=\"content_section\">\n"
+            "        <h1>It works!</h1>\n"
+            "        <p>This is the default welcome page used to test the correct "
+            "operation of the Apache2 server after installation on Ubuntu systems.</p>\n"
+            "      </div>\n    </div>\n  </body>\n</html>\n"
+        )
+
+    def _error_page(self, code: int, text: str, host: str) -> str:
+        """An error body in the style of the server we claim to be.
+
+        The footer must name the *advertised* port (80 or 443), not the
+        container's 8080/8443 — leaking the internal port was a giveaway. An
+        nginx identity gets nginx's minimal body, not Apache's address line.
+        """
+        from honeypot.core.identity import get_identity
+
+        identity = get_identity()
+        if identity.http_family == "nginx":
+            version = identity.http_server.split("/", 1)[-1].split(" ", 1)[0]
+            return (
+                f"<html>\r\n<head><title>{code} {text}</title></head>\r\n"
+                f"<body>\r\n<center><h1>{code} {text}</h1></center>\r\n"
+                f"<hr><center>nginx/{version}</center>\r\n</body>\r\n</html>\r\n"
+            )
+        public_port = 443 if self.use_tls else 80
+        return (
+            '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n'
+            f"<html><head>\n<title>{code} {text}</title>\n</head><body>\n"
+            f"<h1>{text}</h1>\n"
+            f"<p>The requested URL was not found on this server.</p>\n"
+            f"<hr>\n"
+            f"<address>{identity.http_server} Server at "
+            f"{host} Port {public_port}</address>\n"
+            f"</body></html>\n"
         )
 
     async def _handle_post(
@@ -955,8 +1081,14 @@ class HTTPHoneypot(BaseEmulator):
             "Server": self.get_banner(),
             "Date": time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime()),
             "Connection": "close",
-            "X-Powered-By": fingerprint_engine.get_x_powered_by(),
         }
+        # X-Powered-By is a PHP-stack header and only appears on a page the
+        # application served — never on an error, and never from an nginx or
+        # static response. Sending it on every 404 (the old behaviour) is a
+        # tell no real server gives.
+        powered_by = fingerprint_engine.get_x_powered_by()
+        if powered_by and status_code < 400:
+            headers["X-Powered-By"] = powered_by
         if extra_headers:
             headers.update(extra_headers)
 

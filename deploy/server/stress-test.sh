@@ -59,7 +59,7 @@ docker run -d --name hs-stress --network "$NET" \
   --cap-drop ALL --security-opt no-new-privileges:true --dns 127.0.0.1 \
   -e HONEYPOT_CONTAINER=true -e HONEYPOT_NODE_NAME="$NODE" \
   -e HONEYPOT_PROTOCOLS=ssh,ftp,http -e HONEYPOT_CONTROL_BIND=127.0.0.1 \
-  -e HONEYPOT_MAX_CONN_PER_IP=100000 -e HONEYPOT_RATE_LIMIT=1000000 \
+  -e HONEYPOT_MAX_CONN_PER_IP=100000 -e HONEYPOT_MAX_CONNECTIONS=100000 -e HONEYPOT_RATE_LIMIT=1000000 \
   -e HONEYPOT_CAPTURE_DIR=/app/data/sessions -e HONEYPOT_FILE_CAPTURE_DIR=/app/data/uploads \
   -e HONEYPOT_LOG_DIR=/app/data/logs \
   -e BACKEND_API_URL=http://ingest:8000/api/v1 -e HONEYPOT_INGEST_TOKEN="$HONEYPOT_INGEST_TOKEN" \

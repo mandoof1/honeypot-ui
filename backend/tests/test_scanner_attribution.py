@@ -16,6 +16,8 @@ INGEST_HEADERS = {"X-Honeypot-Token": os.environ["HONEYPOT_INGEST_TOKEN"]}
 PROBE = {
     "protocol": "ssh",
     "attacker_ip": "162.142.125.13",
+    # Measured flow, so the stage-1 model has something to classify.
+    "flow": {"duration": 42.0, "fwd_packets": 30, "fwd_bytes": 2200, "bwd_bytes": 9800, "fwd_max": 512, "bwd_max": 1460, "fwd_iat_mean": 1.2, "fwd_iat_max": 8.0, "flow_iat_max": 8.0},
     "started_at": "2026-05-05T05:05:00Z",
     "status": "completed",
     "duration_seconds": 0.4,
