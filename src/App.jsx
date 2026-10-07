@@ -18,6 +18,14 @@ const Payloads = lazy(() => import('./pages/Payloads'))
 const Settings = lazy(() => import('./pages/Settings'))
 const AttackerProfile = lazy(() => import('./pages/AttackerProfile'))
 
+/** A signed-in user on an auth page goes where they were originally headed. */
+function AfterSignIn() {
+  const location = useLocation()
+  const next = new URLSearchParams(location.search).get('next') || ''
+  const safe = next.startsWith('/') && !next.startsWith('//') ? next : '/'
+  return <Navigate to={safe} replace />
+}
+
 /** Send an unauthenticated visitor to sign in, remembering where they were going. */
 function RedirectToLogin() {
   const location = useLocation()
@@ -61,6 +69,11 @@ function AuthRoutes() {
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
+      {/* Sign-in flips `user` while the URL is still /login?next=…; without
+          these the catch-all above won the race and dropped the target. */}
+      <Route path="/login" element={<AfterSignIn />} />
+      <Route path="/signup" element={<AfterSignIn />} />
+      <Route path="/forgot-password" element={<AfterSignIn />} />
     </Routes>
   )
 }
