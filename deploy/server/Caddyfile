@@ -18,7 +18,21 @@
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Tailscale Serve terminates TLS; this is what the browser sees.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Tokens live in localStorage, so script injection is the thing to
+		# shut out: scripts and styles only from this origin (Vite inlines
+		# nothing), map tiles from OpenStreetMap, API calls to self only.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
+	}
+
+	# Service-to-service routes are for the engine, which talks to the
+	# ingest service directly on the internal network. Nothing arriving
+	# through the dashboard proxy has a reason to reach them.
+	@internal path_regexp internal -internal(/|$)
+	handle @internal {
+		respond 404
 	}
 
 	handle /api/* {

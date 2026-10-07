@@ -21,11 +21,23 @@ set -euo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
 
+missing=()
+for bin in docker python3 curl openssl iptables tailscale git; do
+  command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
+done
+docker compose version >/dev/null 2>&1 || missing+=("docker-compose-plugin")
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo "Missing prerequisites: ${missing[*]}" >&2
+  echo "On Debian: apt install docker.io docker-compose-plugin python3 curl openssl iptables git; Tailscale from https://tailscale.com/download" >&2
+  exit 1
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 STATE="$HERE/state"
 ENV_FILE="$HERE/.env"
 WEB_PORT=8088
+MODEL_FILE=wolfram-Q4_K_M.gguf
 
 [[ "$HERE" == /opt/honeysentinel/deploy/server ]] || {
   echo "Expected the repository at /opt/honeysentinel (the systemd units point there)." >&2
@@ -76,6 +88,18 @@ EOF
 else
   echo "    $ENV_FILE exists; kept"
 fi
+# Settings added by later versions are appended (commented, with their
+# defaults) so an operator can find them without diffing the repository.
+append_env() {
+  grep -q "^#\? \?$1=" "$ENV_FILE" || printf '%s\n' "$2" >> "$ENV_FILE"
+}
+append_env ALERT_DEDUP_WINDOW_MINUTES "# ALERT_DEDUP_WINDOW_MINUTES=60   # repeats from one address fold into the open alert"
+append_env ALERT_SUPPRESS_SCANNERS   "# ALERT_SUPPRESS_SCANNERS=true    # no alerts for Censys/Shodan/Shadowserver"
+append_env SESSION_RETENTION_DAYS    "# SESSION_RETENTION_DAYS=0        # 0 keeps every session"
+append_env AUDIT_RETENTION_DAYS      "# AUDIT_RETENTION_DAYS=365"
+append_env WOLFRAM_THREADS           "# WOLFRAM_THREADS=6               # CPU threads for the analysis model"
+WEB_PORT=$(grep -E '^WEB_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || true)
+WEB_PORT=${WEB_PORT:-8088}
 
 echo "==> 2/7  TLS certificates"
 tls="$STATE/pg-tls"
@@ -131,6 +155,9 @@ fi
 
 echo "==> 4/7  Egress firewall and backups"
 install -m 0644 "$HERE/systemd/"honeysentinel-*.service "$HERE/systemd/"honeysentinel-*.timer /etc/systemd/system/
+# Docker refuses to start without the egress rules (fail closed).
+install -d -m 0755 /etc/systemd/system/docker.service.d
+install -m 0644 "$HERE/systemd/docker.service.d-honeysentinel.conf" /etc/systemd/system/docker.service.d/honeysentinel.conf
 systemctl daemon-reload
 systemctl enable honeysentinel-egress.service >/dev/null 2>&1
 systemctl restart honeysentinel-egress.service
@@ -138,6 +165,18 @@ systemctl enable --now honeysentinel-backup.timer >/dev/null 2>&1
 iptables -S DOCKER-USER | grep -q HS-DECOY-EGRESS \
   || { echo "    egress rules missing; refusing to expose the engine" >&2; exit 1; }
 echo "    egress rules active; nightly backup scheduled"
+
+echo "==> 4b/7  Analysis model"
+models="$STATE/models"
+install -d -m 0755 "$models"
+if [[ -f "$models/$MODEL_FILE" ]]; then
+  grep -q '^COMPOSE_PROFILES=' "$ENV_FILE" || echo "COMPOSE_PROFILES=llm" >> "$ENV_FILE"
+  grep -q '^CHIMERA_URL=' "$ENV_FILE" || echo "CHIMERA_URL=http://wolfram:8080/v1" >> "$ENV_FILE"
+  grep -q '^CHIMERA_MODEL=' "$ENV_FILE" || echo "CHIMERA_MODEL=wolfram" >> "$ENV_FILE"
+  echo "    $MODEL_FILE present; the wolfram service and the LLM stage are enabled"
+else
+  echo "    no $models/$MODEL_FILE; the LLM stage stays off (copy the GGUF there and re-run)"
+fi
 # Only when docker-compose.override.yml puts an application behind the decoys.
 if docker compose config --services | grep -x shop >/dev/null; then
   systemctl enable --now honeysentinel-shop-reset.timer >/dev/null 2>&1
@@ -147,15 +186,29 @@ else
 fi
 
 echo "==> 5/7  Build and start"
-docker compose up -d --build --remove-orphans
+# A backup before an update, so a bad migration has something to go back to.
+if docker compose ps -q postgres 2>/dev/null | grep -q .; then
+  bash "$HERE/backup.sh" || echo "    pre-update backup failed; continuing" >&2
+fi
+docker compose build --pull
+docker compose up -d --remove-orphans
+docker image prune -f >/dev/null 2>&1 || true
 
+wait_healthy() {
+  local service=$1 tries=${2:-90} status=""
+  for _ in $(seq 1 "$tries"); do
+    status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q "$service")" 2>/dev/null || true)
+    [[ "$status" == healthy ]] && return 0
+    sleep 2
+  done
+  echo "    $service did not become healthy" >&2
+  docker compose logs --tail 50 "$service" >&2
+  return 1
+}
 echo "    waiting for the API"
-for _ in $(seq 1 90); do
-  status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q backend)" 2>/dev/null || true)
-  [[ "$status" == healthy ]] && break
-  sleep 2
-done
-[[ "$status" == healthy ]] || { echo "    backend did not become healthy" >&2; docker compose logs --tail 50 backend >&2; exit 1; }
+wait_healthy backend || exit 1
+echo "    waiting for the engine"
+wait_healthy honeypot 60 || exit 1
 
 echo "==> 6/7  Administrator"
 creds="$STATE/admin-credentials"
@@ -172,7 +225,9 @@ else
 fi
 
 echo "==> 7/7  Tailscale Serve"
-if timeout 20 tailscale serve --bg --https=443 "http://127.0.0.1:${WEB_PORT}"; then
+if tailscale serve status 2>/dev/null | grep -q "127.0.0.1:${WEB_PORT}"; then
+  echo "    already serving; left as is"
+elif timeout 20 tailscale serve --bg --https=443 "http://127.0.0.1:${WEB_PORT}"; then
   echo "    dashboard: $(grep ^DASHBOARD_ORIGIN "$ENV_FILE" | cut -d= -f2)"
 else
   echo "    Serve is not enabled on the tailnet yet: approve the link above, then re-run."

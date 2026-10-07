@@ -1,0 +1,6 @@
+[Unit]
+Description=HoneySentinel: record a failed backup as a system alert
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/system-alert.sh backup_failed high "Nightly backup failed" "backup.sh exited with an error; see journalctl -u honeysentinel-backup"

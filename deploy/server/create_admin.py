@@ -51,7 +51,7 @@ async def main() -> None:
                 AlertThreshold(
                     name=name,
                     min_severity=AttackSeverity.MEDIUM,
-                    anomaly_score_threshold=0.7,
+                    anomaly_score_threshold=0.6,
                     email_enabled=True,
                     webhook_enabled=False,
                 )
