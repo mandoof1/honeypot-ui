@@ -27,6 +27,11 @@ Handler = Callable[[dict], Awaitable[dict]]
 
 class ControlAPI:
     MAX_REQUEST_BYTES = 64 * 1024
+    MAX_HEADERS = 64
+    #: Routes served without the token. Only the liveness probe: it carries
+    #: no secrets and exists for the container health check, which runs
+    #: inside the container and cannot know the token.
+    PUBLIC_ROUTES = frozenset({("GET", "/healthz")})
 
     def __init__(self, host: str, port: int, token: str):
         self._host = host
@@ -34,6 +39,7 @@ class ControlAPI:
         self._token = token
         self._routes: dict[tuple[str, str], Handler] = {}
         self._server: Optional[asyncio.AbstractServer] = None
+        self._loopback_server: Optional[asyncio.AbstractServer] = None
 
     def route(self, method: str, path: str):
         def decorator(func: Handler) -> Handler:
@@ -47,11 +53,22 @@ class ControlAPI:
             self._handle, self._host, self._port
         )
         logger.info(f"Control API listening on {self._host}:{self._port}")
+        # The health check runs inside the container, where the management
+        # address may be one interface among several. Also answer on
+        # loopback so the probe does not depend on the network layout.
+        if self._host not in ("0.0.0.0", "127.0.0.1", "::", "localhost"):
+            try:
+                self._loopback_server = await asyncio.start_server(
+                    self._handle, "127.0.0.1", self._port
+                )
+            except OSError as exc:
+                logger.warning("Control API could not also bind 127.0.0.1:%s: %s", self._port, exc)
 
     async def stop(self):
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
+        for server in (self._server, self._loopback_server):
+            if server:
+                server.close()
+                await server.wait_closed()
 
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -67,7 +84,7 @@ class ControlAPI:
             method, path = parts[0].upper(), parts[1].split("?", 1)[0]
 
             headers: dict[str, str] = {}
-            while True:
+            while len(headers) < self.MAX_HEADERS:
                 line = await asyncio.wait_for(reader.readline(), timeout=10)
                 if not line or line in (b"\r\n", b"\n"):
                     break
@@ -84,10 +101,13 @@ class ControlAPI:
                 return
             raw_body = await reader.readexactly(length) if length else b""
 
-            supplied = headers.get("x-honeypot-token", "")
-            if not secrets.compare_digest(supplied, self._token):
-                await self._respond(writer, 401, {"detail": "Invalid token"})
-                return
+            if (method, path) not in self.PUBLIC_ROUTES:
+                supplied = headers.get("x-honeypot-token", "")
+                if not secrets.compare_digest(
+                    supplied.encode("utf-8", "replace"), self._token.encode("utf-8")
+                ):
+                    await self._respond(writer, 401, {"detail": "Invalid token"})
+                    return
 
             handler = self._routes.get((method, path))
             if handler is None:
@@ -100,8 +120,10 @@ class ControlAPI:
 
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
             pass
-        except json.JSONDecodeError:
-            await self._respond(writer, 400, {"detail": "Invalid JSON body"})
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            # A missing field or a bad enum value is the caller's mistake,
+            # not an internal error.
+            await self._respond(writer, 400, {"detail": f"Bad request: {exc}"})
         except Exception as exc:
             logger.error(f"Control API error: {exc}")
             await self._respond(writer, 500, {"detail": "Internal error"})
@@ -138,12 +160,19 @@ def build_control_api(service) -> ControlAPI:
     from honeypot.core.modes import mode_handler
     from honeypot.core.session import session_manager
     from honeypot.security.breakout import breakout_prevention
-    from honeypot.security.egress_filter import egress_filter
     from honeypot.security.rate_limiter import rate_limiter
 
     api = ControlAPI(
         config.control_bind_address, config.control_port, config.ingest_token
     )
+
+    @api.route("GET", "/healthz")
+    async def healthz(_body: dict) -> dict:
+        return {
+            "ok": True,
+            "active_sessions": len(await session_manager.get_active_sessions()),
+            "spool_pending": session_manager.spool.pending,
+        }
 
     @api.route("GET", "/status")
     async def status(_body: dict) -> dict:
@@ -161,7 +190,14 @@ def build_control_api(service) -> ControlAPI:
 
     @api.route("GET", "/denied-connections")
     async def denied_connections(_body: dict) -> dict:
-        return {"denied_connections": egress_filter.get_denied_connections()}
+        # The in-process egress filter this used to report from was never
+        # wired into any socket, so its log was always empty. Egress is
+        # dropped by the host firewall; its log is the kernel's.
+        return {
+            "denied_connections": [],
+            "note": "egress is enforced by the host firewall "
+                    "(deploy/server/honeysentinel-egress.sh); see journalctl -k",
+        }
 
     @api.route("GET", "/threat-actors")
     async def threat_actors(_body: dict) -> dict:

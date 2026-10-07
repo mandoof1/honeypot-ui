@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from typing import Optional
 import subprocess
 
 from honeypot.core.config import config
@@ -59,7 +60,7 @@ class BreakoutPrevention:
             report = IsolationReport(
                 {
                     "network_segmentation": False,
-                    "egress_allowlist_configured": False,
+                    "egress_blocked": False,
                     "container_isolation": False,
                     "read_only_rootfs": False,
                     "privilege_restriction": False,
@@ -69,9 +70,12 @@ class BreakoutPrevention:
             self._reports.append(report)
             return report.to_dict()
 
+        # One probe sweep per report: a dropped SYN only fails by timing out,
+        # so each sweep costs up to a few seconds.
+        reachable = self._egress_reachable()
         checks = {
-            "network_segmentation": self._check_network_segmentation(warnings),
-            "egress_allowlist_configured": self._check_egress_allowlist(warnings),
+            "network_segmentation": self._check_network_segmentation(warnings, reachable),
+            "egress_blocked": self._check_egress_blocked(warnings, reachable),
             "container_isolation": self._check_container_isolation(warnings),
             "read_only_rootfs": self._check_read_only_rootfs(warnings),
             "privilege_restriction": self._check_privilege_restriction(warnings),
@@ -92,7 +96,7 @@ class BreakoutPrevention:
 
         return report.to_dict()
 
-    def _check_network_segmentation(self, warnings: list[str]) -> bool:
+    def _check_network_segmentation(self, warnings: list[str], reachable: Optional[bool] = None) -> bool:
         """The engine must sit on an internal-only Docker network."""
         try:
             result = subprocess.run(
@@ -112,7 +116,7 @@ class BreakoutPrevention:
             # No Docker socket inside the container is the expected, correct
             # state. Fall back to checking that no default route leaves the
             # container towards the public internet.
-            return self._check_no_default_route(warnings)
+            return self._check_no_default_route(warnings, reachable)
 
         if result.returncode != 0:
             warnings.append(
@@ -127,7 +131,7 @@ class BreakoutPrevention:
         return True
 
     @staticmethod
-    def _check_no_default_route(warnings: list[str]) -> bool:
+    def _check_no_default_route(warnings: list[str], reachable: Optional[bool] = None) -> bool:
         try:
             with open("/proc/net/route", "r", encoding="utf-8") as fh:
                 lines = fh.read().splitlines()[1:]
@@ -149,7 +153,9 @@ class BreakoutPrevention:
         # the host firewall instead (deploy/server/honeysentinel-egress.sh).
         # The routing table cannot show whether that firewall is in place, so
         # test it.
-        if BreakoutPrevention._egress_reachable():
+        if reachable is None:
+            reachable = BreakoutPrevention._egress_reachable()
+        if reachable:
             warnings.append(
                 "Container has a default route and outbound connections "
                 "succeed; egress is not blocked"
@@ -170,11 +176,19 @@ class BreakoutPrevention:
         return False
 
     @staticmethod
-    def _check_egress_allowlist(warnings: list[str]) -> bool:
-        from honeypot.security.egress_filter import egress_filter
+    def _check_egress_blocked(warnings: list[str], reachable: Optional[bool] = None) -> bool:
+        """The engine must not be able to open outbound connections.
 
-        if not egress_filter.allowed_hosts:
-            warnings.append("Egress allowlist is empty")
+        This replaced a check that only confirmed an in-process "allowlist"
+        was non-empty — it always was, because the backend URL was always
+        on it, and nothing consulted the list anyway. The honest test is to
+        try: connect to well-known public addresses and pass only when every
+        attempt is refused or times out.
+        """
+        if reachable is None:
+            reachable = BreakoutPrevention._egress_reachable()
+        if reachable:
+            warnings.append("Outbound connections from the engine succeed")
             return False
         return True
 

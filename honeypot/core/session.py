@@ -15,6 +15,8 @@ import httpx
 
 from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
+from honeypot.core.retention import prune_captures
+from honeypot.core.spool import Spool
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,9 @@ class SessionRecord:
     anomaly_score: float = 0.0
     #: Socket-level traffic statistics; the classifier's input.
     flow: Optional[FlowMeter] = None
+    #: Items dropped at the in-memory caps, by kind, so the record says it is
+    #: partial rather than looking complete.
+    truncated: dict[str, int] = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -64,10 +69,21 @@ class SessionRecord:
     MAX_OUTPUT_CHARS = 4096
     MAX_CREDENTIALS = 200
     MAX_EVENTS = 200
+    MAX_PACKETS = 2000
+
+    #: In-memory caps, applied as items arrive. The payload caps above only
+    #: bounded what was *sent*; the lists behind them grew without limit for
+    #: as long as a connection stayed open.
+    MAX_COMMANDS = 2000
+    MAX_NETWORK_EVENTS = 500
+    MAX_AUTH_ATTEMPTS = 200
 
     def to_backend_payload(self, node_id: int = 1) -> dict[str, Any]:
         command_strings = [c["command"] for c in self.commands]
         return {
+            # The engine's own id, so a delivery retried after a lost
+            # response is recognised rather than stored twice.
+            "session_id": self.session_id,
             "protocol": self.protocol,
             "attacker_ip": self.source_ip,
             "attacker_port": self.source_port,
@@ -122,11 +138,15 @@ class SessionRecord:
             "packets": [
                 {
                     "type": e.get("event_type", "unknown"),
-                    "size": len(json.dumps(e)),
+                    "size": len(json.dumps(e, default=str)),
                 }
-                for e in self.network_events
+                for e in self.network_events[: self.MAX_PACKETS]
             ],
+            "truncated": dict(self.truncated),
         }
+
+    def _count_drop(self, kind: str) -> None:
+        self.truncated[kind] = self.truncated.get(kind, 0) + 1
 
     def _uploads_payload(self) -> list[dict[str, Any]]:
         """Captured files, with their bytes where the budget allows.
@@ -189,6 +209,21 @@ class SessionRecord:
         }
 
 
+def _store_upload(content: bytes) -> tuple[str, str]:
+    """Write an upload under its own digest; returns (sha256, path).
+
+    Naming the file after its digest means an attacker-supplied filename can
+    never influence where it lands on disk.
+    """
+    file_hash = hashlib.sha256(content).hexdigest()
+    os.makedirs(config.file_capture_dir, exist_ok=True)
+    file_path = os.path.join(config.file_capture_dir, file_hash)
+    if not os.path.exists(file_path):
+        with open(file_path, "wb") as handle:
+            handle.write(content)
+    return file_hash, file_path
+
+
 def _read_capture(path: Optional[str], sha256: str) -> Optional[bytes]:
     """Read a stored capture back, refusing anything that no longer matches."""
     if not path:
@@ -211,17 +246,69 @@ class SessionManager:
     #: Finished sessions are retained only for the status endpoint.
     MAX_RETAINED_SESSIONS = 1000
 
+    #: One delivery attempt's budget. Beyond it the payload is spooled.
+    INGEST_TIMEOUT = 15
+    #: Deliveries in flight at once. A burst of sessions used to open one
+    #: client each and hit the backend all together.
+    INGEST_CONCURRENCY = 8
+    SPOOL_RETRY_INTERVAL = 30
+    SPOOL_RETRY_MAX_INTERVAL = 300
+    SPOOL_BATCH = 20
+
     def __init__(self):
         self._sessions: dict[str, SessionRecord] = {}
         self._lock = asyncio.Lock()
         self._node_id: int = 1
+        self._registered = False
         self._total_sessions: int = 0
+        self._started_at = time.time()
         # asyncio only holds a weak reference to tasks, so a fire-and-forget
         # ingest could be garbage collected mid-flight.
         self._background: set[asyncio.Task] = set()
+        self._service_tasks: list[asyncio.Task] = []
+        self._client: Optional[httpx.AsyncClient] = None
+        self._ingest_sem: Optional[asyncio.Semaphore] = None
+        self._spool: Optional[Spool] = None
+        #: Consecutive heartbeat and registration failures, so a long outage
+        #: logs once rather than every tick.
+        self._heartbeat_failures = 0
+        self._register_failures = 0
+        self.ingest_stats = {"sent": 0, "spooled": 0, "replayed": 0, "rejected": 0}
         Path(config.session_capture_dir).mkdir(parents=True, exist_ok=True)
         Path(config.file_capture_dir).mkdir(parents=True, exist_ok=True)
-        Path(config.log_dir).mkdir(parents=True, exist_ok=True)
+
+    # -- plumbing ----------------------------------------------------------
+
+    @property
+    def spool(self) -> Spool:
+        # Built lazily so tests that point the capture directory elsewhere
+        # get a spool there too.
+        if self._spool is None or not self._spool._dir.startswith(config.session_capture_dir):
+            self._spool = Spool(
+                config.session_capture_dir, config.spool_max_files, config.spool_max_bytes
+            )
+        return self._spool
+
+    def _http(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=self.INGEST_CONCURRENCY, max_keepalive_connections=4),
+                headers={"X-Honeypot-Token": config.ingest_token},
+            )
+        return self._client
+
+    def _semaphore(self) -> asyncio.Semaphore:
+        if self._ingest_sem is None:
+            self._ingest_sem = asyncio.Semaphore(self.INGEST_CONCURRENCY)
+        return self._ingest_sem
+
+    @property
+    def uptime_seconds(self) -> float:
+        return time.time() - self._started_at
+
+    @property
+    def registered(self) -> bool:
+        return self._registered
 
     @property
     def node_id(self) -> int:
@@ -269,7 +356,13 @@ class SessionManager:
             if session.flow is not None:
                 session.flow.close()
 
-        await self._persist_session(session)
+        # The local copy is a convenience; the backend is the record. A full
+        # disk or a bad mount must not stop the session being delivered,
+        # which is the opposite of what the previous ordering did.
+        try:
+            await asyncio.to_thread(self._persist_session, session)
+        except Exception as exc:
+            logger.error("Could not write local copy of session %s: %s", session_id, exc)
         self._spawn(self._send_to_backend(session))
         return session
 
@@ -300,6 +393,9 @@ class SessionManager:
     ):
         session = await self.get_session(session_id)
         if session:
+            if len(session.commands) >= session.MAX_COMMANDS:
+                session._count_drop("commands")
+                return
             session.commands.append(
                 {
                     "timestamp": time.time(),
@@ -342,14 +438,9 @@ class SessionManager:
             logger.warning(f"Session {session_id} exceeded its upload count cap")
             return None
 
-        file_hash = hashlib.sha256(content).hexdigest()
-        # Name the file after its own digest so an attacker-supplied
-        # filename can never influence where it lands on disk.
-        os.makedirs(config.file_capture_dir, exist_ok=True)
-        file_path = os.path.join(config.file_capture_dir, file_hash)
-        if not os.path.exists(file_path):
-            with open(file_path, "wb") as f:
-                f.write(content)
+        # Hashing and writing up to 16 MiB blocks every other connection if
+        # it runs on the loop; it goes to a worker thread.
+        file_hash, file_path = await asyncio.to_thread(_store_upload, content)
         session.files_uploaded.append(
             {
                 "timestamp": time.time(),
@@ -386,6 +477,9 @@ class SessionManager:
     ):
         session = await self.get_session(session_id)
         if session:
+            if len(session.network_events) >= session.MAX_NETWORK_EVENTS:
+                session._count_drop("events")
+                return
             session.network_events.append(
                 {"timestamp": time.time(), "event_type": event_type, **details}
             )
@@ -409,6 +503,9 @@ class SessionManager:
     ):
         session = await self.get_session(session_id)
         if session:
+            if len(session.authentication_attempts) >= session.MAX_AUTH_ATTEMPTS:
+                session._count_drop("credentials")
+                return
             session.authentication_attempts.append(
                 {
                     "timestamp": time.time(),
@@ -428,7 +525,7 @@ class SessionManager:
         if session:
             session.anomaly_score = score
 
-    async def _persist_session(self, session: SessionRecord):
+    def _persist_session(self, session: SessionRecord):
         # A capture directory removed after startup must not stop the session
         # reaching the backend: this runs before the ingest is spawned.
         os.makedirs(config.session_capture_dir, exist_ok=True)
@@ -440,69 +537,248 @@ class SessionManager:
         logger.info(f"Session persisted: {capture_file}")
 
     async def _send_to_backend(self, session: SessionRecord):
-        payload = session.to_backend_payload(self._node_id)
+        """Deliver one session, or queue it for the retry loop.
+
+        Delivery used to be a single attempt: anything but an immediate 200
+        dropped the capture. Now a retryable failure (backend down, timing
+        out, 5xx, 429) spools the payload to disk and the retry loop takes it
+        from there; only a definite rejection (another 4xx) gives up, and
+        even that keeps a copy under failed/ for inspection.
+        """
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{config.backend_api_url}/sessions/ingest-internal",
-                    json=payload,
-                    params={"node_id": self._node_id},
-                    headers={"X-Honeypot-Token": config.ingest_token},
-                    timeout=15,
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    logger.info(
-                        f"Session {session.session_id} ingested to backend. "
-                        f"Classification: {result.get('ai_classification', {}).get('category', 'unknown')}"
-                    )
-                else:
-                    logger.error(
-                        f"Failed to ingest session {session.session_id}: "
-                        f"HTTP {response.status_code} - {response.text}"
-                    )
-        except httpx.ConnectError:
-            logger.warning(
-                f"Backend unavailable, session {session.session_id} saved locally only"
+            # Reading uploads back and base64-encoding up to 24 MiB is CPU
+            # work; it runs off the loop.
+            payload = await asyncio.to_thread(session.to_backend_payload, self._node_id)
+        except Exception as exc:
+            logger.error("Could not build payload for session %s: %s", session.session_id, exc)
+            return
+        async with self._semaphore():
+            outcome, detail = await self._post_session(payload)
+        if outcome == "ok":
+            self.ingest_stats["sent"] += 1
+            logger.info(
+                f"Session {session.session_id} ingested to backend. Classification: {detail}"
             )
-        except Exception as e:
-            logger.error(f"Error sending session to backend: {e}")
+        elif outcome == "retry":
+            self.ingest_stats["spooled"] += 1
+            logger.warning(
+                "Backend unavailable (%s); session %s spooled for retry",
+                detail, session.session_id,
+            )
+            await asyncio.to_thread(self.spool.put, session.session_id, payload)
+        else:
+            self.ingest_stats["rejected"] += 1
+            logger.error("Backend rejected session %s: %s", session.session_id, detail)
+            await asyncio.to_thread(self.spool.put_failed, session.session_id, payload, detail)
+
+    async def _post_session(self, payload: dict) -> tuple[str, str]:
+        """One POST. Returns ("ok"|"retry"|"drop", detail)."""
+        try:
+            response = await self._http().post(
+                f"{config.backend_api_url}/sessions/ingest-internal",
+                json=payload,
+                params={"node_id": self._node_id},
+                timeout=self.INGEST_TIMEOUT,
+            )
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            return "retry", f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        except Exception as exc:
+            return "retry", f"{type(exc).__name__}: {exc}"
+
+        if response.status_code == 200:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if body.get("duplicate"):
+                return "ok", "duplicate (already stored)"
+            return "ok", body.get("ai_classification", {}).get("category", "unknown")
+        if response.status_code == 429 or response.status_code >= 500:
+            return "retry", f"HTTP {response.status_code}"
+        return "drop", f"HTTP {response.status_code} - {response.text[:200]}"
+
+    async def replay_spool(self, limit: Optional[int] = None) -> int:
+        """Resend queued sessions, oldest first; the number delivered.
+
+        Stops at the first retryable failure: if the backend is still down,
+        every later entry would fail the same way.
+        """
+        delivered = 0
+        for path in self.spool.oldest(limit or self.SPOOL_BATCH):
+            payload = self.spool.load(path)
+            if payload is None:
+                continue
+            session_id = payload.get("session_id") or Spool.session_id_of(path)
+            outcome, detail = await self._post_session(payload)
+            if outcome == "retry":
+                logger.warning("Spool replay paused: backend unavailable (%s)", detail)
+                break
+            self.spool.remove(path)
+            if outcome == "ok":
+                delivered += 1
+                self.ingest_stats["replayed"] += 1
+            else:
+                self.ingest_stats["rejected"] += 1
+                logger.error("Backend rejected spooled session %s: %s", session_id, detail)
+                self.spool.put_failed(session_id, payload, detail)
+        if delivered:
+            logger.info("Replayed %d spooled session(s); %d still queued", delivered, self.spool.pending)
+        return delivered
+
+    async def _spool_loop(self) -> None:
+        interval = self.SPOOL_RETRY_INTERVAL
+        while True:
+            try:
+                if self.spool.pending:
+                    before = self.spool.pending
+                    await self.replay_spool()
+                    # Anything still queued after a pass means the backend
+                    # refused or vanished; back off, and reset once it drains.
+                    if self.spool.pending and self.spool.pending >= before:
+                        interval = min(interval * 2, self.SPOOL_RETRY_MAX_INTERVAL)
+                    else:
+                        interval = self.SPOOL_RETRY_INTERVAL
+                else:
+                    interval = self.SPOOL_RETRY_INTERVAL
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Spool replay failed: %s", exc)
+            await asyncio.sleep(interval)
+
+    async def _retention_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(
+                    prune_captures,
+                    config.session_capture_dir,
+                    config.file_capture_dir,
+                    config.capture_retention_days,
+                    config.upload_retention_days,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Retention pass failed: %s", exc)
+            await asyncio.sleep(3600)
+
+    def start_background(self) -> None:
+        """Start the spool replay and retention loops."""
+        if self._service_tasks:
+            return
+        self._service_tasks = [
+            asyncio.create_task(self._spool_loop(), name="spool-replay"),
+            asyncio.create_task(self._retention_loop(), name="capture-retention"),
+        ]
+
+    async def stop_background(self) -> None:
+        for task in self._service_tasks:
+            task.cancel()
+        for task in self._service_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._service_tasks = []
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    # -- node registration and heartbeat ------------------------------------
+
+    def node_payload(self) -> dict:
+        return {
+            "name": config.node_name,
+            "protocol": "multi",
+            "ip_address": config.bind_address,
+            "port": config.ssh_port,
+            "mode": config.operational_mode.value,
+        }
+
+    async def heartbeat(self, status: dict) -> bool:
+        """Tell the backend the node is alive, and what state it is in.
+
+        The node row's ``last_heartbeat`` was only ever written at
+        registration, so the dashboard could not tell a running engine from
+        one that died an hour ago. Returns True when the backend answered.
+        """
+        if not self._registered:
+            await self.register_node()
+        body = {"node_id": self._node_id, "name": config.node_name, "status": status}
+        try:
+            response = await self._http().post(
+                f"{config.backend_api_url}/nodes/heartbeat-internal",
+                json=body,
+                timeout=10,
+            )
+        except Exception as exc:
+            self._heartbeat_failures += 1
+            if self._heartbeat_failures == 1:
+                logger.warning("Heartbeat failed: %s (will keep trying quietly)", exc)
+            return False
+
+        if response.status_code == 404:
+            # The backend lost or never had this node: claim an id again.
+            logger.warning("Backend does not know node %s; re-registering", self._node_id)
+            self._registered = False
+            await self.register_node()
+            return False
+        if response.status_code != 200:
+            self._heartbeat_failures += 1
+            if self._heartbeat_failures == 1:
+                logger.warning("Heartbeat rejected: HTTP %s %s", response.status_code, response.text[:200])
+            return False
+
+        if self._heartbeat_failures:
+            logger.info("Heartbeat restored after %d failure(s)", self._heartbeat_failures)
+            self._heartbeat_failures = 0
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            if isinstance(data.get("id"), int):
+                self._node_id = data["id"]
+            self._adopt_stored_mode(data.get("mode"))
+        return True
 
     async def register_node(self) -> int:
         """Claim a node id from the backend using the shared ingest token.
 
         The previous implementation POSTed to the admin-only ``/nodes/``
         endpoint with no credentials, so it always failed and silently fell
-        back to node id 1.
+        back to node id 1. A failure here is now retried by the heartbeat
+        loop rather than being final.
         """
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{config.backend_api_url}/nodes/register-internal",
-                    json={
-                        "name": config.node_name,
-                        "protocol": "multi",
-                        "ip_address": config.bind_address,
-                        "port": config.ssh_port,
-                        "mode": config.operational_mode.value,
-                    },
-                    headers={"X-Honeypot-Token": config.ingest_token},
-                    timeout=10,
-                )
-                if response.status_code in (200, 201):
-                    node = response.json()
-                    self._node_id = node["id"]
-                    logger.info(f"Registered as honeypot node {self._node_id}")
-                    self._adopt_stored_mode(node.get("mode"))
-                    return self._node_id
-                logger.warning(
-                    f"Node registration rejected: HTTP {response.status_code} "
-                    f"- {response.text[:200]}"
-                )
+            response = await self._http().post(
+                f"{config.backend_api_url}/nodes/register-internal",
+                json=self.node_payload(),
+                timeout=10,
+            )
+            if response.status_code in (200, 201):
+                node = response.json()
+                self._node_id = node["id"]
+                self._registered = True
+                if self._register_failures:
+                    logger.info("Node registration succeeded after %d failure(s)", self._register_failures)
+                self._register_failures = 0
+                logger.info(f"Registered as honeypot node {self._node_id}")
+                self._adopt_stored_mode(node.get("mode"))
+                return self._node_id
+            self._note_register_failure(
+                f"Node registration rejected: HTTP {response.status_code} - {response.text[:200]}"
+            )
         except Exception as e:
-            logger.warning(f"Could not register honeypot node: {e}")
-        self._node_id = 1
+            self._note_register_failure(f"Could not register honeypot node: {e}")
+        if not self._registered:
+            self._node_id = 1
         return self._node_id
+
+    def _note_register_failure(self, message: str) -> None:
+        self._register_failures += 1
+        # The heartbeat loop retries registration every tick; one warning
+        # per outage, the rest at debug.
+        logger.log(logging.WARNING if self._register_failures == 1 else logging.DEBUG, message)
 
     @staticmethod
     def _adopt_stored_mode(stored: Optional[str]) -> None:
@@ -533,11 +809,22 @@ class SessionManager:
         async with self._lock:
             return self._total_sessions
 
-    async def drain(self):
-        """Wait for in-flight backend ingests before shutting down."""
+    async def drain(self, timeout: float = 8.0):
+        """Wait for in-flight backend ingests before shutting down.
+
+        Bounded: Docker's stop grace period is finite, and a backend that is
+        down should not hold the engine's exit hostage. Anything still in
+        flight when time runs out has either been spooled or will be lost,
+        which the log says.
+        """
         pending = list(self._background)
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        if not pending:
+            return
+        done, still = await asyncio.wait(pending, timeout=timeout)
+        if still:
+            logger.warning("%d ingest(s) still in flight at shutdown", len(still))
+            for task in still:
+                task.cancel()
 
 
 session_manager = SessionManager()
