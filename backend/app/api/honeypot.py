@@ -16,13 +16,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import get_settings
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
 from app.core.security import get_current_user, require_role
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ENGINE_TIMEOUT = 5.0
-VALID_PROTOCOLS = {"ssh", "ftp", "http", "https"}
+VALID_PROTOCOLS = {"ssh", "ftp", "http", "https", "telnet"}
 
 
 class HoneypotStatusResponse(BaseModel):
@@ -149,25 +152,58 @@ async def get_active_sessions(current_user: dict = Depends(get_current_user)):
     return await _engine_request("GET", "/sessions/active")
 
 
+async def _audited(db, current_user: dict, action: str, details: dict, call):
+    """Run an engine control call and record who asked for it.
+
+    Mode changes and blocks alter what attackers experience; they were the
+    only privileged actions that left no audit row.
+    """
+    from app.models import AuditLog
+
+    result = await call()
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action=action,
+            resource_type="honeypot_engine",
+            details=details,
+        )
+    )
+    await db.commit()
+    return result
+
+
 @router.patch("/mode")
 async def update_mode(
     update: ModeUpdate,
     current_user: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
 ):
-    return await _engine_request("POST", "/mode", {"mode": update.mode})
+    return await _audited(
+        db, current_user, "engine_mode_changed", {"mode": update.mode},
+        lambda: _engine_request("POST", "/mode", {"mode": update.mode}),
+    )
 
 
 @router.post("/block-ip")
 async def block_ip(
     payload: IPActionRequest,
     current_user: dict = Depends(require_role("analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
-    return await _engine_request("POST", "/block-ip", {"ip": payload.ip})
+    return await _audited(
+        db, current_user, "ip_blocked", {"ip": payload.ip},
+        lambda: _engine_request("POST", "/block-ip", {"ip": payload.ip}),
+    )
 
 
 @router.post("/unblock-ip")
 async def unblock_ip(
     payload: IPActionRequest,
     current_user: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
 ):
-    return await _engine_request("POST", "/unblock-ip", {"ip": payload.ip})
+    return await _audited(
+        db, current_user, "ip_unblocked", {"ip": payload.ip},
+        lambda: _engine_request("POST", "/unblock-ip", {"ip": payload.ip}),
+    )

@@ -14,7 +14,7 @@ addresses is the finding.
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,12 +138,67 @@ async def list_session_iocs(
     return [IndicatorOfCompromiseResponse.model_validate(r) for r in rows]
 
 
+async def feed_auth(request: Request) -> dict:
+    """A user session, or the static feed token.
+
+    A firewall or SIEM pulling the blocklist on a schedule cannot hold a
+    user token that expires hourly. IOC_FEED_TOKEN, when set, is accepted in
+    the X-Feed-Token header for this endpoint only.
+    """
+    import secrets
+
+    from app.core.config import get_settings
+
+    token = get_settings().IOC_FEED_TOKEN
+    supplied = request.headers.get("X-Feed-Token", "")
+    if token and supplied:
+        try:
+            if secrets.compare_digest(supplied, token):
+                return {"id": None, "email": "feed-token", "role": "viewer"}
+        except TypeError:
+            pass
+        raise HTTPException(status_code=401, detail="Invalid feed token")
+    from fastapi.security.utils import get_authorization_scheme_param
+
+    scheme, credentials = get_authorization_scheme_param(request.headers.get("Authorization", ""))
+    if scheme.lower() != "bearer" or not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    return await get_current_user(HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials))
+
+
+def _feed_exclusions(ioc_type: str, exclude_scanners: bool):
+    """Rows a blocklist must not contain: research scanners, and (for ip)
+    addresses that are private, loopback or tailnet — a consumer that blocks
+    its own LAN because an analyst tested from it is worse than no feed."""
+    from sqlalchemy import exists
+
+    from app.models import HoneypotSession
+
+    conditions = []
+    if exclude_scanners:
+        conditions.append(
+            ~exists().where(
+                HoneypotSession.id == IndicatorOfCompromise.session_id,
+                HoneypotSession.scanner_operator.isnot(None),
+            )
+        )
+    if ioc_type == "ip":
+        for prefix in ("10.", "127.", "192.168.", "100.", "169.254.", "0.", "::1", "fe80:", "fd"):
+            conditions.append(~IndicatorOfCompromise.value.like(f"{prefix}%"))
+        for i in range(16, 32):
+            conditions.append(~IndicatorOfCompromise.value.like(f"172.{i}.%"))
+    return conditions
+
+
 @router.get("/feed", response_class=PlainTextResponse)
 async def ioc_feed(
     ioc_type: str = Query("ip", description="Indicator type to emit"),
     min_sessions: int = Query(2, ge=1),
+    exclude_scanners: bool = Query(True, description="Leave out addresses of known research scanners"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(feed_auth),
 ):
     """A plain-text list, one indicator per line.
 
@@ -169,6 +224,7 @@ async def ioc_feed(
                 func.count(func.distinct(IndicatorOfCompromise.session_id)).label("n"),
             )
             .where(IndicatorOfCompromise.ioc_type == ioc_type)
+            .where(*_feed_exclusions(ioc_type, exclude_scanners))
             .group_by(IndicatorOfCompromise.value)
             .having(
                 func.count(func.distinct(IndicatorOfCompromise.session_id))

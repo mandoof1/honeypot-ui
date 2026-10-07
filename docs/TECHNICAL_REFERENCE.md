@@ -6,7 +6,7 @@
 
 ```
         Attacker
-           │  SSH 2222 / FTP 2121 / HTTP 8080 / HTTPS 8443
+           │  SSH 2222 / FTP 2121 / Telnet 2323 / HTTP 8080 / HTTPS 8443
            ▼
 ┌──────────────────────────────────────────────┐
 │  Honeypot Engine  (honeypot/)                │
@@ -253,6 +253,10 @@ ones that matter most:
 | `SESSION_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` / `OUTBOX_RETENTION_DAYS` | `0` / `365` / `30` | Hourly deletion of rows older than this; 0 keeps everything. |
 | `LOGIN_LOCKOUT_THRESHOLD` / `LOGIN_LOCKOUT_MINUTES` | `10` / `15` | Per-account lockout after repeated wrong passwords. |
 | `TRUSTED_PROXIES` | loopback + RFC1918 | Addresses skipped (right to left) when reading `X-Forwarded-For`; the first other address is the client. Only used with `TRUST_PROXY_HEADERS=true`. |
+
+### Telnet decoy
+
+`HONEYPOT_TELNET_PORT` (default `2323`, listed in `HONEYPOT_PROTOCOLS` as `telnet`). Answers option negotiation like telnetd (offers ECHO and SUPPRESS-GO-AHEAD, refuses the rest), runs the SSH decoy's login policy (weak credential or soft accept after three failures, every attempt recorded) and then the same shell dispatcher, so busybox probes, `wget`/`tftp` loaders and shell-written files are captured identically. Sessions carry `protocol: telnet`.
 
 ### Engine limits and durability
 

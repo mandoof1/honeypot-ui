@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     LOGIN_LOCKOUT_THRESHOLD: int = 10
     LOGIN_LOCKOUT_MINUTES: int = 15
 
+    #: Optional static token for the plain-text indicator feed, so a firewall
+    #: or SIEM can pull it without a user session that expires hourly. Sent
+    #: as X-Feed-Token. Empty leaves the feed JWT-only.
+    IOC_FEED_TOKEN: str = ""
+
     #: Addresses treated as reverse proxies when reading X-Forwarded-For:
     #: walked from the right, the first address not in this list is the
     #: client. Loopback and the Docker ranges by default.

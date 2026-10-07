@@ -120,6 +120,9 @@ class User(Base):
     #: Consecutive failed password attempts, and the lockout they earned.
     failed_login_count = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime(timezone=True), nullable=True)
+    #: Bumped to invalidate every outstanding access token (password change,
+    #: admin reset, deactivation, "sign out everywhere").
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
 
     alerts = relationship("Alert", back_populates="user", foreign_keys="Alert.assigned_to_id")
     audit_logs = relationship("AuditLog", back_populates="user")
@@ -398,6 +401,27 @@ class Alert(Base):
 
     session = relationship("HoneypotSession", back_populates="alerts")
     user = relationship("User", back_populates="alerts", foreign_keys=[assigned_to_id])
+
+
+class RefreshToken(Base):
+    """One issued refresh token, so it can be rotated and revoked.
+
+    A family groups a token with every successor it was exchanged for; when
+    a revoked member is presented again, the whole family goes, because the
+    presenter and the legitimate holder cannot be told apart at that point.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    jti = Column(String(64), nullable=False, unique=True, index=True)
+    family = Column(String(64), nullable=False, index=True)
+    issued_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    replaced_by = Column(String(64), nullable=True)
+    ip_address = Column(String(45), nullable=True)
 
 
 class NotificationOutbox(Base):

@@ -195,6 +195,17 @@ export const api = {
         body: JSON.stringify(data),
       }),
     me: () => request('/auth/me'),
+    // Revokes the refresh token on the server; best effort, never blocks sign-out.
+    logout: () => {
+      const refresh_token = localStorage.getItem(REFRESH_TOKEN_KEY)
+      if (!refresh_token) return Promise.resolve()
+      return fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token }),
+        keepalive: true,
+      }).catch(() => {})
+    },
     changePassword: (current_password, new_password) =>
       request('/auth/change-password', {
         method: 'POST',

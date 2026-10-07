@@ -73,10 +73,11 @@ services:
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
       HONEYPOT_SSH_PORT: "2222"
       HONEYPOT_FTP_PORT: "2121"
+      HONEYPOT_TELNET_PORT: "2323"
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
       HONEYPOT_CONTROL_PORT: "8000"
-      HONEYPOT_PROTOCOLS: ssh,ftp,http,https
+      HONEYPOT_PROTOCOLS: ssh,ftp,telnet,http,https
       HONEYPOT_OPERATIONAL_MODE: active
       HONEYPOT_MAX_CONN_PER_IP: "5"
       HONEYPOT_RATE_LIMIT: "60"
@@ -98,6 +99,7 @@ services:
       # deployment that faces the internet is deploy/server/.)
       - "127.0.0.1:2222:2222"
       - "127.0.0.1:2121:2121"
+      - "127.0.0.1:2323:2323"
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8443:8443"
       # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.

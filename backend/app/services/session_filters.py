@@ -75,8 +75,8 @@ def session_filters(
 
     if protocol:
         protocol = protocol.lower()
-        if protocol not in {"ssh", "ftp", "http", "https"}:
-            raise HTTPException(400, "Invalid protocol. Expected ssh, ftp, http or https")
+        if protocol not in {"ssh", "ftp", "telnet", "http", "https"}:
+            raise HTTPException(400, "Invalid protocol. Expected ssh, ftp, telnet, http or https")
         query = query.where(HoneypotSession.protocol == protocol)
     # Interpret timezone-free API timestamps as UTC, consistently across hosts.
     if date_from:
