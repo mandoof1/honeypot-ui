@@ -45,6 +45,15 @@ x-backend-env: &backend_env
   CHIMERA_URL: ${CHIMERA_URL:-}
   CHIMERA_MODEL: ${CHIMERA_MODEL:-wolfram}
   CHIMERA_TIMEOUT: ${CHIMERA_TIMEOUT:-300}
+  # The decision model (triage before the language model, technique checks
+  # after it). Points at the `decider` service below; empty disables it.
+  DECIDER_URL: ${DECIDER_URL:-}
+  DECIDER_MODEL: ${DECIDER_MODEL:-kev-4b}
+  DECIDER_SKIP_THRESHOLD: ${DECIDER_SKIP_THRESHOLD:-0.85}
+  DECIDER_ESCALATE_THRESHOLD: ${DECIDER_ESCALATE_THRESHOLD:-0.6}
+  DECIDER_TRIAGE_RULE_SKIPPED: ${DECIDER_TRIAGE_RULE_SKIPPED:-false}
+  DECIDER_SUPPORT_THRESHOLD: ${DECIDER_SUPPORT_THRESHOLD:-0.3}
+  DECIDER_DROP_UNCONFIRMED: ${DECIDER_DROP_UNCONFIRMED:-false}
   # Alert handling, retention and lockout; see deploy/server/README.md.
   ALERT_DEDUP_WINDOW_MINUTES: ${ALERT_DEDUP_WINDOW_MINUTES:-60}
   ALERT_SUPPRESS_SCANNERS: ${ALERT_SUPPRESS_SCANNERS:-true}
@@ -191,6 +200,49 @@ services:
       retries: 5
     mem_limit: ${WOLFRAM_MEM_LIMIT:-10g}
     cpus: ${WOLFRAM_CPUS:-6}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  # Decision model: Kev-4B, a Jev-style model that answers typed questions
+  # with probabilities instead of text, through llama.cpp's /v1/systemone
+  # (needs a server build from b11459 on). Same isolation as wolfram. The
+  # backend's single worker calls the two models in turn, never together,
+  # so each gets most of the CPU. --parallel with a unified cache lets every
+  # question about a session share one read of its transcript.
+  decider:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["llm"]
+    command:
+      - -m
+      - /models/${DECIDER_MODEL_FILE:-Kev-4B-Q8_0.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - ${DECIDER_MODEL:-kev-4b}
+      - -t
+      - ${DECIDER_THREADS:-6}
+      - -c
+      - "16384"
+      - --parallel
+      - "8"
+      - --kv-unified
+      - --no-webui
+    volumes:
+      - ./state/models:/models:ro
+    networks: [llm]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    mem_limit: ${DECIDER_MEM_LIMIT:-6g}
+    cpus: ${DECIDER_CPUS:-6}
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

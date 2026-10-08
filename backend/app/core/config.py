@@ -110,6 +110,43 @@ class Settings(BaseSettings):
     #: Characters of transcript sent for inference.
     CHIMERA_MAX_TRANSCRIPT_CHARS: int = 6000
 
+    # Optional decision model (Kev, a Jev-style "System One" model) in front
+    # of the language model. It never writes text: it reads a transcript once
+    # and returns probabilities over options the backend supplies, in seconds
+    # rather than minutes. It triages every session (category, severity,
+    # automated or human) so the language model only reads the ones worth its
+    # time, and checks each ATT&CK technique the language model names against
+    # the transcript. Base URL of a llama.cpp server exposing /v1/systemone,
+    # e.g. "http://decider:8080". Same egress rule as CHIMERA_URL: local only.
+    DECIDER_URL: str = ""
+    DECIDER_MODEL: str = "kev-4b"
+    DECIDER_TIMEOUT: float = 120.0
+    #: Characters of transcript the decision model reads. Its cost is the
+    #: length of the transcript (about 25 ms a token on the server's CPU),
+    #: not the number of questions, which share one read.
+    DECIDER_MAX_TRANSCRIPT_CHARS: int = 3000
+    #: Skip the language model when the decision model puts at least this
+    #: much probability on "nothing worse than information gathering" and
+    #: the rules found nothing worse either. Uncertain sessions still go.
+    DECIDER_SKIP_THRESHOLD: float = 0.85
+    #: Also triage the sessions the rules would skip (plain web browsing,
+    #: short benign FTP), so triage can send one on. Off by default: on the
+    #: deployment's captured browsing the model read 30 of 32 benign sessions
+    #: as reconnaissance, at about 16 s of CPU each, and escalated none.
+    DECIDER_TRIAGE_RULE_SKIPPED: bool = False
+    #: Send a session the rules would have skipped when the decision model
+    #: puts at least this much probability on an attempted compromise.
+    DECIDER_ESCALATE_THRESHOLD: float = 0.6
+    #: A technique the language model names is marked unconfirmed when the
+    #: decision model's probability that the transcript shows it is below
+    #: this. Marked, not removed: see DECIDER_DROP_UNCONFIRMED.
+    DECIDER_SUPPORT_THRESHOLD: float = 0.3
+    #: Remove unconfirmed techniques instead of marking them.
+    DECIDER_DROP_UNCONFIRMED: bool = False
+    #: A session waiting on an unreachable decision model goes to the
+    #: language model on the rules' verdict alone after this long.
+    DECIDER_FALLBACK_SECONDS: int = 900
+
     # Background workers: the enrichment queue, the notification outbox, node
     # liveness checks and retention. Run them in exactly one process — the
     # `backend` service — never in the multi-worker ingest service.

@@ -220,6 +220,56 @@ in the session view. Indicators the model names are kept only when the text
 appears in the transcript, so a transcript cannot plant indicators by
 asking. `CHIMERA_TIMEOUT` (300 s) and `WOLFRAM_THREADS` (6) are the knobs.
 
+### Triage: the decision model in front of Wolfram
+
+A second, much faster model triages every session before Wolfram sees it.
+**Kev-4B** (Apache-2.0) is a decision model in the style of TypeSafe's Jev:
+it never writes text. It reads the transcript once and returns probabilities
+over options the backend supplies, through llama.cpp's `/v1/systemone`
+endpoint, in about 8 seconds for a typical shell session on this CPU and
+16 s for a long web session (about 25 ms per transcript token; the questions
+share one read). It runs as the
+`decider` service, with the same isolation as `wolfram`:
+
+```bash
+sudo bash fetch-decider.sh    # pinned revision, SHA-256 checked, 4.5 GB
+sudo bash install.sh          # turns on DECIDER_URL
+```
+
+For each session the rules would send to Wolfram it answers three
+questions: which of the pipeline's four categories, how severe on a 0–3
+scale, and automated or human. Ingest marks such sessions `triage` instead
+of `pending`; the backend's worker triages them first, then routes:
+
+- **Skips Wolfram** only when triage puts at least `DECIDER_SKIP_THRESHOLD`
+  (0.85) on "information gathering at most" *and* the rules found nothing
+  past reconnaissance. Rule evidence of exploitation always goes through.
+- Otherwise the session goes to Wolfram as before. The reason is stored and
+  shown in the session view, where **Analyse now** still overrides a skip.
+
+Sessions the rules skip (plain web browsing, short benign FTP) are left
+alone unless `DECIDER_TRIAGE_RULE_SKIPPED=true`, which triages them too and
+sends one on to Wolfram when triage puts at least
+`DECIDER_ESCALATE_THRESHOLD` (0.6) on an attempted compromise. It is off
+because on the shop browsing captured here the model called 30 of 32 benign
+sessions reconnaissance, at about 16 s of CPU each, and escalated none.
+
+After Wolfram answers, the decider checks each technique it named that the
+rule map did not: "do the commands show this?", asked in plain words.
+Below `DECIDER_SUPPORT_THRESHOLD` (0.3) a technique is marked *unconfirmed*:
+still listed, but it does not add a tactic to the session.
+`DECIDER_DROP_UNCONFIRMED=true` removes such techniques instead. Measured on
+held-out data in `docs/evaluation/` (decision model section).
+
+The two models never run at the same time, so both get 6 threads. If the
+decider is down, sessions waiting on it go to Wolfram on the rules' verdict
+after `DECIDER_FALLBACK_SECONDS` (900). Identical transcripts are triaged
+once. To triage sessions captured before it was enabled:
+
+```bash
+docker compose exec backend python -m app.tools.reanalyze --all --queue-triage
+```
+
 ### Re-running the rules over old sessions
 
 Verdicts are fixed at ingest, so a signature change leaves old rows on the

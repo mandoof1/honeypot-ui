@@ -23,7 +23,7 @@ and a workspace for investigating suspicious activity.
 |---|---|
 | **Capture** | SSH, Telnet, FTP, HTTP and HTTPS emulators record interactions, attempted credentials (shell, FTP, web login forms and HTTP Basic auth), files attackers upload, and each connection's flow statistics. Passive mode records without answering, on every protocol. |
 | **Investigate** | Search sessions, filter by protocol and time, inspect transcripts (shell commands, FTP commands and HTTP requests with their bodies), and review ATT&CK mappings. |
-| **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, anomaly detection, command analysis, research-scanner attribution, and optional LLM enrichment. |
+| **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, anomaly detection, command analysis, research-scanner attribution, and optional local-model enrichment: a decision model triages every session in seconds and a fine-tuned LLM analyses the ones worth it. |
 | **Protect a website** | Put a real web application behind the HTTP/HTTPS decoys. Every request is recorded, card numbers masked, and a client that gives itself away is answered by a decoy copy of the site from then on, while everyone else keeps reaching the live one. |
 | **Reverse-engineer** | Uploaded files are analysed statically — never run — for type, capabilities, embedded indicators, and a malware-family hint. |
 | **Respond** | Triage alerts, manage nodes, review indicators, and control the honeypot through role-restricted actions. |
@@ -219,7 +219,8 @@ flowchart LR
     API <--> DB[(PostgreSQL)]
     UI[React investigation console] <-->|JWT, role checks, optional TOTP| API
     API --> Analysis[Random Forest on flow / NLP / anomaly detection]
-    API -. Async: transcript .-> LLM[Local LLM endpoint]
+    API -. Async: transcript .-> Decider[Local decision model: triage]
+    Decider -. worth reading .-> LLM[Local LLM endpoint]
     API -. Async: uploaded files .-> Payload[Sandboxed static analysis]
 ```
 
@@ -340,6 +341,7 @@ Start with [`.env.example`](.env.example). The key settings are:
 | `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
 | `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |
 | `CHIMERA_URL` | Optional local model endpoint. |
+| `DECIDER_URL` | Optional local decision-model endpoint (llama.cpp `/v1/systemone`) for triage and technique checks. |
 
 | Guide | Use it for |
 |---|---|

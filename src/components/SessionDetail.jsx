@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { ExternalLink, X } from 'lucide-react'
 import { CategoryTag } from './Severity'
 import EnrichmentBlock from './EnrichmentBlock'
+import TriageBlock from './TriageBlock'
 import { clean } from '../lib/text'
 import { PROFILE_LABEL } from '../lib/severity'
 import SessionTranscript, {
@@ -261,6 +262,19 @@ export default function SessionDetail({ session, onClose }) {
                       model
                     </span>
                   )}
+                  {technique.source === 'chimera' && typeof technique.support === 'number' && (
+                    <span
+                      className="readout shrink-0 text-[11px]"
+                      style={{ color: technique.unconfirmed ? 'var(--color-s3)' : 'var(--color-paper-3)' }}
+                      title={
+                        technique.unconfirmed
+                          ? 'The decision model found little sign of this technique in the transcript; its tactic is not counted'
+                          : 'The decision model\'s probability that the transcript shows this technique'
+                      }
+                    >
+                      {technique.unconfirmed ? 'unconfirmed' : 'checked'} {Math.round(technique.support * 100)}%
+                    </span>
+                  )}
                   <ExternalLink
                     className="h-3 w-3 shrink-0 text-paper-3 opacity-0 transition-opacity group-hover:opacity-100"
                     strokeWidth={2}
@@ -272,6 +286,7 @@ export default function SessionDetail({ session, onClose }) {
         </Block>
       )}
 
+      <TriageBlock session={session} />
       <EnrichmentBlock key={`e${session.id}`} session={session} />
       <DiversionBlock session={session} />
       <RetrievalBlock session={session} />

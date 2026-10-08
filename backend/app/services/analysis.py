@@ -367,11 +367,11 @@ class AnalysisPipeline:
                 rule_reason=rule_reason,
             )
 
-        # Queue stage 2 for the sessions worth a model's time. The worker in
-        # the backend service drains this; nothing here waits on it.
-        db_session.enrichment_status = enrichment.initial_status(
-            db_session, nlp_result, session_data
-        )
+        # Queue stage 2 for the sessions worth a model's time: triage by the
+        # decision model first when one is configured, then the language
+        # model. The worker in the backend service drains both; nothing here
+        # waits on either.
+        enrichment.queue_at_ingest(db_session, nlp_result, session_data)
 
         await db.commit()
 
@@ -406,6 +406,7 @@ class AnalysisPipeline:
             "iocs": iocs,
             "alert": alert_outcome,
             "enrichment_status": db_session.enrichment_status,
+            "triage_status": db_session.triage_status,
         }
 
     def _extract_iocs(self, attacker_ip: str, nlp_result: Dict, session_data: Dict) -> List[Dict]:

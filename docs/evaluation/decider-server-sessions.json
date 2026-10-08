@@ -1,0 +1,37 @@
+{
+  "measured": "2026-10-08",
+  "what": "Every stored session with commands on the self-hosted deployment, triaged after the fact with reanalyze --queue-triage --retriage (before triage was limited to sessions the rules queue). No labels exist; the comparison is with the rule layer's category.",
+  "model": "Kev-4B Q8_0, llama.cpp server b11459, 6 threads, i7-9700",
+  "sessions": 34,
+  "by_status": {
+    "complete": 34
+  },
+  "by_protocol": {
+    "http": 22,
+    "https": 12
+  },
+  "triage_vs_rules": {
+    "benign->reconnaissance": 30,
+    "reconnaissance->reconnaissance": 1,
+    "exploitation->exploitation": 1,
+    "benign->benign": 2
+  },
+  "agreement_with_rules": 0.1176,
+  "routes_applied": {},
+  "routes_suggested": {
+    "skipped": 34
+  },
+  "operator": {
+    "automated": 34
+  },
+  "reused_identical_transcript": 1,
+  "ms": {
+    "p50": 16419,
+    "p95": 41806,
+    "max": 42905
+  },
+  "input_tokens": {
+    "p50": 1513,
+    "max": 4621
+  }
+}
