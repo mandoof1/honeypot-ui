@@ -133,6 +133,13 @@ class HoneypotConfig:
     #: when its address changes. Empty: clients are told apart by address and
     #: user agent only.
     http_session_cookie: str = os.getenv("HONEYPOT_HTTP_SESSION_COOKIE", "")
+    #: Seconds a web session stays open for more requests from the same client
+    #: (address, user agent, session cookie) after its connection closes, so a
+    #: scanner firing one request per connection, or a browser reconnecting,
+    #: is recorded as one session rather than dozens. The session is delivered
+    #: to the backend this long after the client's last request. 0 restores
+    #: one session per connection.
+    http_session_idle: float = _float_env("HONEYPOT_HTTP_SESSION_IDLE", 30.0)
 
     #: Which OpenSSH release the SSH emulator imitates — banner and transport
     #: proposal together. See honeypot/adaptive/ssh_profile.py; the profile

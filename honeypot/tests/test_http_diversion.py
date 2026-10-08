@@ -301,3 +301,31 @@ class TestSignals:
         now[0] += 601
         assert table.failed_login("198.51.100.1", BROWSER) == 1
         assert table.failed_login("198.51.100.1", BROWSER) == 2
+
+
+async def test_separate_connections_from_one_client_make_one_session(site, monkeypatch):
+    """A scanner that opens a fresh connection per request lands in a single
+    session, not one per request (config.http_session_idle coalesces them)."""
+    monkeypatch.setattr(config, "http_session_idle", 0.5)
+    base_url, ingested = site
+    # Each request on its own connection (Connection: close), same identity.
+    for path in ("/", "/products", "/.env", "/admin/"):
+        async with _client(base_url) as client:
+            await client.get(path, headers={"connection": "close"})
+    payload = await asyncio.wait_for(ingested.get(), timeout=10)
+    # One ingested session carrying every request, not four.
+    requests = [t for t in payload["transcript"] if t["command"].startswith("GET ")]
+    assert len(requests) == 4
+    assert ingested.empty()
+
+
+async def test_different_user_agents_are_separate_sessions(site, monkeypatch):
+    monkeypatch.setattr(config, "http_session_idle", 0.5)
+    base_url, ingested = site
+    async with _client(base_url, BROWSER) as a:
+        await a.get("/", headers={"connection": "close"})
+    async with _client(base_url, OTHER_BROWSER) as b:
+        await b.get("/", headers={"connection": "close"})
+    first = await asyncio.wait_for(ingested.get(), timeout=10)
+    second = await asyncio.wait_for(ingested.get(), timeout=10)
+    assert first["session_id"] != second["session_id"]

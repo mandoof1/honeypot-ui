@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import time
+from dataclasses import dataclass
 from typing import Optional, Union
 from urllib.parse import parse_qs, unquote_plus, urlparse
 
@@ -29,6 +30,18 @@ from honeypot.security.diversion import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _WebSession:
+    """An open web session shared by a client's connections (see
+    HTTPHoneypot._attach_session). It ends ``http_session_idle`` seconds after
+    the client's last request, unless a new connection reattaches first."""
+
+    session_id: str
+    active: int = 0
+    last_seen: float = 0.0
+    finalize: Optional[asyncio.Task] = None
 
 
 #: Form fields that carry a login, across the decoy's own forms and the
@@ -201,9 +214,10 @@ class HTTPHoneypot(BaseEmulator):
             self._decoy_upstream = None
         owned = {p.strip() for p in config.http_upstream_owns.split(",") if p.strip()}
         self._bait_paths = (set(self._fake_files) | set(self._vulnerable_endpoints)) - owned
-        #: What answered each session's request in flight, for its transcript
-        #: line: "decoy" when the decoy application did.
-        self._answered_by: dict[str, str] = {}
+        #: Open web sessions by client identity, so a client's requests join
+        #: one session across connections. Guarded by _web_lock.
+        self._web_sessions: dict[tuple, _WebSession] = {}
+        self._web_lock = asyncio.Lock()
 
     def get_banner(self) -> str:
         return fingerprint_engine.get_http_server_header()
@@ -214,6 +228,18 @@ class HTTPHoneypot(BaseEmulator):
             # before, is both a fingerprint and a lie in the logs.
             raise RuntimeError("no TLS context available; HTTPS listener not started")
         await super().start()
+
+    async def stop(self) -> None:
+        # Flush any web sessions still waiting on their idle window, so a
+        # shutdown delivers them now instead of dropping them.
+        await super().stop()
+        async with self._web_lock:
+            entries = list(self._web_sessions.values())
+            self._web_sessions.clear()
+        for entry in entries:
+            if entry.finalize is not None:
+                entry.finalize.cancel()
+            await session_manager.end_session(entry.session_id)
 
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -228,11 +254,10 @@ class HTTPHoneypot(BaseEmulator):
             await writer.wait_closed()
             return
 
-        session_id = await session_manager.create_session(
-            self.protocol, source_ip, source_port, flow=flow
-        )
-
         if mode_handler.is_passive():
+            session_id = await session_manager.create_session(
+                self.protocol, source_ip, source_port, flow=flow
+            )
             try:
                 await self._observe_passively(session_id, reader)
             finally:
@@ -251,78 +276,20 @@ class HTTPHoneypot(BaseEmulator):
         connection_deadline = loop.time() + self.MAX_CONNECTION_SECONDS
         idle_timeout = config.connection_timeout or self.DEFAULT_IDLE_TIMEOUT
         requests_served = 0
+        # The session is attached on the first request, once the client's
+        # identity (address, user agent, session cookie) is known, so a
+        # client's requests coalesce into one session even across separate
+        # connections (see _attach_session). HTTP is request-per-connection
+        # for most tools, and one session per connection turned a single scan
+        # into dozens of one-request rows, each queued for the model stage.
+        session_id: Optional[str] = None
+        identity = None
         try:
             while requests_served < self.MAX_REQUESTS_PER_CONNECTION:
                 try:
-                    remaining = connection_deadline - loop.time()
-                    if remaining <= 0:
-                        break
-                    request_line = await asyncio.wait_for(
-                        reader.readline(), timeout=min(idle_timeout, remaining)
+                    result = await self._read_request(
+                        reader, loop, connection_deadline, idle_timeout
                     )
-                    if not request_line:
-                        break
-                    head_deadline = loop.time() + self.HEAD_DEADLINE_SECONDS
-
-                    request_str = request_line.decode("utf-8", errors="replace").strip()
-                    if not request_str:
-                        continue
-
-                    if len(request_str) > self.MAX_REQUEST_LINE:
-                        await self._send_response(
-                            writer,
-                            self._build_response(414, "URI Too Long", ""),
-                        )
-                        break
-
-                    headers = await self._read_headers(reader, head_deadline)
-                    requests_served += 1
-
-                    try:
-                        content_length = int(headers.get("content-length", 0))
-                    except ValueError:
-                        content_length = 0
-                    if content_length > self.MAX_BODY_BYTES:
-                        await self._send_response(
-                            writer,
-                            self._build_response(
-                                413, "Payload Too Large", "Request body too large"
-                            ),
-                        )
-                        break
-
-                    body = ""
-                    body_bytes = b""
-                    if content_length > 0:
-                        # Allow time proportional to the size, within bounds:
-                        # a fixed 30 s dropped large uploads on slow links.
-                        body_bytes = await asyncio.wait_for(
-                            reader.readexactly(content_length),
-                            timeout=min(300, max(30, content_length / 32_768)),
-                        )
-                        # The decoded form feeds the text matching and the
-                        # records, with card data masked; the raw bytes are
-                        # what gets captured as a file or forwarded upstream.
-                        # Decoding with replacement characters used to be the
-                        # only copy, which destroyed every binary upload on
-                        # arrival.
-                        body = redact_card_data(
-                            body_bytes.decode("utf-8", errors="replace")
-                        )
-
-                    response = await self._handle_request(
-                        session_id, request_str, headers, body, source_ip, writer,
-                        body_bytes,
-                    )
-                    await self._record_exchange(
-                        session_id, request_str, headers, body, response,
-                        self._answered_by.pop(session_id, None),
-                    )
-                    await self._send_response(writer, response)
-
-                    if headers.get("connection", "").lower() == "close":
-                        break
-
                 except asyncio.TimeoutError:
                     break
                 except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError) as exc:
@@ -334,18 +301,174 @@ class HTTPHoneypot(BaseEmulator):
                     logger.warning("HTTP request from %s failed: %s", source_ip, exc, exc_info=True)
                     break
 
+                kind = result[0]
+                if kind == "stop":
+                    break
+                if kind == "empty":
+                    continue
+                if kind == "error":
+                    await self._send_response(writer, result[1])
+                    break
+
+                _, request_str, headers, body, body_bytes = result
+                requests_served += 1
+
+                if session_id is None:
+                    identity = self._identity(source_ip, headers)
+                    session_id = await self._attach_session(
+                        identity, source_ip, source_port, flow
+                    )
+
+                # Per request, not per session: concurrent connections can now
+                # share one session_id, so a session-keyed marker would race.
+                answered: dict = {}
+                response = await self._handle_request(
+                    session_id, request_str, headers, body, source_ip, writer,
+                    body_bytes, answered,
+                )
+                await self._record_exchange(
+                    session_id, request_str, headers, body, response,
+                    answered.get("by"),
+                )
+                await self._send_response(writer, response)
+
+                if headers.get("connection", "").lower() == "close":
+                    break
+
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
             pass
         except Exception as e:
             logger.error(f"HTTP session error: {e}")
         finally:
-            self._answered_by.pop(session_id, None)
-            await session_manager.end_session(session_id)
+            if identity is not None:
+                await self._detach_session(identity)
+            elif flow is not None:
+                # No request was read, so nothing was attached and this
+                # connection's flow meter is the only thing to close.
+                flow.close()
             writer.close()
             try:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def _read_request(self, reader, loop, connection_deadline, idle_timeout):
+        """Read one request, or a control signal.
+
+        Returns ("request", request_line, headers, body, body_bytes), or
+        ("stop",) when the connection is done, ("empty",) for a blank line to
+        skip, or ("error", response) to send and then stop. Pulled out of the
+        connection loop so the first request can be read before the session is
+        attached — the client's identity is only known once its headers are.
+        """
+        remaining = connection_deadline - loop.time()
+        if remaining <= 0:
+            return ("stop",)
+        request_line = await asyncio.wait_for(
+            reader.readline(), timeout=min(idle_timeout, remaining)
+        )
+        if not request_line:
+            return ("stop",)
+        head_deadline = loop.time() + self.HEAD_DEADLINE_SECONDS
+        request_str = request_line.decode("utf-8", errors="replace").strip()
+        if not request_str:
+            return ("empty",)
+        if len(request_str) > self.MAX_REQUEST_LINE:
+            return ("error", self._build_response(414, "URI Too Long", ""))
+        headers = await self._read_headers(reader, head_deadline)
+        try:
+            content_length = int(headers.get("content-length", 0))
+        except ValueError:
+            content_length = 0
+        if content_length > self.MAX_BODY_BYTES:
+            return ("error", self._build_response(413, "Payload Too Large", "Request body too large"))
+        body = ""
+        body_bytes = b""
+        if content_length > 0:
+            # Allow time proportional to the size, within bounds: a fixed 30 s
+            # dropped large uploads on slow links.
+            body_bytes = await asyncio.wait_for(
+                reader.readexactly(content_length),
+                timeout=min(300, max(30, content_length / 32_768)),
+            )
+            # The decoded form feeds the text matching and the records, with
+            # card data masked; the raw bytes are what gets captured as a file
+            # or forwarded upstream. Decoding with replacement characters used
+            # to be the only copy, which destroyed every binary upload.
+            body = redact_card_data(body_bytes.decode("utf-8", errors="replace"))
+        return ("request", request_str, headers, body, body_bytes)
+
+    def _identity(self, source_ip: str, headers: dict) -> tuple:
+        """The client a request belongs to: address, user agent, cookie.
+
+        The same identity the diversion table uses (honeypot/security/
+        diversion.py), so a session and its diversion verdict agree on who the
+        client is.
+        """
+        agent = (headers.get("user-agent") or "")[:512]
+        token = request_token(headers, config.http_session_cookie)
+        return (source_ip, agent, token)
+
+    async def _attach_session(self, identity, source_ip, source_port, flow) -> str:
+        """Reuse this client's open session, or start one. Returns its id."""
+        if config.http_session_idle <= 0:
+            return await session_manager.create_session(
+                self.protocol, source_ip, source_port, flow=flow
+            )
+        async with self._web_lock:
+            entry = self._web_sessions.get(identity)
+            if entry is not None:
+                if entry.finalize is not None:
+                    entry.finalize.cancel()
+                    entry.finalize = None
+                entry.active += 1
+                entry.last_seen = time.time()
+                # A later connection's flow is not merged into the session the
+                # first one opened; close it so the meter is not leaked.
+                if flow is not None:
+                    flow.close()
+                return entry.session_id
+            session_id = await session_manager.create_session(
+                self.protocol, source_ip, source_port, flow=flow
+            )
+            self._web_sessions[identity] = _WebSession(
+                session_id=session_id, active=1, last_seen=time.time()
+            )
+            return session_id
+
+    async def _detach_session(self, identity) -> None:
+        """A connection for this client closed; end the session once idle."""
+        if config.http_session_idle <= 0:
+            async with self._web_lock:
+                entry = self._web_sessions.pop(identity, None)
+            if entry is not None:
+                await session_manager.end_session(entry.session_id)
+            return
+        async with self._web_lock:
+            entry = self._web_sessions.get(identity)
+            if entry is None:
+                return
+            entry.active -= 1
+            entry.last_seen = time.time()
+            if entry.active <= 0 and entry.finalize is None:
+                entry.finalize = asyncio.create_task(self._finalize_session(identity))
+
+    async def _finalize_session(self, identity) -> None:
+        try:
+            await asyncio.sleep(config.http_session_idle)
+        except asyncio.CancelledError:
+            return
+        async with self._web_lock:
+            entry = self._web_sessions.get(identity)
+            if entry is None or entry.active > 0:
+                return
+            if time.time() - entry.last_seen < config.http_session_idle:
+                # Reattached and detached again in the meantime; the newer
+                # finalize task owns it now.
+                return
+            self._web_sessions.pop(identity, None)
+            session_id = entry.session_id
+        await session_manager.end_session(session_id)
 
     async def _record_exchange(
         self,
@@ -458,6 +581,7 @@ class HTTPHoneypot(BaseEmulator):
         source_ip: str,
         writer: asyncio.StreamWriter,
         body_bytes: bytes = b"",
+        answered: Optional[dict] = None,
     ) -> str:
         parts = request_line.split()
         if len(parts) < 2:
@@ -511,7 +635,8 @@ class HTTPHoneypot(BaseEmulator):
             if not self._decoy_upstream:
                 return await self._forward(self._upstream, method, full_path, headers, body_bytes, source_ip)
             return await self._serve_diverting(
-                session_id, method, full_path, path, headers, body, body_bytes, source_ip, attack
+                session_id, method, full_path, path, headers, body, body_bytes, source_ip, attack,
+                answered,
             )
 
         if method == "GET":
@@ -738,6 +863,7 @@ class HTTPHoneypot(BaseEmulator):
         body_bytes: bytes,
         source_ip: str,
         attack: Optional[str],
+        answered: Optional[dict] = None,
     ) -> Union[str, bytes]:
         """Have the live or the decoy application answer, by what the client
         has done so far (see honeypot/security/diversion.py)."""
@@ -754,7 +880,8 @@ class HTTPHoneypot(BaseEmulator):
             await self._note_diversion(session_id, mark, path)
 
         if mark is not None:
-            self._answered_by[session_id] = "decoy"
+            if answered is not None:
+                answered["by"] = "decoy"
             response = await self._forward(self._decoy_upstream, method, full_path, headers, body_bytes, source_ip)
             if isinstance(response, bytes):
                 diversion_table.adopt(issued_tokens(response, config.http_session_cookie), mark)
