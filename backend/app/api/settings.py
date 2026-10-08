@@ -129,6 +129,7 @@ async def get_system_config(
     modes = set(n.mode.value for n in nodes)
     global_mode = "mixed" if len(modes) > 1 else (modes.pop() if modes else "active")
 
+    from app.ai.decider import decider
     from app.ai.llm import chimera
     from app.core.config import get_settings
 
@@ -140,6 +141,14 @@ async def get_system_config(
         # Read-only view of the deployment's operational settings, so the
         # page can say what the platform will actually do.
         "enrichment": {"configured": chimera.enabled, "model": chimera.model_name if chimera.enabled else None},
+        "triage": {
+            "configured": decider.enabled,
+            "model": decider.model_name if decider.enabled else None,
+            "skip_threshold": cfg.DECIDER_SKIP_THRESHOLD,
+            "escalate_threshold": cfg.DECIDER_ESCALATE_THRESHOLD,
+            "support_threshold": cfg.DECIDER_SUPPORT_THRESHOLD,
+            "drop_unconfirmed": cfg.DECIDER_DROP_UNCONFIRMED,
+        },
         "retention": {
             "sessions_days": cfg.SESSION_RETENTION_DAYS,
             "audit_days": cfg.AUDIT_RETENTION_DAYS,

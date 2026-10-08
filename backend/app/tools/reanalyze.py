@@ -17,6 +17,7 @@ sends notifications, and never touches the encrypted evidence.
     python -m app.tools.reanalyze --since 2026-10-01   # a window
     python -m app.tools.reanalyze --ids 2256 2262      # specific rows
     python -m app.tools.reanalyze --all --queue-llm    # also queue stage 2
+    python -m app.tools.reanalyze --all --queue-triage # also queue triage
 
 Run inside the backend container, where the encryption key is available.
 """
@@ -173,6 +174,9 @@ async def main(argv=None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="compute, report, do not write")
     parser.add_argument("--queue-llm", action="store_true",
                         help="also mark eligible sessions pending for the language model")
+    parser.add_argument("--queue-triage", action="store_true",
+                        help="queue untriaged sessions with commands for the decision model; "
+                             "their language-model state is left as it is")
     parser.add_argument("--batch", type=int, default=200)
     args = parser.parse_args(argv)
 
@@ -193,6 +197,7 @@ async def main(argv=None) -> int:
     total = 0
     categories = Counter()
     queued = 0
+    triage_queued = 0
     async with async_session_factory() as db:
         rows = (await db.execute(query)).scalars().all()
         for i, session in enumerate(rows, 1):
@@ -211,6 +216,17 @@ async def main(argv=None) -> int:
                 if status == "pending":
                     session.enrichment_status = "pending"
                     queued += 1
+            if (
+                args.queue_triage
+                and session.triage_status in ("none", "failed")
+                and session.raw_commands_encrypted
+                and not session.scanner_operator
+            ):
+                # Triage of a row that already has a language-model state is
+                # a second opinion only: routing applies to rows waiting on it.
+                session.triage_status = "pending"
+                session.triage = {"rules_verdict": session.enrichment_status}
+                triage_queued += 1
             if not args.dry_run and i % args.batch == 0:
                 await db.commit()
         if args.dry_run:
@@ -220,7 +236,7 @@ async def main(argv=None) -> int:
 
     print(
         f"{'Would change' if args.dry_run else 'Changed'} {changed} of {total} session(s); "
-        f"queued {queued} for the model.",
+        f"queued {queued} for the model and {triage_queued} for triage.",
         file=sys.stderr,
     )
     for transition, count in categories.most_common():

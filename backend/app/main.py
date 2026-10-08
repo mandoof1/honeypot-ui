@@ -139,6 +139,7 @@ async def health_check(request: Request):
     """
     from sqlalchemy import text
 
+    from app.ai.decider import decider
     from app.ai.llm import chimera
     from app.core.database import async_session_factory
     from app.services import enrichment, outbox, scheduler
@@ -148,6 +149,7 @@ async def health_check(request: Request):
         "version": settings.VERSION,
         "database": "ok",
         "enrichment": {"configured": chimera.enabled, "model": chimera.model_name if chimera.enabled else None},
+        "triage": {"configured": decider.enabled, "model": decider.model_name if decider.enabled else None},
         "notifications": {},
         "workers": bool(settings.BACKGROUND_WORKERS),
     }
@@ -163,6 +165,7 @@ async def health_check(request: Request):
     try:
         async with async_session_factory() as db:
             body["enrichment"]["pending"] = await enrichment.pending_count(db)
+            body["triage"]["pending"] = await enrichment.triage_pending_count(db)
             body["notifications"] = await outbox.backlog(db)
     except Exception as exc:
         body["notifications"] = {"error": str(exc)[:120]}

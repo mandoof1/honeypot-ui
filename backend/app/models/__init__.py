@@ -263,6 +263,14 @@ class HoneypotSession(Base):
     enrichment_error = Column(String(500), nullable=True)
     #: Manual "analyse now" requests jump the queue.
     enrichment_priority = Column(Integer, nullable=False, default=0, server_default="0")
+    #: Decision-model triage, which runs before the language model when one is
+    #: configured: ``none`` → pending → running → complete | failed. While it
+    #: is pending the row's enrichment_status is ``triage``, so the language
+    #: model's worker cannot take it before triage has decided whether it
+    #: should. ``triage`` holds the answer, plus the rules' own verdict.
+    triage_status = Column(String(16), nullable=False, default="none", server_default="none")
+    triage = Column(_jsonb(), nullable=True)
+    triaged_at = Column(DateTime(timezone=True), nullable=True)
 
     # Uploaded files
     uploaded_files = Column(_jsonb(), nullable=True)

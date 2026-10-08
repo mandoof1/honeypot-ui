@@ -63,6 +63,11 @@ class MitreTechnique(BaseModel):
     name: str
     source: Optional[str] = None
     confidence: Optional[float] = None
+    #: For a technique the language model named: the decision model's
+    #: probability that the transcript shows it, and whether that fell below
+    #: the confirmation threshold.
+    support: Optional[float] = None
+    unconfirmed: Optional[bool] = None
 
 
 class Token(BaseModel):
@@ -221,9 +226,38 @@ class SessionEnrichment(BaseModel):
     analysed_at: Optional[str] = None
     reused_from_session: Optional[int] = None
     error: Optional[str] = None
+    #: The decision model that checked the techniques, when one did, and
+    #: the techniques it removed (only with DECIDER_DROP_UNCONFIRMED).
+    checked_by: Optional[str] = None
+    dropped_techniques: List[MitreTechnique] = []
 
     class Config:
         from_attributes = True
+
+
+class SessionTriage(BaseModel):
+    """The decision model's triage of a session, next to the rules' verdict."""
+
+    category: Optional[str] = None
+    category_probabilities: Optional[Dict[str, float]] = None
+    #: Expected level on the 0-3 scale, and the distribution behind it.
+    severity: Optional[float] = None
+    severity_probabilities: Optional[Dict[str, float]] = None
+    p_low: Optional[float] = None
+    p_compromise: Optional[float] = None
+    operator: Optional[str] = None
+    operator_probability: Optional[float] = None
+    agrees_with_rules: Optional[bool] = None
+    rules_verdict: Optional[str] = None
+    #: What triage did with the session: "pending" (sent to the language
+    #: model) or "skipped", and why.
+    route: Optional[str] = None
+    route_reason: Optional[str] = None
+    model: Optional[str] = None
+    ms: Optional[float] = None
+    reused_from_session: Optional[int] = None
+    triaged_at: Optional[str] = None
+    error: Optional[str] = None
 
 
 class GeoInfo(BaseModel):
@@ -348,6 +382,10 @@ class HoneypotSessionResponse(BaseModel):
     #: Stage-2 state: not_configured, pending, running, complete, failed, skipped.
     enrichment_status: str = "not_configured"
     enrichment: Optional[SessionEnrichment] = None
+    #: Decision-model triage: not_configured, pending, running, complete,
+    #: failed, or skipped (never a candidate: no commands, or a scanner).
+    triage_status: str = "not_configured"
+    triage: Optional[SessionTriage] = None
     created_at: datetime
 
     class Config:
@@ -361,6 +399,22 @@ class HoneypotSessionResponse(BaseModel):
         if raw == "none":
             return "not_configured" if not chimera.enabled else "skipped"
         return raw
+
+    @staticmethod
+    def _triage_status(obj) -> str:
+        from app.ai.decider import decider
+
+        raw = getattr(obj, "triage_status", None) or "none"
+        if raw == "none":
+            return "not_configured" if not decider.enabled else "skipped"
+        return raw
+
+    @staticmethod
+    def _triage(obj):
+        data = getattr(obj, "triage", None)
+        if not isinstance(data, dict) or ("category" not in data and "error" not in data):
+            return None
+        return SessionTriage(**{k: v for k, v in data.items() if k in SessionTriage.model_fields})
 
     @staticmethod
     def _enrichment(obj):
@@ -378,6 +432,12 @@ class HoneypotSessionResponse(BaseModel):
             analysed_at=data.get("analysed_at"),
             reused_from_session=data.get("reused_from_session"),
             error=error,
+            checked_by=data.get("checked_by"),
+            dropped_techniques=[
+                MitreTechnique(**{k: v for k, v in t.items() if k in MitreTechnique.model_fields})
+                for t in (data.get("dropped_techniques") or [])
+                if isinstance(t, dict) and t.get("id")
+            ],
         )
 
     @classmethod
@@ -433,6 +493,8 @@ class HoneypotSessionResponse(BaseModel):
             rule_reason=getattr(obj, "rule_reason", None),
             enrichment_status=cls._enrichment_status(obj),
             enrichment=cls._enrichment(obj),
+            triage_status=cls._triage_status(obj),
+            triage=cls._triage(obj),
             created_at=obj.created_at,
         )
 
