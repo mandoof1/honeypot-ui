@@ -20,6 +20,13 @@ dataset hadiabdulrahman/wolfram-bench-data (chimera-heldout.jsonl):
     DECIDER_URL=http://127.0.0.1:18090 python -m app.tools.eval_decider \\
         --data chimera-heldout.jsonl --out ../docs/evaluation/decider-heldout.json
 
+``--db-summary`` instead reports what triage did to the sessions stored in
+the deployment's database (no labels exist for those): its category against
+the rules', its routes, and its latency. Aggregates only; no address or
+command leaves the database.
+
+    docker compose exec backend python -m app.tools.eval_decider --db-summary
+
 The transcripts in that file are synthetic: written by the generator that
 produced the fine-tune's in-domain data, held out from training. Numbers on
 them say how the model behaves on clean, typical sessions; they are not a
@@ -238,12 +245,50 @@ async def run(args) -> dict:
     }
 
 
+async def db_summary() -> dict:
+    from sqlalchemy import select
+
+    from app.core.database import async_session_factory
+    from app.models import HoneypotSession
+
+    async with async_session_factory() as db:
+        rows = (
+            await db.execute(select(HoneypotSession).where(HoneypotSession.triage_status != "none"))
+        ).scalars().all()
+    done = [r for r in rows if r.triage_status == "complete" and isinstance(r.triage, dict)]
+    fresh = [r for r in done if not r.triage.get("reused_from_session")]
+    latency = sorted(r.triage["ms"] for r in fresh if isinstance(r.triage.get("ms"), (int, float)))
+    tokens = sorted(r.triage["input_tokens"] for r in fresh if isinstance(r.triage.get("input_tokens"), int))
+
+    def rule(r):
+        return r.attack_category.value if r.attack_category else "benign"
+
+    def quantile(values, q):
+        return round(values[min(len(values) - 1, int(q * len(values)))]) if values else None
+
+    return {
+        "sessions": len(rows),
+        "by_status": dict(Counter(r.triage_status for r in rows)),
+        "by_protocol": dict(Counter((r.protocol or "unknown") for r in done)),
+        "triage_vs_rules": dict(Counter(f"{rule(r)}->{r.triage.get('category')}" for r in done)),
+        "agreement_with_rules": round(sum(r.triage.get("category") == rule(r) for r in done) / max(1, len(done)), 4),
+        "routes_applied": dict(Counter(r.triage["route"] for r in done if r.triage.get("route"))),
+        "routes_suggested": dict(Counter(r.triage["suggested_route"] for r in done if r.triage.get("suggested_route"))),
+        "operator": dict(Counter(r.triage.get("operator") for r in done)),
+        "reused_identical_transcript": len(done) - len(fresh),
+        "ms": {"p50": quantile(latency, 0.5), "p95": quantile(latency, 0.95), "max": quantile(latency, 1.0)},
+        "input_tokens": {"p50": quantile(tokens, 0.5), "max": quantile(tokens, 1.0)},
+    }
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data", required=True, help="JSONL in the Wolfram chat format")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--data", help="JSONL in the Wolfram chat format")
+    mode.add_argument("--db-summary", action="store_true", help="summarise triage of the stored sessions")
     parser.add_argument("--out", help="write the report here as JSON")
     args = parser.parse_args(argv)
-    report = asyncio.run(run(args))
+    report = asyncio.run(db_summary() if args.db_summary else run(args))
     text = json.dumps(report, indent=2)
     print(text)
     if args.out:
