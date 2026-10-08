@@ -1,0 +1,110 @@
+{
+  "model": "Kev-4B Q8_0 (ggml-org/Kev-4B-GGUF @ d924f2e2), llama.cpp server b11459, 6 threads, i7-9700",
+  "data": "chimera-heldout.jsonl from the Kaggle dataset hadiabdulrahman/wolfram-bench-data (24 transcripts held out of Wolfram's fine-tune)",
+  "transcripts": 24,
+  "synthetic": true,
+  "technique_check": {
+    "questions": 360,
+    "positives": 86,
+    "negatives": 274,
+    "auc": 0.9826,
+    "accuracy_at_0.5": 0.9278,
+    "ece": 0.0852,
+    "mean_support_real": 0.7324,
+    "mean_support_wrong": 0.1144,
+    "thresholds": {
+      "0.1": {
+        "real_kept": 86,
+        "real_total": 86,
+        "wrong_accepted": 77,
+        "wrong_total": 274
+      },
+      "0.2": {
+        "real_kept": 86,
+        "real_total": 86,
+        "wrong_accepted": 31,
+        "wrong_total": 274
+      },
+      "0.3": {
+        "real_kept": 86,
+        "real_total": 86,
+        "wrong_accepted": 24,
+        "wrong_total": 274
+      },
+      "0.4": {
+        "real_kept": 85,
+        "real_total": 86,
+        "wrong_accepted": 21,
+        "wrong_total": 274
+      },
+      "0.5": {
+        "real_kept": 78,
+        "real_total": 86,
+        "wrong_accepted": 18,
+        "wrong_total": 274
+      }
+    },
+    "per_technique_auc": {
+      "T1003.008": 1.0,
+      "T1016": 0.957,
+      "T1018": 1.0,
+      "T1033": 0.914,
+      "T1049": 1.0,
+      "T1053.003": 1.0,
+      "T1059.004": 0.916,
+      "T1082": 1.0,
+      "T1098.004": 1.0,
+      "T1105": 1.0,
+      "T1136.001": 1.0,
+      "T1496": 1.0,
+      "T1552.004": 1.0,
+      "T1562.001": 1.0,
+      "T1562.004": 1.0
+    },
+    "ms_per_transcript": {
+      "p50": 24247,
+      "max": 27969,
+      "questions_each": 15
+    }
+  },
+  "triage": {
+    "labels": {
+      "exploitation": 23,
+      "reconnaissance": 1
+    },
+    "label_rule": "Category and severity implied by the labelled techniques.\n\n    benign / level 0 with no technique; reconnaissance / level 1 when every\n    technique is Discovery; exfiltration when any is Exfiltration; otherwise\n    exploitation (the rule layer files credential access under it too).\n    Level 3 when any technique is Credential Access, Impact or Exfiltration,\n    else level 2.",
+    "model_category_accuracy": 0.8333,
+    "rules_category_accuracy": 0.9583,
+    "model_confusion": {
+      "exploitation->exploitation": 19,
+      "exploitation->reconnaissance": 4,
+      "reconnaissance->reconnaissance": 1
+    },
+    "rules_confusion": {
+      "exploitation->exploitation": 22,
+      "exploitation->benign": 1,
+      "reconnaissance->reconnaissance": 1
+    },
+    "severity_mae": 1.115,
+    "severity_by_label": {
+      "1": 0.709,
+      "2": 1.276,
+      "3": 1.574
+    },
+    "skip_threshold": 0.85,
+    "would_skip": 2,
+    "would_skip_wrongly": 1,
+    "routing": {
+      "worth->pending": 23,
+      "low->skipped": 1
+    },
+    "operator": {
+      "automated": 24
+    },
+    "ms_per_transcript": {
+      "p50": 8158,
+      "max": 10207
+    }
+  },
+  "measured": "2026-10-08"
+}

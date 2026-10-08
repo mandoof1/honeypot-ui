@@ -147,3 +147,108 @@ Reading it:
 The load generator ran on the same host, so these figures include its own
 CPU use, the SSH key exchanges in particular. Real attackers do that work on
 their own machines.
+
+## Decision model: triage and technique checks
+
+Kev-4B (Q8_0, Apache-2.0) is a decision model in the style of TypeSafe's Jev.
+It never writes text; it returns a probability for each option of each
+question. It sits in front of Wolfram and does two jobs:
+
+- **Triage:** pipeline category, severity 0–3, and automated or human, for
+  each session the rules queue for Wolfram. This decides whether Wolfram reads
+  the session.
+- **Technique check:** for each ATT&CK technique Wolfram adds, how likely the
+  transcript is to show it.
+
+Measured on 2026-10-08 on the same server, with
+`python -m app.tools.eval_decider`, which asks the questions the pipeline
+deploys.
+
+### Technique check (`decider-heldout.json`)
+
+The data is the 24 transcripts held out of Wolfram's fine-tune
+(`chimera-heldout.jsonl`). For every transcript, all 15 techniques in that set
+were asked about:
+
+- the 86 labelled techniques are the positives;
+- the other 274 are hard negatives: real techniques from the same domain that
+  this transcript does not show.
+
+| | |
+|---|---|
+| ROC AUC | **0.983** |
+| accuracy at 0.5 | 0.928 |
+| expected calibration error | 0.085 |
+| mean probability, real / wrong technique | 0.73 / 0.11 |
+| at the deployed threshold 0.3 | keeps **86/86** real techniques, accepts 24/274 wrong ones |
+| at 0.5 | keeps 78/86, accepts 18/274 |
+| time, 15 questions on one transcript | 24 s median |
+
+Two choices were settled on this set and are worth stating:
+
+- **The questions describe the behaviour, not just the ID.** For example:
+  "copies a tool or file onto the host from an outside system, e.g. with wget,
+  curl or tftp". Asking by ID and name alone gave AUC 0.957, and 70 of 274
+  wrong techniques passed at 0.3.
+- **The first run exposed T1049, which had no description.** Asked as a bare
+  ID, it scored backwards (AUC 0.04); with a description it scores 1.0. A
+  technique outside `TECHNIQUE_HINTS` is still asked by name, so that failure
+  mode remains possible for unusual techniques.
+
+The threshold marks a technique as unconfirmed; it does not delete it
+(`DECIDER_DROP_UNCONFIRMED` is off). At 0.3 no real technique on this set
+would have been lost.
+
+### Triage on the same transcripts (`decider-heldout.json`)
+
+The set carries no triage labels, so they were derived from the labelled
+techniques by a fixed rule, recorded in the JSON:
+
+- 23 transcripts are exploitation;
+- 1 is reconnaissance (discovery techniques only).
+
+| | decision model | rule layer |
+|---|---|---|
+| category accuracy | 0.83 (4 exploitation sessions read as reconnaissance) | **0.96** |
+| mean severity at label 1 / 2 / 3 | 0.71 / 1.28 / 1.57 | — |
+| time per session | 8.2 s median, 10.2 s max | < 20 ms |
+
+What this shows:
+
+- **The rules are the better categoriser on these transcripts.** That is
+  expected: the transcripts came from the same patterns the signatures were
+  written for.
+- **The model's severity is in the right order but compressed:** it
+  under-rates.
+- **Neither weakness causes a wrong skip.** The routing only skips Wolfram
+  when the model *and* the rules both say "no further than reconnaissance".
+  Applied to these 24 sessions, it sent all 23 exploitation sessions to
+  Wolfram and skipped the one reconnaissance session. Taken alone, the model
+  would have wrongly skipped one exploitation session, but the rules overruled
+  it.
+- **The skip path has one example.** That is far too few to claim a saving;
+  it needs captured shell traffic.
+- **Automated or human is not validated:** every answer was "automated", and
+  this set has no usable label for it. The dashboard marks it "unvalidated".
+
+### Captured sessions (`decider-server-sessions.json`)
+
+All 34 stored sessions with commands were triaged after the fact. All were
+web sessions on the shop, mostly tailnet testing. There are no labels; the
+comparison is with the rules.
+
+- The rules call 32 of them benign, and the model called 30 of those
+  **reconnaissance**. It reads a list of page requests as enumeration.
+- It recommended sending none of them to Wolfram.
+- It took 16.4 s per session at the median and 41.8 s at p95. Web request
+  lines are long: 1,513 input tokens at the median.
+
+This is why triage is limited by default to the sessions the rules already
+queue for Wolfram. Triaging browsing (`DECIDER_TRIAGE_RULE_SKIPPED`) spends
+CPU on a label that is mostly wrong, and on this traffic it never escalated
+anything. No shell attack sessions were stored, so triage of captured SSH
+and Telnet traffic remains unmeasured.
+
+These are synthetic transcripts plus a small amount of test traffic, not
+internet attacks. They support how the routing is designed; they do not
+measure accuracy on live traffic.
