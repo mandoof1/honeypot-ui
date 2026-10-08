@@ -38,6 +38,7 @@ STATE="$HERE/state"
 ENV_FILE="$HERE/.env"
 WEB_PORT=8088
 MODEL_FILE=wolfram-Q4_K_M.gguf
+DECIDER_FILE=Kev-4B-Q8_0.gguf
 
 [[ "$HERE" == /opt/honeysentinel/deploy/server ]] || {
   echo "Expected the repository at /opt/honeysentinel (the systemd units point there)." >&2
@@ -98,6 +99,9 @@ append_env ALERT_SUPPRESS_SCANNERS   "# ALERT_SUPPRESS_SCANNERS=true    # no ale
 append_env SESSION_RETENTION_DAYS    "# SESSION_RETENTION_DAYS=0        # 0 keeps every session"
 append_env AUDIT_RETENTION_DAYS      "# AUDIT_RETENTION_DAYS=365"
 append_env WOLFRAM_THREADS           "# WOLFRAM_THREADS=6               # CPU threads for the analysis model"
+append_env DECIDER_THREADS           "# DECIDER_THREADS=6               # CPU threads for the decision model"
+append_env DECIDER_SKIP_THRESHOLD    "# DECIDER_SKIP_THRESHOLD=0.85     # triage skips the LLM above this p(information gathering at most)"
+append_env DECIDER_DROP_UNCONFIRMED  "# DECIDER_DROP_UNCONFIRMED=false  # remove, not just mark, techniques the transcript does not support"
 WEB_PORT=$(grep -E '^WEB_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || true)
 WEB_PORT=${WEB_PORT:-8088}
 
@@ -183,6 +187,13 @@ if [[ -f "$models/$MODEL_FILE" ]]; then
   echo "    $MODEL_FILE present; the wolfram service and the LLM stage are enabled"
 else
   echo "    no $models/$MODEL_FILE; the LLM stage stays off (copy the GGUF there and re-run)"
+fi
+if [[ -f "$models/$DECIDER_FILE" ]]; then
+  grep -q '^COMPOSE_PROFILES=' "$ENV_FILE" || echo "COMPOSE_PROFILES=llm" >> "$ENV_FILE"
+  grep -q '^DECIDER_URL=' "$ENV_FILE" || echo "DECIDER_URL=http://decider:8080" >> "$ENV_FILE"
+  echo "    $DECIDER_FILE present; the decider service and triage are enabled"
+else
+  echo "    no $models/$DECIDER_FILE; triage stays off (bash deploy/server/fetch-decider.sh, then re-run)"
 fi
 # Only when docker-compose.override.yml puts an application behind the decoys.
 if docker compose config --services | grep -x shop >/dev/null; then

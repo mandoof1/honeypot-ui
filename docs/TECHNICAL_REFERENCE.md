@@ -103,6 +103,18 @@ depth of analysis, never the capture.
   session. A 14B model answers in seconds, two orders of magnitude over the
   budget, which is why it is out of band.
 
+- **Triage (decision model).** If `DECIDER_URL` points at a llama.cpp server
+  with a decision model (Kev-4B in production) loaded, every session with
+  commands is first triaged by it: a distribution over the four categories, an
+  expected severity on a 0–3 scale, and automated versus human, read from the
+  commands in one pass of a few seconds. Triage decides whether the language
+  model reads the session (it can skip one only when it is confident the
+  session went no further than reconnaissance and the rules agree; it can
+  escalate one the rules would have skipped), and afterwards checks each
+  technique the language model added against the transcript, marking those it
+  finds no sign of as unconfirmed. Its answers are probabilities over options
+  the backend fixes, so a transcript can shift them but cannot add an answer.
+
 - **Payload analysis.** Files an attacker uploads — through the SSH shell
   (echo/base64/printf loaders and heredocs), a pipe into an interpreter, SFTP,
   SCP, FTP `STOR`, or an HTTP body — are captured *inbound*, so the engine
@@ -245,6 +257,11 @@ ones that matter most:
 | `BACKGROUND_WORKERS` | `false` | Run the enrichment worker, notification outbox, engine-liveness check and retention in this process. Exactly one process per deployment (the `backend` service). |
 | `CHIMERA_URL` / `CHIMERA_MODEL` / `CHIMERA_TIMEOUT` | unset / `chimera-14b-v2` / `300` | OpenAI-compatible endpoint for the stage-2 model, its name, and the per-call budget in seconds. Unset disables the stage. |
 | `CHIMERA_MAX_TOKENS` / `CHIMERA_MAX_TRANSCRIPT_CHARS` | `600` / `6000` | Answer length and how much transcript is sent. |
+| `DECIDER_URL` / `DECIDER_MODEL` / `DECIDER_TIMEOUT` | unset / `kev-4b` / `120` | llama.cpp server with a decision model (`/v1/systemone`), its name, and the per-call budget. Unset disables triage. |
+| `DECIDER_MAX_TRANSCRIPT_CHARS` | `3000` | Transcript the decision model reads; longer ones keep their start and end. Cost scales with this, not with the number of questions. |
+| `DECIDER_SKIP_THRESHOLD` / `DECIDER_ESCALATE_THRESHOLD` | `0.85` / `0.6` | Probability of "information gathering at most" needed to skip the language model (rules must agree); probability of an attempted compromise needed to send one the rules skipped. |
+| `DECIDER_SUPPORT_THRESHOLD` / `DECIDER_DROP_UNCONFIRMED` | `0.3` / `false` | Below this a language-model technique is marked unconfirmed; set the second to remove it instead. |
+| `DECIDER_FALLBACK_SECONDS` | `900` | How long a session waits on an unreachable decision model before the rules route it. |
 | `NODE_STALE_SECONDS` / `NODE_OFFLINE_ALERT_SECONDS` | `180` / `300` | When a node shows as offline, and when a system alert is raised for it. |
 | `NODE_DISK_ALERT_FRACTION` | `0.10` | Free-disk fraction on an engine below which a system alert is raised. |
 | `ALERT_DEDUP_WINDOW_MINUTES` | `60` | Repeats of one address at one category inside this window fold into the open alert. |
@@ -339,7 +356,7 @@ Bearer <access_token>`.
 ```
 backend/          FastAPI application
   app/api/        route handlers
-  app/ai/         classifier, de-obfuscation, NLP, clustering, ATT&CK, LLM client
+  app/ai/         classifier, de-obfuscation, NLP, clustering, ATT&CK, LLM and decision-model clients
   app/payloads/   static reverse-engineering of uploaded files, sandboxed
   app/core/       config, database, security, encryption, TOTP, rate limiting
   app/services/   analysis pipeline, async enrichment, payload analysis, alerting, artifacts
