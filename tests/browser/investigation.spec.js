@@ -204,3 +204,44 @@ test('a dropdown filter remains undoable with back', async ({ page }) => {
   await page.goBack()
   await expect(page).not.toHaveURL(/protocol=/)
 })
+
+test('triage shows its distribution, its route and the technique check', async ({ page }) => {
+  await page.route('**/sessions/77', (route) => route.fulfill({
+    json: {
+      ...session,
+      id: 77,
+      session_uuid: 'triaged-session',
+      mitre_techniques: [
+        { id: 'T1105', name: 'Ingress Tool Transfer', source: 'chimera', support: 0.94, unconfirmed: false },
+        { id: 'T1486', name: 'Data Encrypted for Impact', source: 'chimera', support: 0.04, unconfirmed: true },
+      ],
+      triage_status: 'complete',
+      triage: {
+        model: 'kev-4b',
+        category: 'exploitation',
+        category_probabilities: { benign: 0.02, reconnaissance: 0.08, exploitation: 0.85, exfiltration: 0.05 },
+        severity: 2.21,
+        operator: 'automated',
+        operator_probability: 0.8,
+        agrees_with_rules: false,
+        route: 'pending',
+        route_reason: 'the rules flagged it and triage did not rule it out',
+        ms: 7100,
+        triaged_at: '2026-10-08T12:00:00Z',
+      },
+      enrichment_status: 'complete',
+      enrichment: { intent: 'Fetch a payload', objectives: [], model: 'wolfram', checked_by: 'kev-4b', analysed_at: '2026-10-08T12:02:00Z' },
+    },
+  }))
+  await page.goto('/sessions?session=77')
+  // The mobile layout renders the detail in a sheet as well; read the one in view.
+  const triage = page.getByTestId('triage-block').last()
+  await expect(triage).toContainText('kev-4b')
+  await expect(triage.getByRole('list', { name: 'Category probabilities' })).toContainText('85%')
+  await expect(triage).toContainText('Disagrees with the verdict above')
+  await expect(triage).toContainText('Attempted compromise')
+  await expect(triage).toContainText('Sent to the language model')
+  await expect(page.getByText('checked 94%').last()).toBeVisible()
+  await expect(page.getByText('unconfirmed 4%').last()).toBeVisible()
+  await expect(page.getByTestId('enrichment-block').last()).toContainText('techniques checked by kev-4b')
+})

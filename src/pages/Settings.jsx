@@ -698,6 +698,18 @@ export default function Settings() {
               </dd>
             </div>
           )}
+          {systemConfig?.triage && (
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
+              <dt className="eyebrow">Triage</dt>
+              <dd className="readout text-[13px] text-paper">
+                {systemConfig.triage.configured
+                  ? `On · ${systemConfig.triage.model || 'decision model'} · skip ≥ ${Math.round(
+                      systemConfig.triage.skip_threshold * 100,
+                    )}% · confirm ≥ ${Math.round(systemConfig.triage.support_threshold * 100)}%`
+                  : 'Not configured (DECIDER_URL unset)'}
+              </dd>
+            </div>
+          )}
           {systemConfig?.retention && (
             <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
               <dt className="eyebrow">Retention</dt>

@@ -24,6 +24,7 @@ const SOPHISTICATION_LABEL = {
 }
 
 const STATUS_TEXT = {
+  triage: 'Waiting for triage: the decision model reads the session first and decides whether the language model should.',
   pending: 'Queued for analysis. The model reads one session at a time; this usually lands within a few minutes.',
   running: 'The model is reading this transcript now.',
   skipped: 'Not analysed: the pipeline only sends the model sessions with commands that the rules found worth reading.',
@@ -70,6 +71,7 @@ export default function EnrichmentBlock({ session, onQueued }) {
   }
 
   const confidence = percent(result?.confidence)
+  const dropped = result?.dropped_techniques || []
 
   return (
     <section className="border-t border-line px-4 py-3.5" data-testid="enrichment-block">
@@ -111,9 +113,16 @@ export default function EnrichmentBlock({ session, onQueued }) {
                 <dd className="readout mt-1 text-[13px] text-paper">{confidence || '—'}</dd>
               </div>
             </dl>
+            {dropped.length > 0 && (
+              <p className="text-[12px] leading-relaxed text-paper-3">
+                Removed {dropped.length === 1 ? 'one technique' : `${dropped.length} techniques`} the transcript
+                does not support: {dropped.map((t) => t.id).join(', ')}.
+              </p>
+            )}
             {result.analysed_at && (
               <p className="readout text-[11px] text-paper-3">
                 analysed {new Date(result.analysed_at).toLocaleString()}
+                {result.checked_by && ` · techniques checked by ${clean(result.checked_by)}`}
               </p>
             )}
           </>
@@ -126,7 +135,11 @@ export default function EnrichmentBlock({ session, onQueued }) {
             {(status === 'pending' || status === 'running') && (
               <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" strokeWidth={2} aria-hidden="true" />
             )}
-            <span>{STATUS_TEXT[status] || 'No analysis for this session.'}</span>
+            <span>
+              {status === 'skipped' && session.triage?.route === 'skipped' && session.triage.route_reason
+                ? `Not analysed: ${clean(session.triage.route_reason)}.`
+                : STATUS_TEXT[status] || 'No analysis for this session.'}
+            </span>
           </p>
         )}
 
