@@ -252,6 +252,9 @@ class SessionTriage(BaseModel):
     #: What triage did with the session: "pending" (sent to the language
     #: model) or "skipped", and why.
     route: Optional[str] = None
+    #: Set instead of ``route`` when the session was not waiting on triage
+    #: (analysed on request meanwhile, or triaged after the fact).
+    suggested_route: Optional[str] = None
     route_reason: Optional[str] = None
     model: Optional[str] = None
     ms: Optional[float] = None

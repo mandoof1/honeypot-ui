@@ -241,7 +241,8 @@ class TestWorker:
         _fake_triage(monkeypatch, GATHERING)
         await enrichment.run_once(db_session)
         row = await _row(db_session, result["session_id"])
-        assert row.triage["route"] == "skipped"
+        assert "route" not in row.triage
+        assert row.triage["suggested_route"] == "skipped"
         assert row.enrichment_status == "pending"  # the analyst asked
 
     async def test_unreachable_decider_falls_back_to_the_rules(self, client, auth_headers, db_session, monkeypatch):

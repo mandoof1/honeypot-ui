@@ -301,17 +301,22 @@ def _finish_triage(session: HoneypotSession, previous: Dict, result: Optional[Di
         stored.update(result)
         stored["agrees_with_rules"] = result["category"] == category
         session.triage_status = "complete"
-    stored["route"] = route
-    stored["route_reason"] = reason
     stored["triaged_at"] = _now().isoformat()
     if error:
         stored["error"] = error
-    session.triage = stored
-    session.triaged_at = _now()
     if session.enrichment_status == "triage":
+        stored["route"] = route
+        stored["route_reason"] = reason
         session.enrichment_status = route
         if route == "skipped":
             session.enrichment_error = None
+    else:
+        # Not waiting on triage (an analyst queued it meanwhile, or it was
+        # triaged after the fact): keep the recommendation, apply nothing.
+        stored["suggested_route"] = route
+        stored["route_reason"] = reason
+    session.triage = stored
+    session.triaged_at = _now()
 
 
 async def _cached_triage(db: AsyncSession, session: HoneypotSession) -> Optional[Dict]:

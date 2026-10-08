@@ -18,6 +18,7 @@ sends notifications, and never touches the encrypted evidence.
     python -m app.tools.reanalyze --ids 2256 2262      # specific rows
     python -m app.tools.reanalyze --all --queue-llm    # also queue stage 2
     python -m app.tools.reanalyze --all --queue-triage # also queue triage
+    python -m app.tools.reanalyze --all --queue-triage --retriage  # and redo it
 
 Run inside the backend container, where the encryption key is available.
 """
@@ -177,6 +178,8 @@ async def main(argv=None) -> int:
     parser.add_argument("--queue-triage", action="store_true",
                         help="queue untriaged sessions with commands for the decision model; "
                              "their language-model state is left as it is")
+    parser.add_argument("--retriage", action="store_true",
+                        help="with --queue-triage, also queue sessions already triaged")
     parser.add_argument("--batch", type=int, default=200)
     args = parser.parse_args(argv)
 
@@ -218,7 +221,7 @@ async def main(argv=None) -> int:
                     queued += 1
             if (
                 args.queue_triage
-                and session.triage_status in ("none", "failed")
+                and (session.triage_status in ("none", "failed") or args.retriage)
                 and session.raw_commands_encrypted
                 and not session.scanner_operator
             ):

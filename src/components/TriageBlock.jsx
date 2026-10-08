@@ -102,12 +102,17 @@ export default function TriageBlock({ session }) {
                 </dd>
               </div>
             </dl>
-            {triage.route && (
+            {(triage.route || triage.suggested_route) && (
               <p className="text-[12px] leading-relaxed text-paper-3">
                 <span className="text-paper-2">
-                  {triage.route === 'pending' ? 'Sent to the language model' : 'Language model skipped'}
+                  {triage.route
+                    ? triage.route === 'pending' ? 'Sent to the language model' : 'Language model skipped'
+                    : triage.suggested_route === 'pending'
+                      ? 'Would have sent this to the language model'
+                      : 'Would have skipped the language model'}
                 </span>
                 {triage.route_reason ? ` — ${clean(triage.route_reason)}.` : '.'}
+                {!triage.route && ' Triage ran after the session was already queued or analysed, so nothing was changed.'}
               </p>
             )}
             <p className="readout text-[11px] text-paper-3">
