@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     #: much probability on "nothing worse than information gathering" and
     #: the rules found nothing worse either. Uncertain sessions still go.
     DECIDER_SKIP_THRESHOLD: float = 0.85
+    #: Also triage the sessions the rules would skip (plain web browsing,
+    #: short benign FTP), so triage can send one on. Off by default: on the
+    #: deployment's captured browsing the model read 30 of 32 benign sessions
+    #: as reconnaissance, at about 16 s of CPU each, and escalated none.
+    DECIDER_TRIAGE_RULE_SKIPPED: bool = False
     #: Send a session the rules would have skipped when the decision model
     #: puts at least this much probability on an attempted compromise.
     DECIDER_ESCALATE_THRESHOLD: float = 0.6

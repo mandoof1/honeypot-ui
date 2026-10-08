@@ -226,8 +226,9 @@ A second, much faster model triages every session before Wolfram sees it.
 **Kev-4B** (Apache-2.0) is a decision model in the style of TypeSafe's Jev:
 it never writes text. It reads the transcript once and returns probabilities
 over options the backend supplies, through llama.cpp's `/v1/systemone`
-endpoint, in about 7 seconds for a typical session on this CPU (about 25 ms
-per transcript token; the questions share one read). It runs as the
+endpoint, in about 8 seconds for a typical shell session on this CPU and
+16 s for a long web session (about 25 ms per transcript token; the questions
+share one read). It runs as the
 `decider` service, with the same isolation as `wolfram`:
 
 ```bash
@@ -235,18 +236,23 @@ sudo bash fetch-decider.sh    # pinned revision, SHA-256 checked, 4.5 GB
 sudo bash install.sh          # turns on DECIDER_URL
 ```
 
-For each session with commands (research scanners excepted) it answers
-three questions: which of the pipeline's four categories, how severe on a
-0–3 scale, and automated or human. Ingest marks such sessions `triage`
-instead of `pending`; the backend's worker triages them first, then routes:
+For each session the rules would send to Wolfram it answers three
+questions: which of the pipeline's four categories, how severe on a 0–3
+scale, and automated or human. Ingest marks such sessions `triage` instead
+of `pending`; the backend's worker triages them first, then routes:
 
 - **Skips Wolfram** only when triage puts at least `DECIDER_SKIP_THRESHOLD`
   (0.85) on "information gathering at most" *and* the rules found nothing
   past reconnaissance. Rule evidence of exploitation always goes through.
-- **Sends to Wolfram** a session the rules would have skipped when triage
-  puts at least `DECIDER_ESCALATE_THRESHOLD` (0.6) on an attempted compromise.
-- Otherwise the rules' verdict stands. The reason is stored and shown in
-  the session view, where **Analyse now** still overrides a skip.
+- Otherwise the session goes to Wolfram as before. The reason is stored and
+  shown in the session view, where **Analyse now** still overrides a skip.
+
+Sessions the rules skip (plain web browsing, short benign FTP) are left
+alone unless `DECIDER_TRIAGE_RULE_SKIPPED=true`, which triages them too and
+sends one on to Wolfram when triage puts at least
+`DECIDER_ESCALATE_THRESHOLD` (0.6) on an attempted compromise. It is off
+because on the shop browsing captured here the model called 30 of 32 benign
+sessions reconnaissance, at about 16 s of CPU each, and escalated none.
 
 After Wolfram answers, the decider checks each technique it named that the
 rule map did not: "do the commands show this?", asked in plain words.

@@ -104,13 +104,14 @@ depth of analysis, never the capture.
   budget, which is why it is out of band.
 
 - **Triage (decision model).** If `DECIDER_URL` points at a llama.cpp server
-  with a decision model (Kev-4B in production) loaded, every session with
-  commands is first triaged by it: a distribution over the four categories, an
-  expected severity on a 0–3 scale, and automated versus human, read from the
-  commands in one pass of a few seconds. Triage decides whether the language
-  model reads the session (it can skip one only when it is confident the
-  session went no further than reconnaissance and the rules agree; it can
-  escalate one the rules would have skipped), and afterwards checks each
+  with a decision model (Kev-4B in production) loaded, every session the rules
+  would send to the language model is first triaged by it: a distribution over
+  the four categories, an expected severity on a 0–3 scale, and automated
+  versus human, read from the commands in one pass of a few seconds. Triage
+  decides whether the language model reads the session (it can skip one only
+  when it is confident the session went no further than reconnaissance and the
+  rules agree; with `DECIDER_TRIAGE_RULE_SKIPPED` it also reads the sessions
+  the rules skip and can escalate one), and afterwards checks each
   technique the language model added against the transcript, marking those it
   finds no sign of as unconfirmed. Its answers are probabilities over options
   the backend fixes, so a transcript can shift them but cannot add an answer.
@@ -260,6 +261,7 @@ ones that matter most:
 | `DECIDER_URL` / `DECIDER_MODEL` / `DECIDER_TIMEOUT` | unset / `kev-4b` / `120` | llama.cpp server with a decision model (`/v1/systemone`), its name, and the per-call budget. Unset disables triage. |
 | `DECIDER_MAX_TRANSCRIPT_CHARS` | `3000` | Transcript the decision model reads; longer ones keep their start and end. Cost scales with this, not with the number of questions. |
 | `DECIDER_SKIP_THRESHOLD` / `DECIDER_ESCALATE_THRESHOLD` | `0.85` / `0.6` | Probability of "information gathering at most" needed to skip the language model (rules must agree); probability of an attempted compromise needed to send one the rules skipped. |
+| `DECIDER_TRIAGE_RULE_SKIPPED` | `false` | Also triage the sessions the rules skip (plain browsing, short benign FTP), so triage can escalate one. |
 | `DECIDER_SUPPORT_THRESHOLD` / `DECIDER_DROP_UNCONFIRMED` | `0.3` / `false` | Below this a language-model technique is marked unconfirmed; set the second to remove it instead. |
 | `DECIDER_FALLBACK_SECONDS` | `900` | How long a session waits on an unreachable decision model before the rules route it. |
 | `NODE_STALE_SECONDS` / `NODE_OFFLINE_ALERT_SECONDS` | `180` / `300` | When a node shows as offline, and when a system alert is raised for it. |

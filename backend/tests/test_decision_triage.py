@@ -111,8 +111,16 @@ class TestIngest:
         browsing = await _ingest(client, node_id, BROWSING)
         assert attack["enrichment_status"] == "triage"
         assert attack["triage_status"] == "pending"
-        # Browsing is triaged too: that is how triage can catch what the
-        # rules let through.
+        # Plain browsing is left to the rules unless asked for.
+        assert browsing["enrichment_status"] == "skipped"
+        assert browsing["triage_status"] == "none"
+
+    async def test_rule_skipped_sessions_are_triaged_when_enabled(self, client, auth_headers, monkeypatch):
+        _enable(monkeypatch)
+        monkeypatch.setattr(get_settings(), "DECIDER_TRIAGE_RULE_SKIPPED", True)
+        node_id, _ = await _node(client, auth_headers)
+        browsing = await _ingest(client, node_id, BROWSING)
+        # Waiting on triage, which can still send it on.
         assert browsing["enrichment_status"] == "triage"
         assert browsing["triage_status"] == "pending"
 

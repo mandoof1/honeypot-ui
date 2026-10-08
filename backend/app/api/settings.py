@@ -146,6 +146,7 @@ async def get_system_config(
             "model": decider.model_name if decider.enabled else None,
             "skip_threshold": cfg.DECIDER_SKIP_THRESHOLD,
             "escalate_threshold": cfg.DECIDER_ESCALATE_THRESHOLD,
+            "triage_rule_skipped": cfg.DECIDER_TRIAGE_RULE_SKIPPED,
             "support_threshold": cfg.DECIDER_SUPPORT_THRESHOLD,
             "drop_unconfirmed": cfg.DECIDER_DROP_UNCONFIRMED,
         },

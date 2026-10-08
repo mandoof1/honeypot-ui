@@ -76,6 +76,11 @@ def initial_status(session: HoneypotSession, nlp_result: Dict, session_data: Dic
     """
     if not chimera.enabled:
         return "none"
+    return rules_verdict(session, nlp_result, session_data)
+
+
+def rules_verdict(session: HoneypotSession, nlp_result: Dict, session_data: Dict) -> str:
+    """The rules' answer to "is this worth a model's time?", whatever is configured."""
     if session.scanner_operator:
         return "skipped"
     commands = session_data.get("commands") or []
@@ -100,14 +105,24 @@ def queue_at_ingest(session: HoneypotSession, nlp_result: Dict, session_data: Di
     """Set the session's stage-2 state at ingest.
 
     The rules' verdict (``initial_status``) stands on its own when there is
-    no decision model. With one, every session with commands from an address
-    that is not a known research scanner is triaged first, and the verdict
-    is kept on the row for the triage step to weigh.
+    no decision model. With one, the sessions the rules would send to the
+    language model are triaged first, and the verdict is kept on the row
+    for the triage step to weigh. Sessions the rules skip (plain browsing,
+    short benign FTP) are triaged only with DECIDER_TRIAGE_RULE_SKIPPED: on
+    the deployment's captured browsing the model read 30 of 32 benign
+    sessions as reconnaissance, at about 16 s each, and escalated none.
     """
-    verdict = initial_status(session, nlp_result, session_data)
-    session.enrichment_status = verdict
+    session.enrichment_status = initial_status(session, nlp_result, session_data)
     session.triage_status = "none"
-    if not decider.enabled or session.scanner_operator or not session_data.get("commands"):
+    if not decider.enabled:
+        return
+    verdict = rules_verdict(session, nlp_result, session_data)
+    if verdict != "pending" and not (
+        verdict == "skipped"
+        and get_settings().DECIDER_TRIAGE_RULE_SKIPPED
+        and session_data.get("commands")
+        and not session.scanner_operator
+    ):
         return
     session.triage_status = "pending"
     session.triage = {"rules_verdict": verdict}
