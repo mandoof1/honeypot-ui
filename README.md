@@ -17,6 +17,36 @@ and a workspace for investigating suspicious activity.
 
 *Desktop preview using synthetic test data. The screenshot demonstrates the interface, not live threat activity.*
 
+## About
+
+HoneySentinel is a honeypot and an investigation workspace in one. The engine
+emulates SSH, Telnet, FTP, HTTP and HTTPS, lets an attacker in, and records
+what they do — commands, credentials, uploaded files and per-connection flow
+statistics — as encrypted evidence. The console is where you read that
+evidence: search and filter sessions, follow a transcript, see the ATT&CK
+techniques, and export the matches to a SIEM or threat-intel format.
+
+What makes it more than a logger is a **layered analysis pipeline that runs
+entirely on the operator's own machine** — no session text ever leaves the
+deployment:
+
+1. **A Random Forest** on each connection's flow statistics, inside the
+   200 ms ingest budget.
+2. **Signature rules** over the recorded commands and web requests — brute
+   force, web-exploitation patterns, uploads, scanner probes, diversion —
+   which carry the verdict where flow features fall short.
+3. **A decision model** (Kev, a Jev-style model served locally through
+   llama.cpp) that triages every session in seconds: attack category,
+   severity and whether a human or a bot drove it. It decides which sessions
+   are worth the slow model, and afterwards checks each ATT&CK technique the
+   slow model named against the transcript.
+4. **A fine-tuned language model** (Wolfram) that reads the worthwhile
+   transcripts for intent, objectives, techniques and indicators.
+
+A website can also sit *behind* the decoys, with attackers quietly diverted to
+a sacrificial copy while real visitors keep reaching the live site. Everything
+is built to be self-hosted with the engine firewalled against outbound traffic.
+
 ## What you can do
 
 | Workflow | Capabilities |
@@ -102,6 +132,7 @@ Scripts beside it cover the rest of the lifecycle:
 | Script | Does |
 |---|---|
 | `train-model.sh` | Fetch and verify CIC-IDS2017, train the classifier with tuning, install it and restart the API |
+| `fetch-decider.sh` | Download and checksum the decision model (Kev-4B, Apache-2.0) into `state/models`, then `install.sh` turns on triage |
 | `controlled-test.sh` | End-to-end check against a throwaway engine named `controlled-test-node`, so test traffic never mixes with real captures |
 | `stress-test.sh` | The NFR-2 / TC13 load test: N concurrent sessions, then the latency measured for each |
 | `backup.sh` | The nightly `pg_dump`, on demand |
@@ -138,6 +169,24 @@ is Bot and Infiltration traffic, about 2,000 flows in all.
 
 The requirement holds up to 10 concurrent sessions on this host. Past that,
 sessions queue for CPU.
+
+**Decision model (triage and technique checks), 2026-10-08.** Kev-4B, measured
+with `python -m app.tools.eval_decider` so the questions scored are the ones the
+pipeline deploys.
+
+- *Technique checks*, on 24 transcripts held out of the language model's
+  fine-tune, every one of the set's 15 techniques asked about each: ROC AUC
+  **0.983**. At the deployed 0.3 threshold it keeps all 86 real techniques and
+  rejects 250 of 274 that the transcript does not support.
+- *Triage* on the same set names the category correctly 83% of the time
+  against the rules' 96%, in ~8 s a session. It is the weaker categoriser, so
+  it only skips the language model when it *and* the rules agree a session went
+  no further than reconnaissance; on that set it skipped nothing it should have
+  kept. The human-or-bot answer is not yet validated and is labelled so in the
+  UI.
+
+The data is synthetic plus controlled-test traffic; see
+[`docs/evaluation/`](docs/evaluation/README.md) for the raw JSON and method.
 
 ## A real website behind the decoys
 
@@ -271,6 +320,10 @@ This is a capstone platform, **not a validated production detection system**.
   `model_source: "rules"` and the flow model's own distribution is kept beside it.
 - Diverting attackers to a decoy website only works for what its signals recognise,
   and only from the first request that gives the attacker away.
+- Source IP is preserved for traffic that reaches a forwarded port directly. Traffic
+  that arrives over the tailnet or LAN is recorded as the decoy bridge's gateway
+  address; the dashboard labels such private origins *Tailnet* or *Private network*
+  rather than inventing a location for them.
 - Emulated services remain distinguishable from real systems through some behaviors.
 
 See the [technical reference](docs/TECHNICAL_REFERENCE.md) for the analysis pipeline,
@@ -340,8 +393,9 @@ Start with [`.env.example`](.env.example). The key settings are:
 | `HONEYPOT_OPERATIONAL_MODE` | Starting mode, `active` or `passive`; a mode saved in Settings takes precedence once the engine registers. |
 | `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
 | `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |
-| `CHIMERA_URL` | Optional local model endpoint. |
-| `DECIDER_URL` | Optional local decision-model endpoint (llama.cpp `/v1/systemone`) for triage and technique checks. |
+| `HONEYPOT_HTTP_SESSION_IDLE` | Seconds a web client's requests coalesce into one session across separate connections (default `30`; `0` is one session per connection). |
+| `CHIMERA_URL` | Optional local language-model endpoint (Wolfram) for stage-2 analysis. |
+| `DECIDER_URL` | Optional local decision-model endpoint (Kev, llama.cpp `/v1/systemone`) for triage and technique checks. |
 
 | Guide | Use it for |
 |---|---|
