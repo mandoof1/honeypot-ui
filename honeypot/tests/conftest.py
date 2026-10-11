@@ -36,3 +36,15 @@ async def session():
     session_id = await session_manager.create_session("ssh", "203.0.113.77", 44321)
     yield session_id
     shell_states.drop(session_id)
+
+
+@pytest.fixture(autouse=True)
+def _short_web_session_idle(monkeypatch):
+    """Web sessions end HONEYPOT_HTTP_SESSION_IDLE seconds after a client's
+    last request (30 by default), which is longer than any test waits for a
+    session to arrive. Keep the coalescing path the deployment runs, with an
+    idle window short enough to wait for; tests that need another value set
+    it themselves."""
+    from honeypot.core.config import config
+
+    monkeypatch.setattr(config, "http_session_idle", 0.2)

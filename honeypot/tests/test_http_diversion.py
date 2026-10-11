@@ -329,3 +329,20 @@ async def test_different_user_agents_are_separate_sessions(site, monkeypatch):
     first = await asyncio.wait_for(ingested.get(), timeout=10)
     second = await asyncio.wait_for(ingested.get(), timeout=10)
     assert first["session_id"] != second["session_id"]
+
+
+async def test_zero_idle_delivers_one_session_per_connection(site, monkeypatch):
+    """HONEYPOT_HTTP_SESSION_IDLE=0 is documented as one session per
+    connection. Those sessions were created but never ended, so none was
+    ever delivered."""
+    monkeypatch.setattr(config, "http_session_idle", 0)
+    base_url, ingested = site
+    for path in ("/", "/products"):
+        async with _client(base_url) as client:
+            await client.get(path, headers={"connection": "close"})
+    first = await asyncio.wait_for(ingested.get(), timeout=10)
+    second = await asyncio.wait_for(ingested.get(), timeout=10)
+    assert first["session_id"] != second["session_id"]
+    for payload in (first, second):
+        requests = [t for t in payload["transcript"] if t["command"].startswith("GET ")]
+        assert len(requests) == 1
