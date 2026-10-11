@@ -341,7 +341,7 @@ class HTTPHoneypot(BaseEmulator):
             logger.error(f"HTTP session error: {e}")
         finally:
             if identity is not None:
-                await self._detach_session(identity)
+                await self._detach_session(identity, session_id)
             elif flow is not None:
                 # No request was read, so nothing was attached and this
                 # connection's flow meter is the only thing to close.
@@ -436,13 +436,16 @@ class HTTPHoneypot(BaseEmulator):
             )
             return session_id
 
-    async def _detach_session(self, identity) -> None:
+    async def _detach_session(self, identity, session_id: Optional[str] = None) -> None:
         """A connection for this client closed; end the session once idle."""
         if config.http_session_idle <= 0:
-            async with self._web_lock:
-                entry = self._web_sessions.pop(identity, None)
-            if entry is not None:
-                await session_manager.end_session(entry.session_id)
+            # One session per connection: _attach_session never registered it
+            # under the client's identity (two connections from one client
+            # would collide there), so the connection ends its own session.
+            # Looking it up by identity found nothing, and the session was
+            # never ended or delivered.
+            if session_id is not None:
+                await session_manager.end_session(session_id)
             return
         async with self._web_lock:
             entry = self._web_sessions.get(identity)

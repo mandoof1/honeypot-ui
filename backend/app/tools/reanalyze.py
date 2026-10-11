@@ -19,6 +19,7 @@ sends notifications, and never touches the encrypted evidence.
     python -m app.tools.reanalyze --all --queue-llm    # also queue stage 2
     python -m app.tools.reanalyze --all --queue-triage # also queue triage
     python -m app.tools.reanalyze --all --queue-triage --retriage  # and redo it
+    python -m app.tools.reanalyze --all --summary-only # rebuild only the plain summary
 
 Run inside the backend container, where the encryption key is available.
 """
@@ -29,6 +30,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -38,7 +40,7 @@ from sqlalchemy import select
 from app.core.database import async_session_factory
 from app.core.encryption import decrypt_data
 from app.models import AttackCategory, HoneypotSession
-from app.services.analysis import _CATEGORY_RANK, analysis_pipeline
+from app.services.analysis import _CATEGORY_RANK, analysis_pipeline, summarise_commands
 
 logger = logging.getLogger("reanalyze")
 
@@ -86,6 +88,34 @@ def rebuild_session_data(session: HoneypotSession) -> dict:
         "duration_seconds": session.duration_seconds or 0,
         "keystroke_count": session.keystroke_count or 0,
     }
+
+
+_REQUEST_LINE = re.compile(r"^[A-Z]{3,7} \S")
+
+
+def rebuild_summary(session: HoneypotSession) -> bool:
+    """Recompute the plain command summary. Returns whether it changed.
+
+    Built from the transcript, where each web request is one entry with its
+    body attached. The stored command list is newline-joined, so a request's
+    body lines come back from it as separate commands; when there is no
+    transcript, only lines that look like request lines are kept for web
+    sessions, so a body never reaches the summary.
+    """
+    protocol = (session.protocol or "").lower()
+    transcript = _decrypt_json(session.transcript_encrypted)
+    commands = [
+        str(t["command"]) for t in transcript if isinstance(t, dict) and t.get("command")
+    ]
+    if not commands:
+        commands = _decrypt_lines(session.raw_commands_encrypted)
+        if protocol in ("http", "https"):
+            commands = [c for c in commands if _REQUEST_LINE.match(c)]
+    summary = summarise_commands(commands, protocol)
+    if summary == session.command_summary:
+        return False
+    session.command_summary = summary
+    return True
 
 
 def reanalyze_row(session: HoneypotSession) -> dict:
@@ -153,6 +183,8 @@ def reanalyze_row(session: HoneypotSession) -> dict:
             "\n".join(commands).encode("utf-8", "replace")
         ).hexdigest()
 
+    summary_changed = rebuild_summary(session)
+
     # Anomaly scores stored before the scale fix were divided by 1.5.
     if session.anomaly_score is not None and session.anomaly_score <= 0.6667:
         rescored = round(min(session.anomaly_score * 1.5, 1.0), 4)
@@ -163,7 +195,11 @@ def reanalyze_row(session: HoneypotSession) -> dict:
         "intents": sorted(session.detected_intents),
         "tools": sorted(session.detected_tools),
     }
-    return {"id": session.id, "before": before, "after": after, "changed": before != after}
+    return {
+        "id": session.id, "before": before, "after": after,
+        "summary_changed": summary_changed,
+        "changed": before != after or summary_changed,
+    }
 
 
 async def main(argv=None) -> int:
@@ -180,6 +216,8 @@ async def main(argv=None) -> int:
                              "their language-model state is left as it is")
     parser.add_argument("--retriage", action="store_true",
                         help="with --queue-triage, also queue sessions already triaged")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="rebuild only the plain command summary; leave verdicts and scores alone")
     parser.add_argument("--batch", type=int, default=200)
     args = parser.parse_args(argv)
 
@@ -205,6 +243,13 @@ async def main(argv=None) -> int:
         rows = (await db.execute(query)).scalars().all()
         for i, session in enumerate(rows, 1):
             total += 1
+            if args.summary_only:
+                if rebuild_summary(session):
+                    changed += 1
+                    print(json.dumps({"id": session.id, "summary_changed": True}))
+                if not args.dry_run and i % args.batch == 0:
+                    await db.commit()
+                continue
             report = reanalyze_row(session)
             categories[f"{report['before']['category']}→{report['after']['category']}"] += 1
             if report["changed"]:

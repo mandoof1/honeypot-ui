@@ -37,6 +37,11 @@
 	}
 
 	handle /api/* {
+		# Every body the console sends is small JSON. The API refuses larger
+		# ones too (MAX_REQUEST_BODY_BYTES); refusing here stops them at the edge.
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy backend:8000
 	}
 	handle /health {

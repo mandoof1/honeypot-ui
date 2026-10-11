@@ -56,6 +56,9 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
+    #: Largest request body accepted on user-facing routes (413 above it).
+    #: The engine's -internal routes are exempt; see core/body_limit.py.
+    MAX_REQUEST_BODY_BYTES: int = 1_048_576
     #: Enable only when the app really is behind a trusted reverse proxy;
     #: otherwise clients can spoof X-Forwarded-For to dodge rate limits.
     TRUST_PROXY_HEADERS: bool = False
