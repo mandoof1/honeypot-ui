@@ -283,6 +283,15 @@ docker compose exec backend python -m app.tools.reanalyze --all
 docker compose exec backend python -m app.tools.reanalyze --since 2026-10-01 --queue-llm
 ```
 
+`--summary-only` rebuilds just the plain command summary kept for search.
+Web sessions' summaries used to include request bodies, so a password typed
+into a decoy login form sat there unencrypted; run this once after updating
+to clean the stored rows (backups taken before it still hold the old text):
+
+```bash
+docker compose exec backend python -m app.tools.reanalyze --all --summary-only
+```
+
 ### Accounts
 
 Sign-up needs email, which this deployment cannot send. Administrators

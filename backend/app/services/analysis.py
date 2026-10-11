@@ -3,6 +3,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 import time
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
@@ -30,6 +31,34 @@ ANALYSIS_BUDGET_MS = 200
 #: A single session's command list is attacker-controlled; cap what we store.
 MAX_COMMANDS = 5000
 MAX_PAYLOAD_CHARS = 1_000_000
+
+#: Protocols whose "commands" are requests: the request line first, then the
+#: body on the following lines.
+_WEB_PROTOCOLS = frozenset({"http", "https"})
+#: Query parameters whose value is a secret, masked in the plain summary.
+_SECRET_PARAM = re.compile(
+    r"([?&;](?:password|passwd|pass|pwd|pma_password|token|secret|api_key|apikey|cvc|cvv)=)[^&;#\s]*",
+    re.IGNORECASE,
+)
+
+
+def summarise_commands(commands: List[str], protocol: str) -> Optional[str]:
+    """The plain-text summary kept beside the encrypted transcript.
+
+    It is there for search and the session list, so it is not encrypted. For
+    web sessions each command is a request line followed by its body, and the
+    body is where a login form's password is: copying the commands verbatim
+    put every password typed into a decoy form into a plain column, next to
+    the credentials that are encrypted and revealed only through an audited
+    action. Web summaries keep the request line (method, path, user agent)
+    with secret-looking query values masked; bodies stay in the encrypted
+    transcript.
+    """
+    if not commands:
+        return None
+    if (protocol or "").lower() in _WEB_PROTOCOLS:
+        commands = [_SECRET_PARAM.sub(r"\1[redacted]", c.split("\n", 1)[0]) for c in commands]
+    return " ".join(commands[:100])[:10000]
 
 
 def _coerce_enum(enum_cls, value, default):
@@ -301,7 +330,7 @@ class AnalysisPipeline:
             is_anomalous=anomaly_result["is_anomalous"],
             detected_tools=nlp_result.get("tool_names", []),
             detected_intents=nlp_result.get("detected_intents", []),
-            command_summary=" ".join(commands[:100])[:10000] if commands else None,
+            command_summary=summarise_commands(commands, protocol),
             command_count=len(commands),
             mitre_tactics=mitre_result.get("tactic_ids", []),
             mitre_techniques=mitre_result.get("techniques", []),
