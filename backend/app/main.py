@@ -15,6 +15,7 @@ from app.api import router as api_router
 from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.rate_limit import limiter
+from app.core.body_limit import BodySizeLimit
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
@@ -102,6 +103,9 @@ app.add_middleware(
 
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+# Outside the rate limiter and the routes, so an oversized body is refused
+# before anything reads it.
+app.add_middleware(BodySizeLimit, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
 
 
 @app.exception_handler(RateLimitExceeded)

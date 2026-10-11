@@ -393,6 +393,7 @@ Start with [`.env.example`](.env.example). The key settings are:
 | `HONEYPOT_OPERATIONAL_MODE` | Starting mode, `active` or `passive`; a mode saved in Settings takes precedence once the engine registers. |
 | `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
 | `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |
+| `MAX_REQUEST_BODY_BYTES` | Largest request body the API accepts on user-facing routes (default 1 MB; `413` above it). The engine's `-internal` routes are exempt. |
 | `HONEYPOT_HTTP_SESSION_IDLE` | Seconds a web client's requests coalesce into one session across separate connections (default `30`; `0` is one session per connection). |
 | `CHIMERA_URL` | Optional local language-model endpoint (Wolfram) for stage-2 analysis. |
 | `DECIDER_URL` | Optional local decision-model endpoint (Kev, llama.cpp `/v1/systemone`) for triage and technique checks. |
