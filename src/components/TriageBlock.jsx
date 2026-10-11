@@ -85,7 +85,7 @@ export default function TriageBlock({ session }) {
                     ? SEVERITY_LEVEL[Math.min(3, Math.max(0, Math.round(triage.severity)))]
                     : '—'}
                   {typeof triage.severity === 'number' && (
-                    <span className="readout ml-1.5 text-[12px] text-paper-3">{triage.severity.toFixed(2)} / 3</span>
+                    <span className="readout ml-1.5 whitespace-nowrap text-[12px] text-paper-3">{triage.severity.toFixed(2)} / 3</span>
                   )}
                 </dd>
               </div>

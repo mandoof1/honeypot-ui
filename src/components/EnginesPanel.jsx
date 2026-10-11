@@ -88,8 +88,15 @@ export function NodeCard({ node, now }) {
           )}
         </Stat>
         <Stat label="Active sessions">{status?.active_sessions ?? '—'}</Stat>
-        <Stat label="Total sessions">
-          {typeof status?.total_sessions === 'number' ? status.total_sessions.toLocaleString() : '—'}
+        <Stat
+          label="Sessions stored"
+          title={typeof status?.total_sessions === 'number'
+            ? `${status.total_sessions.toLocaleString()} since the engine last started`
+            : undefined}
+        >
+          {typeof node.stored_sessions === 'number'
+            ? node.stored_sessions.toLocaleString()
+            : typeof status?.total_sessions === 'number' ? status.total_sessions.toLocaleString() : '—'}
         </Stat>
         <Stat
           label="Spool"

@@ -66,3 +66,22 @@ export function diskFreeRatio(disk) {
   }
   return disk.free_bytes / disk.total_bytes
 }
+
+/** "1 command", "8 commands": a count with its noun in the right number. */
+export function plural(count, singular, pluralForm = `${singular}s`) {
+  const n = Number(count) || 0
+  return `${n.toLocaleString()} ${n === 1 ? singular : pluralForm}`
+}
+
+/**
+ * A session's length: "52 ms", "4.2 s", "2m 4s". Scripted sessions often
+ * finish in a few hundredths of a second, which one decimal place showed as
+ * "0.0s", as though nothing happened.
+ */
+export function formatSessionDuration(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return 'In progress'
+  if (seconds < 0) return '—'
+  if (seconds < 1) return `${Math.max(1, Math.round(seconds * 1000))} ms`
+  if (seconds < 60) return `${seconds.toFixed(1)} s`
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+}

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sanitizeForDisplay, hasHiddenCharacters, MARKER } from '../src/lib/text.js'
-import { formatBytes, formatDuration, nodeLiveness, relativeTime, diskFreeRatio } from '../src/lib/format.js'
+import { formatBytes, formatDuration, nodeLiveness, relativeTime, diskFreeRatio, plural, formatSessionDuration } from '../src/lib/format.js'
 
 const ESC = String.fromCharCode(27)
 const cp = (n) => String.fromCodePoint(n)
@@ -78,4 +78,20 @@ test('diskFreeRatio tolerates missing or malformed disk blocks', () => {
   assert.equal(diskFreeRatio({ total_bytes: 1000, free_bytes: 50 }), 0.05)
   assert.equal(diskFreeRatio({ total_bytes: 0, free_bytes: 0 }), null)
   assert.equal(diskFreeRatio(null), null)
+})
+
+test('counts take the noun in the right number', () => {
+  assert.equal(plural(1, 'command'), '1 command')
+  assert.equal(plural(8, 'command'), '8 commands')
+  assert.equal(plural(0, 'command'), '0 commands')
+  assert.equal(plural(undefined, 'command'), '0 commands')
+  assert.equal(plural(2, 'entry', 'entries'), '2 entries')
+})
+
+test('sub-second sessions are shown in milliseconds, not as 0.0 s', () => {
+  assert.equal(formatSessionDuration(0.02), '20 ms')
+  assert.equal(formatSessionDuration(0.0001), '1 ms')
+  assert.equal(formatSessionDuration(4.25), '4.3 s')
+  assert.equal(formatSessionDuration(124.25), '2m 4s')
+  assert.equal(formatSessionDuration(null), 'In progress')
 })

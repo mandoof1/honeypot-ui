@@ -258,7 +258,7 @@ class MitreAttckMapper:
         return {
             "tactics": tactics_list,
             "tactic_ids": list(detected_tactics),
-            "techniques": detected_techniques,
+            "techniques": merge_duplicate_techniques(detected_techniques),
             "matched_tools": list(matched_tools),
             "coverage_score": round(len(detected_tactics) / len(MITRE_ATTACK_MAP), 3),
         }
@@ -272,6 +272,30 @@ class MitreAttckMapper:
             }
             for tactic_data in MITRE_ATTACK_MAP.values()
         }
+
+
+def merge_duplicate_techniques(techniques: List[Dict]) -> List[Dict]:
+    """One entry per technique ID.
+
+    A tool and an intent can both point at the same technique (a crontab
+    write is both the "persistence" tool and the persistence intent), which
+    listed T1053 twice on the session and in its alert. Keep the first
+    entry's place and name, the highest confidence, and every source.
+    """
+    merged: Dict[str, Dict] = {}
+    for tech in techniques:
+        tid = tech.get("id")
+        if tid not in merged:
+            merged[tid] = dict(tech)
+            continue
+        entry = merged[tid]
+        entry["confidence"] = max(entry.get("confidence") or 0, tech.get("confidence") or 0)
+        sources = [s for s in str(entry.get("source") or "").split(", ") if s]
+        new = tech.get("source")
+        if new and new not in sources:
+            sources.append(new)
+        entry["source"] = ", ".join(sources)
+    return list(merged.values())
 
 
 mitre_mapper = MitreAttckMapper()

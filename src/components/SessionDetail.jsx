@@ -12,6 +12,7 @@ import SessionTranscript, {
 } from './SessionTranscript'
 import { diversionOf } from '../lib/diversion'
 import { networkLabel } from '../lib/origin'
+import { formatSessionDuration } from '../lib/format'
 
 /*
  * Session detail.
@@ -33,12 +34,6 @@ const MODEL_SOURCE_NOTE = {
 
 function percent(value) {
   return typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '—'
-}
-
-function duration(seconds) {
-  if (typeof seconds !== 'number') return 'In progress'
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
 }
 
 function Fact({ label, children, mono = true }) {
@@ -155,7 +150,7 @@ export default function SessionDetail({ session, onClose }) {
         <Fact label="Protocol">
           <span className="uppercase">{session.protocol || '—'}</span>
         </Fact>
-        <Fact label="Duration">{duration(session.duration_seconds)}</Fact>
+        <Fact label="Duration">{formatSessionDuration(session.duration_seconds)}</Fact>
         <Fact label="Status" mono={false}>
           <span className="capitalize">{session.status}</span>
         </Fact>
