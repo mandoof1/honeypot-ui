@@ -20,6 +20,8 @@ sends notifications, and never touches the encrypted evidence.
     python -m app.tools.reanalyze --all --queue-triage # also queue triage
     python -m app.tools.reanalyze --all --queue-triage --retriage  # and redo it
     python -m app.tools.reanalyze --all --summary-only # rebuild only the plain summary
+    python -m app.tools.reanalyze --all --rescale-anomaly-before 2026-10-07T12:00
+                                       # also fix scores stored before the scale fix
 
 Run inside the backend container, where the encryption key is available.
 """
@@ -33,6 +35,7 @@ import logging
 import re
 import sys
 from collections import Counter
+from typing import Optional
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -118,7 +121,7 @@ def rebuild_summary(session: HoneypotSession) -> bool:
     return True
 
 
-def reanalyze_row(session: HoneypotSession) -> dict:
+def reanalyze_row(session: HoneypotSession, rescale_anomaly_before: Optional[datetime] = None) -> dict:
     """Recompute the rule-derived fields in place. Returns a change summary."""
     from app.ai.anomaly_detector import anomaly_detector
     from app.ai.mitre_mapper import mitre_mapper
@@ -185,10 +188,21 @@ def reanalyze_row(session: HoneypotSession) -> dict:
 
     summary_changed = rebuild_summary(session)
 
-    # Anomaly scores stored before the scale fix were divided by 1.5.
-    if session.anomaly_score is not None and session.anomaly_score <= 0.6667:
-        rescored = round(min(session.anomaly_score * 1.5, 1.0), 4)
-        session.anomaly_score = rescored
+    # Anomaly scores stored before the scale fix were divided by 1.5. Only
+    # rows older than an explicit cutoff are corrected: the score itself
+    # cannot say whether it was already fixed, so rescaling every score up
+    # to 0.6667 multiplied correct ones by 1.5 again on each run.
+    created = session.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if (
+        rescale_anomaly_before is not None
+        and created is not None
+        and created < rescale_anomaly_before
+        and session.anomaly_score is not None
+        and session.anomaly_score <= 0.6667
+    ):
+        session.anomaly_score = round(min(session.anomaly_score * 1.5, 1.0), 4)
 
     after = {
         "category": category.value,
@@ -216,10 +230,18 @@ async def main(argv=None) -> int:
                              "their language-model state is left as it is")
     parser.add_argument("--retriage", action="store_true",
                         help="with --queue-triage, also queue sessions already triaged")
+    parser.add_argument("--rescale-anomaly-before", type=str, default=None,
+                        help="ISO date/time; multiply anomaly scores of rows stored before it by 1.5 "
+                             "(the pre-fix scale). Off by default; run it once, never twice")
     parser.add_argument("--summary-only", action="store_true",
                         help="rebuild only the plain command summary; leave verdicts and scores alone")
     parser.add_argument("--batch", type=int, default=200)
     args = parser.parse_args(argv)
+    rescale_before = None
+    if args.rescale_anomaly_before:
+        rescale_before = datetime.fromisoformat(args.rescale_anomaly_before)
+        if rescale_before.tzinfo is None:
+            rescale_before = rescale_before.replace(tzinfo=timezone.utc)
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
@@ -250,7 +272,7 @@ async def main(argv=None) -> int:
                 if not args.dry_run and i % args.batch == 0:
                     await db.commit()
                 continue
-            report = reanalyze_row(session)
+            report = reanalyze_row(session, rescale_before)
             categories[f"{report['before']['category']}→{report['after']['category']}"] += 1
             if report["changed"]:
                 changed += 1
