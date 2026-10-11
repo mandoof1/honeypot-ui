@@ -10,6 +10,7 @@ import { RankList } from '../components/charts'
 import { diversionOf } from '../lib/diversion'
 import { networkLabel } from '../lib/origin'
 import { clean } from '../lib/text'
+import { plural } from '../lib/format'
 import { useVisiblePoll } from '../hooks/useVisiblePoll'
 import {
   CATEGORY_COLOR, CATEGORY_LABEL, CATEGORY_ORDER, HANDS_ON_PROFILES, PROFILE_LABEL_SHORT,
@@ -76,7 +77,7 @@ function SessionRow({ session }) {
           <span className="mt-0.5 flex items-baseline gap-1.5 text-[12px] text-paper-3">
             <span className="readout">{new Date(session.started_at).toLocaleString()}</span>
             <span aria-hidden="true">·</span>
-            <span>{session.command_count ?? 0} commands</span>
+            <span>{plural(session.command_count, 'command')}</span>
             {session.is_anomalous && (
               <>
                 <span aria-hidden="true">·</span>

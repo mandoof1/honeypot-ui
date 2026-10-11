@@ -4,6 +4,7 @@ import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
 import { diversionOf } from '../lib/diversion'
 import { clean } from '../lib/text'
+import { plural } from '../lib/format'
 
 /** Output lines rendered before the reader has to ask for the rest. One
     oversized output used to become thousands of nodes and freeze the tab. */
@@ -131,7 +132,7 @@ export default function SessionTranscript({ session }) {
       >
         <span className="eyebrow">Transcript</span>
         <span className="flex items-baseline gap-2 text-[12px] text-paper-3">
-          {session.command_count || 0} commands
+          {plural(session.command_count, 'command')}
           <ChevronDown
             className={`h-3.5 w-3.5 shrink-0 self-center transition-transform ${open ? 'rotate-180' : ''}`}
             strokeWidth={2}

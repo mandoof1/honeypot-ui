@@ -165,7 +165,7 @@ async def raise_session_alert(
         attacker_ip=attacker_ip,
         node_id=session.node_id,
         severity=severity,
-        title=f"{category.title()} attack from {attacker_ip}",
+        title=alert_title(category, attacker_ip),
         description=description,
         mitre_tactics=mitre_result.get("tactic_ids", []),
         mitre_techniques=mitre_result.get("techniques", []),
@@ -183,6 +183,22 @@ async def raise_session_alert(
         decision,
     )
     return {"action": "created", "alert_id": alert.id, "notifications_queued": queued}
+
+
+#: Alert titles per category. "Benign attack from ..." contradicted itself:
+#: a session the classifier calls benign can still raise an alert on its
+#: severity or anomaly score.
+_TITLES = {
+    "benign": "Suspicious activity from {ip}",
+    "reconnaissance": "Reconnaissance from {ip}",
+    "exploitation": "Exploitation attempt from {ip}",
+    "exfiltration": "Data exfiltration from {ip}",
+}
+
+
+def alert_title(category: str, attacker_ip: str) -> str:
+    template = _TITLES.get((category or "").lower(), "Suspicious activity from {ip}")
+    return template.format(ip=attacker_ip)
 
 
 def _session_payload(alert, session, geo, category, profile, tools, mitre_result, decision) -> Dict:
