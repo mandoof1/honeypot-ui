@@ -208,6 +208,9 @@ class HoneypotNodeResponse(BaseModel):
     #: The engine's last status report: mode, bound protocols, active
     #: sessions, spool depth, disk space.
     status: Optional[dict] = None
+    #: Sessions stored for this engine. The engine's own total_sessions in
+    #: ``status`` counts only since it last started.
+    stored_sessions: Optional[int] = None
 
 
 class NodeHeartbeat(BaseModel):

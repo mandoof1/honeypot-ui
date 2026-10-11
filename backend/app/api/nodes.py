@@ -38,7 +38,7 @@ def _heartbeat_age(node: HoneypotNode) -> Optional[int]:
     return max(0, int((datetime.now(timezone.utc) - beat).total_seconds()))
 
 
-def _to_response(node: HoneypotNode) -> HoneypotNodeResponse:
+def _to_response(node: HoneypotNode, stored_sessions: Optional[int] = None) -> HoneypotNodeResponse:
     age = _heartbeat_age(node)
     stale_after = get_settings().NODE_STALE_SECONDS
     return HoneypotNodeResponse(
@@ -57,7 +57,20 @@ def _to_response(node: HoneypotNode) -> HoneypotNodeResponse:
         heartbeat_age_seconds=age,
         version=getattr(node, "version", None),
         status=node.last_status if isinstance(node.last_status, dict) else None,
+        stored_sessions=stored_sessions,
     )
+
+
+async def _stored_session_counts(db: AsyncSession, node_ids) -> dict:
+    """Sessions in the database per engine, in one query."""
+    if not node_ids:
+        return {}
+    rows = await db.execute(
+        select(HoneypotSession.node_id, func.count(HoneypotSession.id))
+        .where(HoneypotSession.node_id.in_(list(node_ids)))
+        .group_by(HoneypotSession.node_id)
+    )
+    return {node_id: count for node_id, count in rows.all()}
 
 
 def _clean_status(status: dict) -> dict:
@@ -86,8 +99,9 @@ async def list_nodes(
 
     result = await db.execute(query)
     nodes = result.scalars().all()
+    counts = await _stored_session_counts(db, [n.id for n in nodes])
     return [
-        _to_response(n)
+        _to_response(n, counts.get(n.id, 0))
         for n in nodes
     ]
 
@@ -203,7 +217,8 @@ async def get_node(
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
 
-    return _to_response(node)
+    counts = await _stored_session_counts(db, [node.id])
+    return _to_response(node, counts.get(node.id, 0))
 
 
 @router.patch("/{node_id}", response_model=HoneypotNodeResponse)
