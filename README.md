@@ -40,8 +40,9 @@ deployment:
    severity and whether a human or a bot drove it. It decides which sessions
    are worth the slow model, and afterwards checks each ATT&CK technique the
    slow model named against the transcript.
-4. **A fine-tuned language model** (Wolfram) that reads the worthwhile
-   transcripts for intent, objectives, techniques and indicators.
+4. **A fine-tuned language model** ([Wolfram](https://github.com/mandoof1/wolfram))
+   that reads the worthwhile transcripts for intent, objectives, techniques and
+   indicators — its model card, weights and GGUF live in that repo.
 
 A website can also sit *behind* the decoys, with attackers quietly diverted to
 a sacrificial copy while real visitors keep reaching the live site. Everything
