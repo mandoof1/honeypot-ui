@@ -26,6 +26,23 @@ from app.services import artifacts, enrichment, payload_enrichment
 router = APIRouter()
 
 
+def _without_nul(value):
+    """Escape NUL characters anywhere in a captured session.
+
+    PostgreSQL text and JSONB cannot hold U+0000, and captures carry raw
+    attacker bytes: a TLS ClientHello sent to the plain-HTTP decoy is full of
+    them. Unescaped, the insert failed with a 500, and the engine re-sent the
+    spooled session forever. Escaping keeps it visible that a NUL was there.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "\\x00")
+    if isinstance(value, dict):
+        return {_without_nul(k): _without_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_without_nul(v) for v in value]
+    return value
+
+
 @router.post("/ingest-internal", dependencies=[Depends(verify_honeypot_token)])
 async def ingest_session_from_honeypot(
     session_data: dict,
@@ -37,6 +54,7 @@ async def ingest_session_from_honeypot(
     node = node_result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Honeypot node not found")
+    session_data = _without_nul(session_data)
 
     # Idempotent on the engine's session id: the engine spools and resends
     # when the API was unreachable, and a resend must not become a second
@@ -425,7 +443,7 @@ async def ingest_session(
     if not node:
         raise HTTPException(status_code=404, detail="Honeypot node not found")
 
-    result = await analysis_pipeline.process_session(db, session_data, node_id)
+    result = await analysis_pipeline.process_session(db, _without_nul(session_data), node_id)
 
     audit = AuditLog(
         user_id=current_user["id"],

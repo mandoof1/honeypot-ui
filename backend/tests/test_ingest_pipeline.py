@@ -125,6 +125,36 @@ class TestIngest:
         # Unknown enum values fall back to defaults instead of raising.
         assert response.status_code == 200, response.text
 
+    async def test_nul_bytes_in_a_capture_are_escaped(self, client, auth_headers):
+        # A browser speaking TLS to the plain-HTTP decoy: the engine records
+        # the ClientHello as text, NULs included, and Postgres refused it.
+        hello = "\x16\x03\x01\x07 \x01\x00\x07\x05\x03\x03"
+        node_id, headers = await _create_node(client, auth_headers)
+        response = await client.post(
+            f"/api/v1/sessions/ingest-internal?node_id={node_id}",
+            json={
+                **SAMPLE_SESSION,
+                "protocol": "http",
+                "attacker_ip": "203.0.113.60",
+                "commands": [hello],
+                "transcript": [{"command": hello, "output": "HTTP/1.1 400 Bad Request"}],
+                "uploads": [],
+            },
+            headers=INGEST_HEADERS,
+        )
+        assert response.status_code == 200, response.text
+
+        listed = await client.get("/api/v1/sessions/", headers=headers)
+        row = next(r for r in listed.json()["sessions"] if r["attacker_ip"] == "203.0.113.60")
+        assert "\x00" not in row["command_summary"]
+        assert "\\x00" in row["command_summary"]
+        transcript = await client.get(
+            f"/api/v1/sessions/{row['id']}/transcript", headers=headers
+        )
+        assert transcript.status_code == 200, transcript.text
+        # JSON would carry a NUL as \u0000.
+        assert "\\u0000" not in transcript.text
+
     async def test_unknown_node_is_404(self, client):
         response = await client.post(
             "/api/v1/sessions/ingest-internal?node_id=9999",
