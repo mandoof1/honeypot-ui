@@ -330,6 +330,7 @@ what one client can cost it. All of these have defaults; set them in the
 | `HONEYPOT_SPOOL_MAX_BYTES` | `536870912` | Byte bound on the same queue (512 MiB). |
 | `HONEYPOT_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats to `/nodes/heartbeat-internal`, which carry the engine's status (version, bound listeners, open connections, spool depth, disk). A 404 re-registers the node. |
 | `HONEYPOT_MAX_CONN_PER_IP` | `5` | Concurrent connections one address may hold open, across every protocol, enforced at accept (for SSH, before the key exchange). |
+| `HONEYPOT_HTTP_MAX_CONN_PER_IP` / `HONEYPOT_HTTP_RATE_LIMIT` | `32` / `600` | The same two limits for the HTTP/HTTPS decoys. A browser opens about six connections per page and every tailnet/LAN visitor shares one bridge address, so the shell-sized limits broke the website. |
 | `HONEYPOT_MAX_CONNECTIONS` | `500` | Concurrent connections across all addresses. |
 | `HONEYPOT_MAX_SESSION_SECONDS` | `1800` | Longest a single connection may live, idle or not. |
 | `HONEYPOT_CONN_TIMEOUT` | unset | Idle timeout for every protocol. Unset, SSH uses 300 s, FTP 120 s, HTTP 60 s. |

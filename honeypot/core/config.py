@@ -151,6 +151,12 @@ class HoneypotConfig:
     #: accept time (security/rate_limiter.py), before any protocol work.
     max_connections_per_ip: int = _int_env("HONEYPOT_MAX_CONN_PER_IP", 5)
     max_connections: int = _int_env("HONEYPOT_MAX_CONNECTIONS", 500)
+    #: The same two per-address limits for the HTTP/HTTPS decoys. A browser
+    #: opens about six connections to load one page and keeps them alive,
+    #: and every tailnet or LAN visitor arrives from one bridge address, so
+    #: the shell-sized cap of 5 refused part of every page of the website.
+    http_max_connections_per_ip: int = _int_env("HONEYPOT_HTTP_MAX_CONN_PER_IP", 32)
+    http_rate_limit_per_minute: int = _int_env("HONEYPOT_HTTP_RATE_LIMIT", 600)
     #: Idle timeout in seconds for every protocol. Unset, each emulator keeps
     #: its own default (SSH 300, FTP 120, HTTP 60).
     connection_timeout: Optional[int] = _optional_int_env("HONEYPOT_CONN_TIMEOUT")

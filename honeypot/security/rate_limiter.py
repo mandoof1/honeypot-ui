@@ -65,13 +65,20 @@ class RateLimiter:
         del self._blocked[ip]
         return False
 
-    def admit(self, ip: str) -> bool:
+    def admit(
+        self,
+        ip: str,
+        max_per_ip: Optional[int] = None,
+        max_per_minute: Optional[int] = None,
+    ) -> bool:
         """Accept-time admission: rate window plus concurrency caps.
 
         Synchronous so it can run inside asyncssh's connection_made, before
         the key exchange, where a refused address costs no cryptography. The
-        caller must pair a True result with exactly one release().
+        caller must pair a True result with exactly one release(). An
+        emulator may pass its own per-address limits; None uses the engine's.
         """
+        per_ip = self._max_per_ip if max_per_ip is None else max_per_ip
         if self.is_blocked(ip):
             self.refused["blocked"] += 1
             return False
@@ -79,11 +86,11 @@ class RateLimiter:
             self.refused["total"] += 1
             logger.warning("Connection from %s refused: %d connections open", ip, self._active_total)
             return False
-        if self._active[ip] >= self._max_per_ip:
+        if self._active[ip] >= per_ip:
             self.refused["per_ip"] += 1
             logger.warning("Connection from %s refused: %d already open from it", ip, self._active[ip])
             return False
-        if not self._allow_sync(ip):
+        if not self._allow_sync(ip, max_per_minute):
             self.refused["rate"] += 1
             return False
         self._active[ip] += 1
@@ -103,7 +110,7 @@ class RateLimiter:
     async def is_allowed(self, ip: str) -> bool:
         return self._allow_sync(ip)
 
-    def _allow_sync(self, ip: str) -> bool:
+    def _allow_sync(self, ip: str, max_per_minute: Optional[int] = None) -> bool:
         if self.is_blocked(ip):
             logger.warning(f"IP {ip} is blocked")
             return False
@@ -115,11 +122,12 @@ class RateLimiter:
             t for t in self._requests[ip] if t > window_start
         ]
 
-        if len(self._requests[ip]) >= self._max_requests:
+        limit = self._max_requests if max_per_minute is None else max_per_minute
+        if len(self._requests[ip]) >= limit:
             self._blocked[ip] = now + self._block_duration
             logger.warning(
                 f"IP {ip} blocked for {self._block_duration}s "
-                f"(exceeded {self._max_requests} req/min)"
+                f"(exceeded {limit} req/min)"
             )
             return False
 

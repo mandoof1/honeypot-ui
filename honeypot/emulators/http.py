@@ -179,6 +179,8 @@ class HTTPHoneypot(BaseEmulator):
             protocol, port, ssl_context=build_tls_context() if use_tls else None
         )
         self.use_tls = use_tls
+        self.max_connections_per_ip = config.http_max_connections_per_ip
+        self.rate_limit_per_minute = config.http_rate_limit_per_minute
         self._vulnerable_endpoints = {
             "/admin": "admin_panel",
             "/login": "login_form",
