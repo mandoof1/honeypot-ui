@@ -12,20 +12,27 @@ older split across Render, Vercel and a separate VM.
                                    │  app (internal)
                                    ▼
                      ┌──────── backend (dashboard API, 1 process) ──┐ control
-   postgres ◄── db ──┤                                              ├─ engine ──► honeypot
-                     └──────── ingest  (session analysis, 4 workers) ┘  (internal)    │
-                                                                                       │
-              :2222 :2121 :2323 :8080 :8443 :50000-50009 ◄── decoy bridge ─────────────┘
+   postgres ◄── db ──┤                                              ├─ engine ──► honeypot      (SSH, FTP, Telnet)
+                     └──────── ingest  (session analysis, 4 workers) ┘  (internal) ► honeypot-web  (HTTP, HTTPS)
+                                                                                         │
+              :2222 :2121 :2323 :8080 :8443 :50000-50009 ◄── decoy bridge ───────────────┘
                      (inbound only; host firewall drops egress)
 ```
 
 | Network | Internal | Members | Why |
 |---|---|---|---|
-| `decoy` (`hs-decoy`) | no | honeypot | Docker only publishes ports on a network with a gateway. Egress is dropped by `honeysentinel-egress.sh`. |
-| `engine` | yes | backend, ingest, honeypot | The engine reports sessions to `ingest`; `backend` reaches its control API, which binds only here. |
+| `decoy` (`hs-decoy`) | no | honeypot, honeypot-web | Docker only publishes ports on a network with a gateway. Egress is dropped by `honeysentinel-egress.sh`. |
+| `engine` | yes | backend, ingest, honeypot, honeypot-web | The engine reports sessions to `ingest`; `backend` reaches its control API, which binds only here. |
 | `db` | yes | backend, ingest, postgres | Postgres requires TLS (`postgres/pg_hba.conf`). |
 | `app` | yes | web, backend | The API has no route to the internet. |
 | `edge` | no | web | Publishes the dashboard on loopback. |
+
+The decoys run as two engines from one image, so the dashboard lists two
+nodes: `honeypot` (`HONEYPOT_NODE_NAME`, the shell services) and
+`honeypot-web` (`HONEYPOT_WEB_NODE_NAME`, the website). Both are seeded with
+`HONEYPOT_IDENTITY_SEED` (pinned in `.env` by `install.sh`) so they describe
+the same host; mode changes and blocks are sent to both
+(`HONEYPOT_CONTROL_EXTRA_URLS`).
 
 `backend` and `ingest` run the same image. Session analysis is CPU-bound, so
 it runs in `ingest` with four workers (`INGEST_WORKERS`). The dashboard API
@@ -305,7 +312,7 @@ for fifteen minutes (`LOGIN_LOCKOUT_THRESHOLD`, `LOGIN_LOCKOUT_MINUTES`).
 `backup.sh` runs nightly (03:30) and writes `/var/backups/honeysentinel/<stamp>/`
 with the database dump, `config.tar.gz` (`.env`, `state/`, the compose
 override — **the encryption key lives here; without it the dump is
-unreadable**), the engine's volume (host keys and identity, so a rebuilt
+unreadable**), each engine's volume (host keys and identity, so a rebuilt
 machine looks like the same machine) and a manifest with checksums. Fourteen
 days are kept, on the same disk: copy them off the machine yourself.
 

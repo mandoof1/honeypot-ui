@@ -70,11 +70,17 @@ class IPActionRequest(BaseModel):
         return value
 
 
+def _control_urls() -> list[str]:
+    settings = get_settings()
+    extra = [u.strip() for u in settings.HONEYPOT_CONTROL_EXTRA_URLS.split(",") if u.strip()]
+    return [settings.HONEYPOT_CONTROL_URL, *extra]
+
+
 async def _engine_request(
-    method: str, path: str, json_body: Optional[dict] = None
+    method: str, path: str, json_body: Optional[dict] = None, base_url: Optional[str] = None
 ) -> Any:
     settings = get_settings()
-    url = f"{settings.HONEYPOT_CONTROL_URL.rstrip('/')}{path}"
+    url = f"{(base_url or settings.HONEYPOT_CONTROL_URL).rstrip('/')}{path}"
     try:
         async with httpx.AsyncClient(timeout=ENGINE_TIMEOUT) as client:
             response = await client.request(
@@ -104,6 +110,25 @@ async def _engine_request(
             detail=f"Honeypot engine returned HTTP {response.status_code}",
         )
     return response.json()
+
+
+async def _engine_broadcast(method: str, path: str, json_body: Optional[dict] = None) -> Any:
+    """Apply a change on every engine and return the first engine's answer.
+
+    A host can run one engine per node (the website decoys have their own),
+    and a mode change or block that reached only one of them would leave the
+    others answering as before. Every engine is tried even if one fails; the
+    first failure is then raised so the caller learns the change is partial.
+    """
+    results, failure = [], None
+    for url in _control_urls():
+        try:
+            results.append(await _engine_request(method, path, json_body, base_url=url))
+        except HTTPException as exc:
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+    return results[0]
 
 
 @router.get("/status", response_model=HoneypotStatusResponse)
@@ -181,7 +206,7 @@ async def update_mode(
 ):
     return await _audited(
         db, current_user, "engine_mode_changed", {"mode": update.mode},
-        lambda: _engine_request("POST", "/mode", {"mode": update.mode}),
+        lambda: _engine_broadcast("POST", "/mode", {"mode": update.mode}),
     )
 
 
@@ -193,7 +218,7 @@ async def block_ip(
 ):
     return await _audited(
         db, current_user, "ip_blocked", {"ip": payload.ip},
-        lambda: _engine_request("POST", "/block-ip", {"ip": payload.ip}),
+        lambda: _engine_broadcast("POST", "/block-ip", {"ip": payload.ip}),
     )
 
 
@@ -205,5 +230,5 @@ async def unblock_ip(
 ):
     return await _audited(
         db, current_user, "ip_unblocked", {"ip": payload.ip},
-        lambda: _engine_request("POST", "/unblock-ip", {"ip": payload.ip}),
+        lambda: _engine_broadcast("POST", "/unblock-ip", {"ip": payload.ip}),
     )

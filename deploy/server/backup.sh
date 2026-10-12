@@ -42,10 +42,14 @@ tar -czf "$work/config.tar.gz" \
   --exclude='state/geoip/*.part' --exclude='state/models' \
   .env state $(ls docker-compose.override.yml 2>/dev/null)
 
-volume="$(docker compose config --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["volumes"]["honeypot_data"]["name"])' 2>/dev/null || echo honeysentinel_honeypot_data)"
-docker run --rm -v "$volume":/data:ro -v "$work":/out alpine:3.20 \
-  tar -czf /out/engine-data.tar.gz -C /data . 2>/dev/null \
-  || echo "engine volume not backed up (is the stack running?)" >&2
+# One volume per engine: the shell services' and the website's.
+for pair in honeypot_data:engine-data honeypot_web_data:engine-web-data; do
+  key=${pair%%:*} out=${pair##*:}
+  volume="$(docker compose config --format json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['volumes']['$key']['name'])" 2>/dev/null || echo "honeysentinel_$key")"
+  docker run --rm -v "$volume":/data:ro -v "$work":/out alpine:3.20 \
+    tar -czf "/out/$out.tar.gz" -C /data . 2>/dev/null \
+    || echo "$key volume not backed up (is the stack running?)" >&2
+done
 
 (
   cd "$work"
@@ -53,7 +57,7 @@ docker run --rm -v "$volume":/data:ro -v "$work":/out alpine:3.20 \
     echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "host=$(hostname)"
     echo "git=$(git -C /opt/honeysentinel rev-parse HEAD 2>/dev/null || echo unknown)"
-    for f in db.sql.gz config.tar.gz engine-data.tar.gz; do
+    for f in db.sql.gz config.tar.gz engine-data.tar.gz engine-web-data.tar.gz; do
       [[ -f $f ]] && printf '%s size=%s sha256=%s\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
     done
   } > MANIFEST

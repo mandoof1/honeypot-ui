@@ -85,8 +85,11 @@ class Settings(BaseSettings):
     # GeoIP
     GEOIP_DB_PATH: str = "./data/GeoLite2-City.mmdb"
 
-    # Honeypot engine control API
+    # Honeypot engine control API. Status and lists come from this engine;
+    # mode changes and blocks go to it and to every extra one.
     HONEYPOT_CONTROL_URL: str = "http://honeypot:8000"
+    #: Comma-separated control URLs of further engines (one per node).
+    HONEYPOT_CONTROL_EXTRA_URLS: str = ""
 
     # AI Model paths
     MODEL_PATH_RF: str = "./models/random_forest_model.pkl"

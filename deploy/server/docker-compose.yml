@@ -32,6 +32,8 @@ x-backend-env: &backend_env
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run install.sh first}
   HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run install.sh first}
   HONEYPOT_CONTROL_URL: http://honeypot:8000
+  # Further engines; mode changes and blocks are sent to every one.
+  HONEYPOT_CONTROL_EXTRA_URLS: http://honeypot-web:8000
   CORS_ORIGINS: ${DASHBOARD_ORIGIN:?run install.sh first}
   # Caddy is the only thing that can reach the API, and it sets
   # X-Forwarded-For itself.
@@ -279,13 +281,20 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  honeypot:
+  # Two engines from one image, so the dashboard lists the website as a node of
+  # its own: `honeypot` answers the shell services, `honeypot-web` the HTTP and
+  # HTTPS decoys (and the shop behind them, docker-compose.override.yml). They
+  # share an identity seed so both describe the same host, as an attacker who
+  # scans the address sees one machine.
+  honeypot: &engine
     build:
       context: ../..
       dockerfile: honeypot/Dockerfile
-    environment:
+    image: honeysentinel-honeypot
+    environment: &engine_env
       HONEYPOT_CONTAINER: "true"
       HONEYPOT_NODE_NAME: ${HONEYPOT_NODE_NAME:-honeysentinel-debian}
+      HONEYPOT_IDENTITY_SEED: ${HONEYPOT_IDENTITY_SEED:-}
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
       # The control API listens only on the internal network, so it is not
       # reachable through the decoy bridge or any published port.
@@ -296,7 +305,7 @@ services:
       HONEYPOT_TELNET_PORT: "2323"
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
-      HONEYPOT_PROTOCOLS: ssh,ftp,telnet,http,https
+      HONEYPOT_PROTOCOLS: ssh,ftp,telnet
       HONEYPOT_OPERATIONAL_MODE: active
       HONEYPOT_MAX_CONN_PER_IP: "5"
       HONEYPOT_RATE_LIMIT: "60"
@@ -318,8 +327,8 @@ services:
       HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN}
     ports:
       # Emulated services, deliberately reachable. The router forwards the
-      # well-known ports (22, 21, 80, 443) to these; the host's real sshd
-      # keeps port 22 on the LAN and tailnet.
+      # well-known ports (22, 21, 23) to these; the host's real sshd keeps
+      # port 22 on the LAN and tailnet.
       #
       # IPv4 only, on purpose. Without a host address Docker also publishes
       # on [::], and IPv6 clients reach the container through docker-proxy,
@@ -329,8 +338,6 @@ services:
       - "0.0.0.0:2222:2222"
       - "0.0.0.0:2121:2121"
       - "0.0.0.0:2323:2323"
-      - "0.0.0.0:8080:8080"
-      - "0.0.0.0:8443:8443"
       - "0.0.0.0:50000-50009:50000-50009"
     networks:
       decoy: {}
@@ -366,6 +373,25 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  honeypot-web:
+    <<: *engine
+    environment:
+      <<: *engine_env
+      HONEYPOT_NODE_NAME: ${HONEYPOT_WEB_NODE_NAME:-honeysentinel-web}
+      HONEYPOT_CONTROL_BIND: 172.30.67.11
+      HONEYPOT_PROTOCOLS: http,https
+    ports:
+      # The router forwards 80 and 443 to these.
+      - "0.0.0.0:8080:8080"
+      - "0.0.0.0:8443:8443"
+    networks:
+      decoy: {}
+      engine:
+        ipv4_address: 172.30.67.11
+    volumes:
+      - honeypot_web_data:/app/data
+      - ./state/decoy-tls:/run/decoy-tls:ro
+
 networks:
   decoy:
     driver: bridge
@@ -394,3 +420,4 @@ volumes:
   pgdata:
   models:
   honeypot_data:
+  honeypot_web_data:

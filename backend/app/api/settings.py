@@ -196,10 +196,10 @@ async def update_system_config(
     # whenever it registers, so an unreachable engine catches up on restart.
     engine_applied = None
     if config.honeypot_mode:
-        from app.api.honeypot import _engine_request
+        from app.api.honeypot import _engine_broadcast
 
         try:
-            await _engine_request("POST", "/mode", {"mode": config.honeypot_mode.value})
+            await _engine_broadcast("POST", "/mode", {"mode": config.honeypot_mode.value})
             engine_applied = True
         except HTTPException as exc:
             engine_applied = False

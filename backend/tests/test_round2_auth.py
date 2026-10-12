@@ -137,7 +137,7 @@ class TestEngineControlAudit:
     async def test_block_ip_is_audited(self, client, auth_headers, db_session, monkeypatch):
         from app.api import honeypot as engine_api
 
-        async def fake_request(method, path, body=None):
+        async def fake_request(method, path, body=None, base_url=None):
             return {"status": "blocked"}
 
         monkeypatch.setattr(engine_api, "_engine_request", fake_request)
@@ -146,6 +146,51 @@ class TestEngineControlAudit:
         assert response.status_code == 200
         rows = (await db_session.execute(select(AuditLog).where(AuditLog.action == "ip_blocked"))).scalars().all()
         assert len(rows) == 1 and rows[0].details == {"ip": "203.0.113.5"}
+
+    async def test_block_and_mode_reach_every_engine(self, client, auth_headers, monkeypatch):
+        # The website decoys run as a second engine; a block or mode change
+        # that reached only the first would leave the website answering.
+        from app.api import honeypot as engine_api
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "HONEYPOT_CONTROL_URL", "http://honeypot:8000")
+        monkeypatch.setattr(get_settings(), "HONEYPOT_CONTROL_EXTRA_URLS", "http://honeypot-web:8000, ")
+        calls = []
+
+        async def fake_request(method, path, body=None, base_url=None):
+            calls.append((base_url, path))
+            return {"ok": True}
+
+        monkeypatch.setattr(engine_api, "_engine_request", fake_request)
+        headers = await auth_headers(UserRole.ADMIN)
+        assert (await client.post("/api/v1/honeypot/block-ip", headers=headers, json={"ip": "203.0.113.6"})).status_code == 200
+        assert (await client.patch("/api/v1/honeypot/mode", headers=headers, json={"mode": "passive"})).status_code == 200
+        assert calls == [
+            ("http://honeypot:8000", "/block-ip"), ("http://honeypot-web:8000", "/block-ip"),
+            ("http://honeypot:8000", "/mode"), ("http://honeypot-web:8000", "/mode"),
+        ]
+
+    async def test_a_failing_engine_does_not_stop_the_others(self, client, auth_headers, monkeypatch):
+        from fastapi import HTTPException
+
+        from app.api import honeypot as engine_api
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "HONEYPOT_CONTROL_URL", "http://honeypot:8000")
+        monkeypatch.setattr(get_settings(), "HONEYPOT_CONTROL_EXTRA_URLS", "http://honeypot-web:8000")
+        reached = []
+
+        async def fake_request(method, path, body=None, base_url=None):
+            reached.append(base_url)
+            if base_url == "http://honeypot:8000":
+                raise HTTPException(status_code=503, detail="Honeypot engine is unreachable")
+            return {"ok": True}
+
+        monkeypatch.setattr(engine_api, "_engine_request", fake_request)
+        headers = await auth_headers(UserRole.ANALYST)
+        response = await client.post("/api/v1/honeypot/block-ip", headers=headers, json={"ip": "203.0.113.7"})
+        assert response.status_code == 503
+        assert reached == ["http://honeypot:8000", "http://honeypot-web:8000"]
 
 
 class TestManualIngestIsAdminOnly:

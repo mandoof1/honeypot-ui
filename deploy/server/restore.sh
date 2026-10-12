@@ -58,20 +58,22 @@ fi
 
 if [[ -f "$src/db.sql.gz" ]]; then
   echo "stopping writers"
-  docker compose stop honeypot ingest backend web >/dev/null 2>&1 || true
+  docker compose stop honeypot honeypot-web ingest backend web >/dev/null 2>&1 || true
   echo "restoring the database"
   gunzip -c "$src/db.sql.gz" \
     | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -q -U honeypot -d honeysentinel >/dev/null
   echo "database restored"
 fi
 
-if [[ -f "$src/engine-data.tar.gz" ]]; then
-  volume="$(docker compose config --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["volumes"]["honeypot_data"]["name"])' 2>/dev/null || echo honeysentinel_honeypot_data)"
+for pair in honeypot_data:engine-data honeypot_web_data:engine-web-data; do
+  key=${pair%%:*} archive=${pair##*:}.tar.gz
+  [[ -f "$src/$archive" ]] || continue
+  volume="$(docker compose config --format json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['volumes']['$key']['name'])" 2>/dev/null || echo "honeysentinel_$key")"
   docker volume create "$volume" >/dev/null
   docker run --rm -v "$volume":/data -v "$src":/in:ro alpine:3.20 \
-    sh -c 'rm -rf /data/* && tar -xzf /in/engine-data.tar.gz -C /data'
-  echo "engine data (host keys, identity, captures) restored"
-fi
+    sh -c "rm -rf /data/* && tar -xzf /in/$archive -C /data"
+  echo "$key (host keys, identity, captures) restored"
+done
 
 if [[ $running -eq 1 ]]; then
   docker compose up -d

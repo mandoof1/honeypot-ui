@@ -40,8 +40,11 @@ x-shop: &shop
     options: { max-size: "20m", max-file: "5" }
 
 services:
-  honeypot:
+  # The website engine (see docker-compose.yml), listed in the dashboard as
+  # its own node under the shop's name.
+  honeypot-web:
     environment:
+      HONEYPOT_NODE_NAME: ${HONEYPOT_WEB_NODE_NAME:-bolt-and-batten-store}
       HONEYPOT_HTTP_UPSTREAM: http://shop:3000
       HONEYPOT_HTTP_DECOY_UPSTREAM: http://shop-decoy:3000
       # The shop's own pages, which would otherwise be decoy bait.

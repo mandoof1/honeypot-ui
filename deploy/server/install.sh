@@ -102,6 +102,16 @@ append_env WOLFRAM_THREADS           "# WOLFRAM_THREADS=6               # CPU th
 append_env DECIDER_THREADS           "# DECIDER_THREADS=6               # CPU threads for the decision model"
 append_env DECIDER_SKIP_THRESHOLD    "# DECIDER_SKIP_THRESHOLD=0.85     # triage skips the LLM above this p(information gathering at most)"
 append_env DECIDER_DROP_UNCONFIRMED  "# DECIDER_DROP_UNCONFIRMED=false  # remove, not just mark, techniques the transcript does not support"
+# The shell services and the website run as two engines (two nodes in the
+# dashboard) on one address, so they must describe one host: a shared seed
+# derives the same hostname, OS and server banners for both. An existing
+# install keeps the identity its engine already created.
+if ! grep -q '^HONEYPOT_IDENTITY_SEED=' "$ENV_FILE"; then
+  seed=$(docker compose exec -T honeypot python -c "import json; print(json.load(open('/app/data/sessions/host-identity.json'))['seed'])" < /dev/null 2>/dev/null || true)
+  seed=${seed:-$(python3 -c "import secrets; print(secrets.randbelow(2**31 - 1) + 1)")}
+  printf '\n# Both engines describe this one host (hostname, OS, banners).\nHONEYPOT_IDENTITY_SEED=%s\n' "$seed" >> "$ENV_FILE"
+  echo "    pinned the host identity seed"
+fi
 WEB_PORT=$(grep -E '^WEB_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || true)
 WEB_PORT=${WEB_PORT:-8088}
 
@@ -225,8 +235,9 @@ wait_healthy() {
 }
 echo "    waiting for the API"
 wait_healthy backend || exit 1
-echo "    waiting for the engine"
+echo "    waiting for the engines"
 wait_healthy honeypot 60 || exit 1
+wait_healthy honeypot-web 60 || exit 1
 
 echo "==> 6/7  Administrator"
 creds="$STATE/admin-credentials"
