@@ -42,7 +42,14 @@ MEDIA_TYPES = {
     "stix": "application/json",
 }
 
-FILE_EXTENSIONS = {"docx": "docx", "pdf": "pdf", "csv": "csv", "json": "json", "cef": "cef", "stix": "json"}
+FILE_EXTENSIONS = {
+    "docx": "docx",
+    "pdf": "pdf",
+    "csv": "csv",
+    "json": "json",
+    "cef": "cef",
+    "stix": "json",
+}
 
 
 def _session_to_dict(session: HoneypotSession) -> dict:
@@ -77,9 +84,7 @@ def _session_to_analysis(session: HoneypotSession, iocs: list | None = None) -> 
         ),
         "confidence": session.attack_confidence,
         "profile": (
-            session.attacker_profile.value
-            if session.attacker_profile
-            else "unknown"
+            session.attacker_profile.value if session.attacker_profile else "unknown"
         ),
         "anomaly_score": session.anomaly_score,
         "is_anomalous": session.is_anomalous,
@@ -120,9 +125,9 @@ async def export_sessions(
     if filters is not None:
         query = query.where(filters)
 
-    query = query.order_by(HoneypotSession.started_at.desc(), HoneypotSession.id.desc()).limit(
-        limit + 1
-    )
+    query = query.order_by(
+        HoneypotSession.started_at.desc(), HoneypotSession.id.desc()
+    ).limit(limit + 1)
     sessions = (await db.execute(query)).scalars().all()
 
     truncated = len(sessions) > limit
@@ -130,7 +135,10 @@ async def export_sessions(
     iocs = await load_iocs(db, sessions)
     if format in {"pdf", "docx"}:
         _sensitive_permission(current_user, include_sensitive)
-        if not sessions:raise HTTPException(status_code=404,detail='No sessions match this investigation report.')
+        if not sessions:
+            raise HTTPException(
+                status_code=404, detail="No sessions match this investigation report."
+            )
         records = _report_snapshot(sessions, iocs, include_sensitive)
         # Release the database connection while CPU-model inference is pending.
         await db.commit()
@@ -150,7 +158,14 @@ async def export_sessions(
             user_id=current_user["id"],
             action="sessions_exported",
             resource_type="session",
-            details={"format": format, "count": len(sessions), "truncated": truncated, "include_sensitive": include_sensitive if format in {"pdf", "docx"} else False},
+            details={
+                "format": format,
+                "count": len(sessions),
+                "truncated": truncated,
+                "include_sensitive": include_sensitive
+                if format in {"pdf", "docx"}
+                else False,
+            },
         )
     )
     await db.commit()
@@ -169,95 +184,192 @@ async def export_sessions(
     )
 
 
-
 def _sensitive_permission(user, include_sensitive):
     if include_sensitive and user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Only administrators can include original credential evidence.")
+        raise HTTPException(
+            status_code=403,
+            detail="Only administrators can include original credential evidence.",
+        )
 
 
 def _report_snapshot(sessions, iocs, include_sensitive=False):
-    records=[]
+    records = []
     for session in sessions:
-        data=_session_to_dict(session)
-        analysis=_session_to_analysis(session, iocs.get(session.id))
-        analysis['evidence_source']='stored command summary'
-        captured=session.command_summary or ''
+        data = _session_to_dict(session)
+        analysis = _session_to_analysis(session, iocs.get(session.id))
+        analysis["evidence_source"] = "stored command summary"
+        captured = session.command_summary or ""
         if session.raw_commands_encrypted:
             try:
-                captured=decrypt_data(session.raw_commands_encrypted)
-                analysis['evidence_source']='decrypted captured commands/requests'
-            except (ValueError,TypeError):
-                analysis['evidence_error']='Captured commands could not be decrypted; the available stored summary is shown instead.'
-        if len(captured)>100000:captured=captured[:100000]+'\n[captured activity shortened at 100000 characters]'
-        analysis['evidence_commands']=captured if include_sensitive else redact(captured)
+                captured = decrypt_data(session.raw_commands_encrypted)
+                analysis["evidence_source"] = "decrypted captured commands/requests"
+            except (ValueError, TypeError):
+                analysis["evidence_error"] = (
+                    "Captured commands could not be decrypted; the available stored summary is shown instead."
+                )
+        if len(captured) > 100000:
+            captured = (
+                captured[:100000]
+                + "\n[captured activity shortened at 100000 characters]"
+            )
+        analysis["evidence_commands"] = (
+            captured if include_sensitive else redact(captured)
+        )
         if session.credentials_encrypted:
             try:
                 from collections import Counter
-                credentials=json.loads(decrypt_data(session.credentials_encrypted))
-                if not isinstance(credentials,list):raise ValueError('Expected credential list')
-                analysis['credentials_total']=len(credentials)
-                analysis['credential_usernames']=dict(Counter(str(c.get('username',''))[:100] for c in credentials if isinstance(c,dict)))
-                analysis['decoy_accepts']=sum(c.get('success') is True or c.get('accepted') is True for c in credentials if isinstance(c,dict))
-                if include_sensitive:analysis['credentials']=[{k:str(c.get(k,''))[:1000] for k in ['username','password','success','accepted'] if k in c} for c in credentials[:100] if isinstance(c,dict)]
-            except (ValueError,TypeError):analysis['credential_error']='Captured credential data could not be read.'
-        records.append((data,analysis))
+
+                credentials = json.loads(decrypt_data(session.credentials_encrypted))
+                if not isinstance(credentials, list):
+                    raise ValueError("Expected credential list")
+                analysis["credentials_total"] = len(credentials)
+                analysis["credential_usernames"] = dict(
+                    Counter(
+                        str(c.get("username", ""))[:100]
+                        for c in credentials
+                        if isinstance(c, dict)
+                    )
+                )
+                analysis["decoy_accepts"] = sum(
+                    c.get("success") is True or c.get("accepted") is True
+                    for c in credentials
+                    if isinstance(c, dict)
+                )
+                if include_sensitive:
+                    analysis["credentials"] = [
+                        {
+                            k: str(c.get(k, ""))[:1000]
+                            for k in ["username", "password", "success", "accepted"]
+                            if k in c
+                        }
+                        for c in credentials[:100]
+                        if isinstance(c, dict)
+                    ]
+            except (ValueError, TypeError):
+                analysis["credential_error"] = (
+                    "Captured credential data could not be read."
+                )
+        records.append((data, analysis))
     return records
 
 
-@router.post('/reports', status_code=202)
+@router.post("/reports", status_code=202)
 async def prepare_investigation_report(
     session_ids: Optional[list[int]] = Query(None),
     filters=Depends(session_filters),
     include_sensitive: bool = Query(False),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_role('analyst')),
+    current_user: dict = Depends(require_role("analyst")),
 ):
-    _sensitive_permission(current_user,include_sensitive)
-    if session_ids and len(session_ids)>MAX_PDF_SESSIONS:raise HTTPException(status_code=400,detail='At most 100 sessions per investigation report')
-    query=select(HoneypotSession)
-    if session_ids:query=query.where(HoneypotSession.id.in_(session_ids))
-    if filters is not None:query=query.where(filters)
-    query=query.order_by(HoneypotSession.started_at.desc(),HoneypotSession.id.desc()).limit(MAX_PDF_SESSIONS+1)
-    sessions=(await db.execute(query)).scalars().all()
-    truncated=len(sessions)>MAX_PDF_SESSIONS;sessions=sessions[:MAX_PDF_SESSIONS]
-    if not sessions:raise HTTPException(status_code=404,detail='No sessions match this report. Change the filters or select a session.')
-    iocs=await load_iocs(db,sessions)
-    records=_report_snapshot(sessions,iocs,include_sensitive)
-    try:job=report_jobs.submit(current_user['id'],records,include_sensitive)
-    except JobsFull as exc:raise HTTPException(status_code=429,detail=str(exc)) from exc
-    job['truncated']=truncated
-    db.add(AuditLog(user_id=current_user['id'],action='ai_report_requested',resource_type='session',details={'report_id':job['id'],'count':len(sessions),'truncated':truncated,'include_sensitive':include_sensitive}))
+    _sensitive_permission(current_user, include_sensitive)
+    if session_ids and len(session_ids) > MAX_PDF_SESSIONS:
+        raise HTTPException(
+            status_code=400, detail="At most 100 sessions per investigation report"
+        )
+    query = select(HoneypotSession)
+    if session_ids:
+        query = query.where(HoneypotSession.id.in_(session_ids))
+    if filters is not None:
+        query = query.where(filters)
+    query = query.order_by(
+        HoneypotSession.started_at.desc(), HoneypotSession.id.desc()
+    ).limit(MAX_PDF_SESSIONS + 1)
+    sessions = (await db.execute(query)).scalars().all()
+    truncated = len(sessions) > MAX_PDF_SESSIONS
+    sessions = sessions[:MAX_PDF_SESSIONS]
+    if not sessions:
+        raise HTTPException(
+            status_code=404,
+            detail="No sessions match this report. Change the filters or select a session.",
+        )
+    iocs = await load_iocs(db, sessions)
+    records = _report_snapshot(sessions, iocs, include_sensitive)
+    try:
+        job = report_jobs.submit(current_user["id"], records, include_sensitive)
+    except JobsFull as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    job["truncated"] = truncated
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="ai_report_requested",
+            resource_type="session",
+            details={
+                "report_id": job["id"],
+                "count": len(sessions),
+                "truncated": truncated,
+                "include_sensitive": include_sensitive,
+            },
+        )
+    )
     await db.commit()
     return report_jobs.status(job)
 
 
-@router.get('/reports/{report_id}')
-async def investigation_status(report_id: str, current_user: dict = Depends(require_role('analyst'))):
-    try:job=report_jobs.owned(report_id,current_user['id'])
-    except KeyError:raise HTTPException(status_code=404,detail='Report not found or expired. Generate it again.')
-    _sensitive_permission(current_user,job['sensitive'])
+@router.get("/reports/{report_id}")
+async def investigation_status(
+    report_id: str, current_user: dict = Depends(require_role("analyst"))
+):
+    try:
+        job = report_jobs.owned(report_id, current_user["id"])
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail="Report not found or expired. Generate it again."
+        )
+    _sensitive_permission(current_user, job["sensitive"])
     return report_jobs.status(job)
 
 
-@router.get('/reports/{report_id}/download')
+@router.get("/reports/{report_id}/download")
 async def download_investigation_report(
     report_id: str,
-    format: str = Query('pdf',pattern='^(pdf|docx)$'),
+    format: str = Query("pdf", pattern="^(pdf|docx)$"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_role('analyst')),
+    current_user: dict = Depends(require_role("analyst")),
 ):
-    try:job=report_jobs.owned(report_id,current_user['id'])
-    except KeyError:raise HTTPException(status_code=404,detail='Report not found or expired. Generate it again.')
-    _sensitive_permission(current_user,job['sensitive'])
-    if job['status']!='complete':raise HTTPException(status_code=409,detail=job['error'] or 'The model is still writing this investigation.')
-    content=await report_jobs.render(job,format)
-    db.add(AuditLog(user_id=current_user['id'],action='ai_report_downloaded',resource_type='session',details={'report_id':job['id'],'format':format,'count':len(job['records']),'include_sensitive':job['sensitive'],'model':job['narrative']['model']}))
+    try:
+        job = report_jobs.owned(report_id, current_user["id"])
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail="Report not found or expired. Generate it again."
+        )
+    _sensitive_permission(current_user, job["sensitive"])
+    if job["status"] != "complete":
+        raise HTTPException(
+            status_code=409,
+            detail=job["error"] or "The model is still writing this investigation.",
+        )
+    content = await report_jobs.render(job, format)
+    db.add(
+        AuditLog(
+            user_id=current_user["id"],
+            action="ai_report_downloaded",
+            resource_type="session",
+            details={
+                "report_id": job["id"],
+                "format": format,
+                "count": len(job["records"]),
+                "include_sensitive": job["sensitive"],
+                "model": job["narrative"]["model"],
+            },
+        )
+    )
     await db.commit()
-    stamp=datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    return Response(content=content,media_type=MEDIA_TYPES[format],headers={'Content-Disposition':f'attachment; filename="honeysentinel_investigation_{stamp}.{format}"','X-Export-Count':str(len(job['records'])),'X-Export-Truncated':str(bool(job.get('truncated'))).lower()})
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=content,
+        media_type=MEDIA_TYPES[format],
+        headers={
+            "Content-Disposition": f'attachment; filename="honeysentinel_investigation_{stamp}.{format}"',
+            "X-Export-Count": str(len(job["records"])),
+            "X-Export-Truncated": str(bool(job.get("truncated"))).lower(),
+        },
+    )
 
 
-async def load_iocs(db: AsyncSession, sessions: list[HoneypotSession]) -> dict[int, list[dict]]:
+async def load_iocs(
+    db: AsyncSession, sessions: list[HoneypotSession]
+) -> dict[int, list[dict]]:
     """Indicator rows for these sessions, keyed by session id.
 
     The JSON and STIX exports always wrote an empty indicator list, because
@@ -270,10 +382,16 @@ async def load_iocs(db: AsyncSession, sessions: list[HoneypotSession]) -> dict[i
     if not ids:
         return {}
     rows = (
-        await db.execute(
-            select(IndicatorOfCompromise).where(IndicatorOfCompromise.session_id.in_(ids))
+        (
+            await db.execute(
+                select(IndicatorOfCompromise).where(
+                    IndicatorOfCompromise.session_id.in_(ids)
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     grouped: dict[int, list[dict]] = {}
     for row in rows:
         grouped.setdefault(row.session_id, []).append(
@@ -303,22 +421,45 @@ def _render(
     if format == "csv":
         output = io.StringIO(newline="")
         writer = csv.writer(output)
-        writer.writerow(["Session ID", "Source IP", "Protocol", "Country", "Started at",
-                         "Status", "Category", "Anomalous", "Research scanner", "Commands",
-                         "Command summary"])
+        writer.writerow(
+            [
+                "Session ID",
+                "Source IP",
+                "Protocol",
+                "Country",
+                "Started at",
+                "Status",
+                "Category",
+                "Anomalous",
+                "Research scanner",
+                "Commands",
+                "Command summary",
+            ]
+        )
         for session in sessions:
-            values = [session.session_uuid, session.attacker_ip, session.protocol,
-                      session.geo_country, session.started_at.isoformat(), session.status.value,
-                      session.attack_category.value if session.attack_category else "unknown",
-                      session.is_anomalous, session.scanner_operator, session.command_count,
-                      session.command_summary]
+            values = [
+                session.session_uuid,
+                session.attacker_ip,
+                session.protocol,
+                session.geo_country,
+                session.started_at.isoformat(),
+                session.status.value,
+                session.attack_category.value if session.attack_category else "unknown",
+                session.is_anomalous,
+                session.scanner_operator,
+                session.command_count,
+                session.command_summary,
+            ]
             # Spreadsheet programs interpret attacker-controlled leading symbols as formulas.
             writer.writerow([_csv_cell(value) for value in values])
         return output.getvalue()
 
     iocs_by_session = iocs_by_session or {}
     pairs = [
-        (_session_to_dict(session), _session_to_analysis(session, iocs_by_session.get(session.id)))
+        (
+            _session_to_dict(session),
+            _session_to_analysis(session, iocs_by_session.get(session.id)),
+        )
         for session in sessions
     ]
 
@@ -354,4 +495,9 @@ def _render(
 
 def _csv_cell(value):
     text = "" if value is None else str(value)
-    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
+    return (
+        "'" + text
+        if text.lstrip().startswith(("=", "+", "-", "@"))
+        or text.startswith(("\t", "\r", "\n"))
+        else text
+    )
