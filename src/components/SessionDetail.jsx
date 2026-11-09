@@ -1,5 +1,8 @@
+import { useState } from 'react'
+import { api } from '../services/api'
+import { useAuth } from '../context/useAuth'
 import { Link } from 'react-router-dom'
-import { ExternalLink, X } from 'lucide-react'
+import { ExternalLink, X, Download } from 'lucide-react'
 import { CategoryTag } from './Severity'
 import EnrichmentBlock from './EnrichmentBlock'
 import TriageBlock from './TriageBlock'
@@ -73,6 +76,32 @@ function TagRow({ items, color, empty, transform }) {
 }
 
 export default function SessionDetail({ session, onClose }) {
+  const { hasRole } = useAuth()
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const [pdfError, setPdfError] = useState(null)
+  const [pdfStatus, setPdfStatus] = useState('')
+  const exportReport = async (format) => {
+    if (!session || pdfBusy) return
+    setPdfBusy(format)
+    setPdfError(null)
+    setPdfStatus('Preparing the selected evidence for our local model.')
+    try {
+      const { blob, filename } = await api.export.sessions({ format, session_ids: [session.id], include_sensitive: hasRole('admin') }, { onProgress: setPdfStatus })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) {
+      setPdfError(error.message || 'Could not generate the PDF report.')
+    } finally {
+      setPdfBusy(false)
+    }
+  }
+
   if (!session) {
     return (
       <div className="flex h-full items-center justify-center px-6 py-16 text-center">
@@ -114,6 +143,21 @@ export default function SessionDetail({ session, onClose }) {
           </button>
         )}
       </header>
+      {hasRole('analyst') && (
+        <div className="px-4 pb-3">
+          <button type="button" className="control gap-1.5" onClick={() => exportReport('pdf')} disabled={pdfBusy}>
+            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+            {pdfBusy === 'pdf' ? 'Generating…' : 'Export PDF report'}
+          </button>
+          <button type="button" className="control ml-2 gap-1.5" onClick={() => exportReport('docx')} disabled={pdfBusy}>
+            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+            {pdfBusy === 'docx' ? 'Generating…' : 'Export Word report'}
+          </button>
+          {pdfBusy && <p role="status" className="mt-2 text-[12px] text-paper-2">{pdfStatus}</p>}
+          {hasRole('admin') && <p className="mt-2 text-[11px] text-paper-3">Admin reports include original captured activity and available credential evidence.</p>}
+          {pdfError && <p role="alert" className="mt-2 text-[12px] text-s4">{pdfError}</p>}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-1.5 px-4 pb-3.5">
         <CategoryTag category={session.attack_category} />

@@ -31,3 +31,7 @@ geoip2==4.8.1
 pyelftools==0.33
 pefile==2024.8.26
 
+
+# Local PDF rendering; no external document service.
+reportlab==5.1.0
+python-docx==1.2.0

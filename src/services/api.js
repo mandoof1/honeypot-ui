@@ -307,8 +307,23 @@ export const api = {
 
   export: {
     // The backend route is POST; this used to issue a GET and always 405'd.
-    sessions: (params = {}) =>
-      download(`/export/?${toQuery(params)}`, { method: 'POST' }),
+    sessions: async (params = {}, { onProgress } = {}) => {
+      if (!['pdf', 'docx'].includes(params.format)) {
+        return download(`/export/?${toQuery(params)}`, { method: 'POST' })
+      }
+      const { format, ...filters } = params
+      let job = await request(`/export/reports?${toQuery(filters)}`, { method: 'POST' })
+      const deadline = Date.now() + 20 * 60 * 1000
+      while (job.status !== 'complete') {
+        if (job.status === 'failed') throw new ApiError(job.message, 503)
+        if (Date.now() > deadline) throw new ApiError('The investigation is taking longer than expected. Try again shortly to retrieve the same report.', 504)
+        onProgress?.(job.message)
+        await new Promise((resolve) => setTimeout(resolve, 4000))
+        job = await request(`/export/reports/${encodeURIComponent(job.id)}`)
+      }
+      onProgress?.('The findings are ready. Preparing the report file.')
+      return download(`/export/reports/${encodeURIComponent(job.id)}/download?format=${format}`)
+    },
   },
 
   honeypot: {

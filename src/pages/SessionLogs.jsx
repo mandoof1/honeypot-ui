@@ -41,6 +41,8 @@ const CATEGORIES = ['benign', 'reconnaissance', 'exploitation', 'exfiltration']
 const STATUSES = ['active', 'completed', 'terminated']
 
 const EXPORT_FORMATS = [
+  { id: 'docx', label: 'Word report', hint: 'Our local model writes an investigation from selected evidence; editable Word output (up to 100 sessions)' },
+  { id: 'pdf', label: 'PDF report', hint: 'Our local model writes findings from captured activity; PDF output (up to 100 sessions)' },
   { id: 'csv', label: 'CSV', hint: 'Spreadsheet summary of matching sessions' },
   { id: 'json', label: 'JSON', hint: 'Full session records' },
   { id: 'cef', label: 'CEF', hint: 'ArcSight and syslog collectors' },
@@ -328,7 +330,7 @@ export default function SessionLogs() {
       // The API returns the real file with its own Content-Disposition name;
       // an earlier version re-encoded every format as JSON and always saved
       // it with a .json extension.
-      const { blob, filename, count, truncated } = await api.export.sessions({ ...query, format })
+      const { blob, filename, count, truncated } = await api.export.sessions({ ...query, format, include_sensitive: ['pdf', 'docx'].includes(format) && hasRole('admin') }, { onProgress: setNotice })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -398,7 +400,7 @@ export default function SessionLogs() {
         </div>
 
         {canExport && (
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 hidden text-[12px] text-paper-3 sm:inline">Export matches</span>
             {EXPORT_FORMATS.map(({ id, label, hint }) => (
               <button
