@@ -408,6 +408,12 @@ class ModeHandler:
                 name, value = ASSIGNMENT.match(assignment).groups()
                 self._assign(line.shell, name, value)
             return ("" if stdin is None else to_text(stdin)) if not assignments else "", 0
+        # Tilde expansion, for the arguments: `echo ~`, `ls ~/.ssh`.
+        home = line.shell.home
+        words = [words[0]] + [
+            home if word == "~" else (home + word[1:] if word.startswith("~/") else word)
+            for word in words[1:]
+        ]
         return await self._dispatch(line, words, stdin, to_terminal, line.username, line.is_root)
 
     async def _dispatch(self, line: _Line, words: list[str], stdin: Optional[bytes],

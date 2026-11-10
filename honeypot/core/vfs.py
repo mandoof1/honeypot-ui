@@ -380,7 +380,9 @@ class VirtualFS:
         self.binary("/usr/lib/x86_64-linux-gnu/ld-2.31.so", 191504)
         self.link("/usr/lib64/ld-linux-x86-64.so.2", "/lib/x86_64-linux-gnu/ld-2.31.so")
         self.file("/usr/lib/os-release", hostfacts.os_release(identity))
-        self.link("/usr/share/zoneinfo/localtime", "/etc/localtime")
+        # The zone /etc/localtime points at, so the link is not left dangling.
+        self.blob("/usr/share/zoneinfo/" + identity.timezone, 118 if "UTC" in identity.timezone else 1599,
+                  mtime=self.installed - 60 * _DAY)
         if canary.enabled():
             self.file(canary.MARKER_PATH, canary.marker_script(), 0o755,
                       mtime=self.installed + 200 * _DAY)
