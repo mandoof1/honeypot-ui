@@ -11,14 +11,17 @@ a footnote; the same C2 host appearing across forty sessions from thirty
 addresses is the finding.
 """
 
+import ipaddress
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional
 
 from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import desc, func, select
+from sqlalchemy import String, cast, desc, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.sql import LIKE_ESCAPE, escape_like
 from app.core.security import get_current_user
@@ -29,8 +32,17 @@ router = APIRouter()
 
 #: Indicator types the pipeline emits. Anything else is a bug upstream, and
 #: rejecting an unknown filter is more useful than silently returning nothing.
-KNOWN_TYPES = {"ip", "domain", "url", "filename", "file_hash", "tool", "host",
-               "file", "wallet", "ssh_key", "c2_channel"}
+#: ``ip`` is an address that connected to a decoy (tagged ``attacker_ip``) or
+#: one a dropper or payload reached for; ``referenced_ip`` is an address that
+#: only appeared in text the attacker typed.
+KNOWN_TYPES = {"ip", "referenced_ip", "domain", "url", "filename", "file_hash",
+               "tool", "host", "file", "wallet", "ssh_key", "c2_channel"}
+
+#: The tag the pipeline puts on a session's own source address.
+ATTACKER_IP_TAG = "attacker_ip"
+
+#: Most indicator rows returned for one session.
+MAX_SESSION_INDICATORS = 2000
 
 #: Cap on a single page. Analysts pulling a feed want the whole set, and the
 #: export route below exists for that, so the paged view stays modest.
@@ -39,11 +51,11 @@ MAX_PAGE_SIZE = 200
 
 @router.get("/")
 async def list_iocs(
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=100_000),
     page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
-    ioc_type: Optional[str] = None,
-    search: Optional[str] = None,
-    min_sessions: int = Query(1, ge=1),
+    ioc_type: Optional[str] = Query(None, max_length=50),
+    search: Optional[str] = Query(None, max_length=200),
+    min_sessions: int = Query(1, ge=1, le=1_000_000),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -95,6 +107,8 @@ async def list_iocs(
         )
     ).all()
 
+    tags = await _tags_for(db, [(r.ioc_type, r.value) for r in rows])
+
     return {
         "indicators": [
             {
@@ -104,6 +118,10 @@ async def list_iocs(
                 "confidence": r.confidence,
                 "first_seen": r.first_seen,
                 "last_seen": r.last_seen,
+                # Every tag any occurrence carries. An `ip` row tagged
+                # `attacker_ip` is a source address; one tagged only `c2_host`
+                # is a machine a dropper reached for, and has no profile page.
+                "tags": tags.get((r.ioc_type, r.value), []),
             }
             for r in rows
         ],
@@ -111,6 +129,31 @@ async def list_iocs(
         "page": page,
         "page_size": page_size,
     }
+
+
+async def _tags_for(db: AsyncSession, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
+    """The union of tags over every stored occurrence of each (type, value).
+
+    One query for the page rather than a JSON aggregate in SQL, which
+    PostgreSQL and SQLite spell differently. A page is at most MAX_PAGE_SIZE
+    pairs.
+    """
+    if not pairs:
+        return {}
+    found = await db.execute(
+        select(
+            IndicatorOfCompromise.ioc_type,
+            IndicatorOfCompromise.value,
+            IndicatorOfCompromise.tags,
+        ).where(
+            tuple_(IndicatorOfCompromise.ioc_type, IndicatorOfCompromise.value).in_(pairs)
+        )
+    )
+    merged: dict[tuple[str, str], set[str]] = {}
+    for ioc_type, value, row_tags in found:
+        if isinstance(row_tags, list):
+            merged.setdefault((ioc_type, value), set()).update(str(t) for t in row_tags)
+    return {key: sorted(values) for key, values in merged.items()}
 
 
 @router.get("/session/{session_id}", response_model=list[IndicatorOfCompromiseResponse])
@@ -133,12 +176,15 @@ async def list_session_iocs(
             select(IndicatorOfCompromise)
             .where(IndicatorOfCompromise.session_id == session_id)
             .order_by(IndicatorOfCompromise.ioc_type, IndicatorOfCompromise.value)
+            # A session carrying several analysed payloads can hold a few
+            # thousand rows; nobody reads past the first couple of thousand.
+            .limit(MAX_SESSION_INDICATORS)
         )
     ).scalars().all()
     return [IndicatorOfCompromiseResponse.model_validate(r) for r in rows]
 
 
-async def feed_auth(request: Request) -> dict:
+async def feed_auth(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
     """A user session, or the static feed token.
 
     A firewall or SIEM pulling the blocklist on a schedule cannot hold a
@@ -146,8 +192,6 @@ async def feed_auth(request: Request) -> dict:
     the X-Feed-Token header for this endpoint only.
     """
     import secrets
-
-    from app.core.config import get_settings
 
     token = get_settings().IOC_FEED_TOKEN
     supplied = request.headers.get("X-Feed-Token", "")
@@ -165,37 +209,91 @@ async def feed_auth(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from fastapi.security import HTTPAuthorizationCredentials
 
-    return await get_current_user(HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials))
+    # The database session has to be handed over explicitly. Called as a
+    # plain function, get_current_user's own ``db=Depends(get_db)`` default
+    # is never resolved, so a bearer-token request reached the user lookup
+    # with a placeholder for a session and failed with a 500, unless that
+    # user's state happened to be cached by an earlier request.
+    return await get_current_user(
+        HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials), db
+    )
 
 
-def _feed_exclusions(ioc_type: str, exclude_scanners: bool):
-    """Rows a blocklist must not contain: research scanners, and (for ip)
-    addresses that are private, loopback or tailnet — a consumer that blocks
-    its own LAN because an analyst tested from it is worse than no feed."""
+def _scanner_exclusion():
+    """Leave out indicators that came from a known research scanner's session."""
     from sqlalchemy import exists
 
-    from app.models import HoneypotSession
+    return ~exists().where(
+        HoneypotSession.id == IndicatorOfCompromise.session_id,
+        HoneypotSession.scanner_operator.isnot(None),
+    )
 
-    conditions = []
-    if exclude_scanners:
-        conditions.append(
-            ~exists().where(
-                HoneypotSession.id == IndicatorOfCompromise.session_id,
-                HoneypotSession.scanner_operator.isnot(None),
-            )
-        )
-    if ioc_type == "ip":
-        for prefix in ("10.", "127.", "192.168.", "100.", "169.254.", "0.", "::1", "fe80:", "fd"):
-            conditions.append(~IndicatorOfCompromise.value.like(f"{prefix}%"))
-        for i in range(16, 32):
-            conditions.append(~IndicatorOfCompromise.value.like(f"172.{i}.%"))
-    return conditions
+
+def _tagged(db: AsyncSession, tag: str):
+    """Rows whose ``tags`` list contains ``tag``."""
+    if db.get_bind().dialect.name == "postgresql":
+        # JSONB containment; served by the GIN index on the column.
+        return IndicatorOfCompromise.tags.contains([tag])
+    # SQLite (the test database) stores the list as JSON text.
+    return cast(IndicatorOfCompromise.tags, String).like(f'%"{tag}"%')
+
+
+@lru_cache(maxsize=4)
+def _allowlist(spec: str) -> tuple:
+    """IOC_FEED_ALLOWLIST as networks. Entries that do not parse are skipped."""
+    networks = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def blockable_address(value: str, allowlist: tuple = ()) -> Optional[str]:
+    """``value`` in canonical form if it belongs in an address blocklist.
+
+    It must parse as an IP address and be a global unicast one: anything
+    private, loopback, link-local, carrier-grade NAT (which is where a
+    tailnet lives), reserved, documentation or multicast is refused, and so
+    is anything inside the operator's allowlist. A consumer that blocks its
+    own LAN because an analyst tested from it is worse than no feed, and one
+    that is handed a network or a hostname by a stored value is worse still,
+    so nothing reaches the output that did not pass through ``ipaddress``.
+    """
+    try:
+        address = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return None
+    if not address.is_global or address.is_multicast:
+        return None
+    if any(address.version == net.version and address in net for net in allowlist):
+        return None
+    return str(address)
+
+
+def _feed_line(value: str) -> Optional[str]:
+    """A non-address indicator as one feed line, or None if it cannot be one.
+
+    The file is one value per line with ``#`` comments. A stored value that
+    contains a line break would put a second, attacker-chosen entry into
+    whatever reads it.
+    """
+    value = str(value).strip()
+    if not value or value.startswith("#"):
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        return None
+    return value
 
 
 @router.get("/feed", response_class=PlainTextResponse)
 async def ioc_feed(
     ioc_type: str = Query("ip", description="Indicator type to emit"),
-    min_sessions: int = Query(2, ge=1),
+    min_sessions: int = Query(2, ge=1, le=1_000_000),
     exclude_scanners: bool = Query(True, description="Leave out addresses of known research scanners"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(feed_auth),
@@ -209,6 +307,13 @@ async def ioc_feed(
     ``min_sessions`` defaults to 2 deliberately. An address seen once may be a
     passing scan or a shared exit node, and a feed that blocks on a single
     observation will eventually block something it should not.
+
+    The address feed (``ioc_type=ip``, the default) lists only addresses that
+    themselves connected to a decoy: rows tagged ``attacker_ip``. An address
+    that an attacker merely typed, or that a payload mentions, is not
+    something this system saw attack anyone, and typing a victim's address
+    into a honeypot must not be a way to have it blocked. Those are stored
+    as ``referenced_ip`` and are never exported here.
     """
     if ioc_type not in KNOWN_TYPES:
         raise HTTPException(
@@ -216,6 +321,19 @@ async def ioc_feed(
             detail=f"Unknown indicator type {ioc_type!r}. "
                    f"Expected one of: {', '.join(sorted(KNOWN_TYPES))}",
         )
+    if ioc_type == "referenced_ip":
+        raise HTTPException(
+            status_code=400,
+            detail="Addresses that were only referenced in captured text are "
+                   "not exported as a blocklist. Use ioc_type=ip for addresses "
+                   "that connected to a decoy.",
+        )
+
+    conditions = [IndicatorOfCompromise.ioc_type == ioc_type]
+    if ioc_type == "ip":
+        conditions.append(_tagged(db, ATTACKER_IP_TAG))
+    if exclude_scanners:
+        conditions.append(_scanner_exclusion())
 
     rows = (
         await db.execute(
@@ -223,8 +341,7 @@ async def ioc_feed(
                 IndicatorOfCompromise.value,
                 func.count(func.distinct(IndicatorOfCompromise.session_id)).label("n"),
             )
-            .where(IndicatorOfCompromise.ioc_type == ioc_type)
-            .where(*_feed_exclusions(ioc_type, exclude_scanners))
+            .where(*conditions)
             .group_by(IndicatorOfCompromise.value)
             .having(
                 func.count(func.distinct(IndicatorOfCompromise.session_id))
@@ -235,15 +352,31 @@ async def ioc_feed(
         )
     ).all()
 
+    # Every line is rebuilt from a validated value; nothing is copied from
+    # the table to the output as stored.
+    lines: list[str] = []
+    seen: set[str] = set()
+    allowlist = _allowlist(get_settings().IOC_FEED_ALLOWLIST)
+    for row in rows:
+        if ioc_type == "ip":
+            line = blockable_address(row.value, allowlist)
+        else:
+            line = _feed_line(row.value)
+        if line is None or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+
     now = datetime.now(timezone.utc)
     header = (
         f"# HoneySentinel indicator feed\n"
-        f"# type={ioc_type} min_sessions={min_sessions} count={len(rows)}\n"
+        f"# type={ioc_type} min_sessions={min_sessions} count={len(lines)}\n"
         f"# generated={now.isoformat()}\n"
     )
-    body = header + "".join(f"{r.value}\n" for r in rows)
+    body = header + "".join(f"{line}\n" for line in lines)
     filename = f"honeysentinel-{ioc_type}-{now.date().isoformat()}.txt"
     return PlainTextResponse(
         body,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+

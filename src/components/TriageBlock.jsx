@@ -1,6 +1,7 @@
 import { Gauge, Loader2 } from 'lucide-react'
 import { CATEGORY_COLOR, CATEGORY_LABEL, CATEGORY_ORDER } from '../lib/severity'
-import { clean } from '../lib/text'
+import { clean, cleanLine } from '../lib/text'
+import Timestamp from './Timestamp'
 
 /*
  * Decision-model triage.
@@ -15,6 +16,14 @@ import { clean } from '../lib/text'
 const SEVERITY_LEVEL = ['Nothing harmful', 'Information gathering', 'Attempted compromise', 'High impact']
 
 const OPERATOR_LABEL = { automated: 'Automated', human: 'Human at the keyboard' }
+
+const STATUS_LABEL = {
+  pending: 'waiting',
+  running: 'reading now',
+  skipped: 'not triaged',
+  failed: 'did not complete',
+  complete: 'complete',
+}
 
 const STATUS_TEXT = {
   pending: 'Waiting for the decision model. It reads sessions in order, a few seconds each.',
@@ -60,10 +69,10 @@ export default function TriageBlock({ session }) {
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="eyebrow flex items-center gap-1.5">
           <Gauge className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
-          Triage
+          Decision-model triage
         </h3>
         <span className="text-[12px] text-paper-3">
-          {status === 'complete' && triage?.model ? clean(triage.model) : status}
+          {STATUS_LABEL[status] || status}
         </span>
       </div>
 
@@ -115,10 +124,14 @@ export default function TriageBlock({ session }) {
                 {!triage.route && ' Triage ran after the session was already queued or analysed, so nothing was changed.'}
               </p>
             )}
-            <p className="readout text-[11px] text-paper-3">
-              {triage.triaged_at && `triaged ${new Date(triage.triaged_at).toLocaleString()}`}
-              {typeof triage.ms === 'number' && ` · ${(triage.ms / 1000).toFixed(1)} s`}
-              {triage.reused_from_session && ` · same transcript as session ${triage.reused_from_session}`}
+            <p className="text-[12px] leading-relaxed text-paper-3">
+              {triage.model
+                ? <>Read by the decision model <span className="readout text-paper-2">{cleanLine(triage.model)}</span></>
+                : 'Read by the decision model'}
+              {triage.triaged_at && <>, <Timestamp value={triage.triaged_at} /></>}
+              {typeof triage.ms === 'number' && `, in ${(triage.ms / 1000).toFixed(1)} s`}
+              {triage.reused_from_session && `; same transcript as session ${triage.reused_from_session}`}
+              .
             </p>
           </>
         ) : status === 'failed' ? (

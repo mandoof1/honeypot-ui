@@ -30,7 +30,6 @@ import argparse
 import json
 import logging
 import os
-import pickle
 import sys
 import time
 from datetime import datetime, timezone
@@ -51,6 +50,7 @@ from sklearn.preprocessing import LabelEncoder
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.ai.classifier import ATTACK_LABELS, FeatureExtractor  # noqa: E402
+from app.ai.provenance import dump_pickle, git_revision  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from ml import cicids  # noqa: E402
 
@@ -309,6 +309,9 @@ def main() -> int:
     model.fit(X_train, y_train)
 
     metrics = evaluate(model, encoder, X_test, y_test)
+    # Which code produced these numbers, and how it was invoked.
+    metrics["git_revision"] = git_revision()
+    metrics["arguments"] = sys.argv[1:]
     metrics["training"] = {
         "source": "cicids2017",
         "n_train": int(len(X_train)),
@@ -332,18 +335,20 @@ def main() -> int:
         for i in np.argsort(model.feature_importances_)[::-1][:10]
     ]
 
-    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
-    with open(model_path, "wb") as fh:
-        pickle.dump(
-            {
-                "model": model,
-                "label_encoder": encoder,
-                "source": "cicids2017",
-                # The API refuses an artefact built for another layout.
-                "features": list(cicids.FEATURES),
-            },
-            fh,
-        )
+    # Signed with this process's SECRET_KEY. Trained somewhere that does not
+    # have the deployment's key (deploy/server/train-model.sh trains with no
+    # secrets at all), the file must be signed again where it is used:
+    # `python -m app.ai.provenance sign <file>`. The API loads nothing else.
+    dump_pickle(
+        model_path,
+        {
+            "model": model,
+            "label_encoder": encoder,
+            "source": "cicids2017",
+            # The API refuses an artefact built for another layout.
+            "features": list(cicids.FEATURES),
+        },
+    )
     with open(metrics_path, "w") as fh:
         json.dump(metrics, fh, indent=2)
 

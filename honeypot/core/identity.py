@@ -23,6 +23,8 @@ the seed is what is persisted, so the identity can be regenerated exactly.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -307,9 +309,9 @@ class _IdentityStore:
     def _create(self, directory: str) -> HostIdentity:
         env_seed = os.environ.get("HONEYPOT_IDENTITY_SEED")
         try:
-            seed = int(env_seed) if env_seed else random.SystemRandom().randrange(1, 2**31)
+            seed = int(env_seed) if env_seed else random.SystemRandom().randrange(2**62, 2**63)
         except ValueError:
-            seed = random.SystemRandom().randrange(1, 2**31)
+            seed = random.SystemRandom().randrange(2**62, 2**63)
         identity = _derive(seed)
         self._persist(directory, identity)
         logger.info(
@@ -334,6 +336,65 @@ class _IdentityStore:
 
 
 _store = _IdentityStore()
+
+
+SECRET_FILE = "decoy-secret"
+_secret_lock = threading.Lock()
+_secret_cache: dict[str, bytes] = {}
+
+
+def decoy_secret() -> bytes:
+    """The key every planted secret and canary token is derived from.
+
+    Not the identity seed. The seed decides public facts (hostname, kernel,
+    file sizes), anyone can compute those facts for a candidate seed, and the
+    seeds issued before this existed were 31 bits, so a seed can be recovered
+    offline from one fact the decoy shows. A planted password derived from it
+    could then be computed by someone who had never read the file it sits in,
+    which would make ``honeytoken_used`` prove nothing. This secret is 256
+    random bits, is never shown, and values derived from it by HMAC say
+    nothing about it.
+
+    ``HONEYPOT_DECOY_SECRET`` supplies it when several engines must plant the
+    same secrets (two engines describing one host). Otherwise it is created
+    once beside the host identity and kept across restarts.
+    """
+    supplied = os.environ.get("HONEYPOT_DECOY_SECRET", "")
+    if len(supplied) >= 32:
+        return hashlib.sha256(supplied.encode("utf-8", "replace")).digest()
+    if supplied:
+        logger.warning("HONEYPOT_DECOY_SECRET is shorter than 32 characters and was ignored")
+    directory = _store._directory()
+    with _secret_lock:
+        cached = _secret_cache.get(directory)
+        if cached is not None:
+            return cached
+        path = os.path.join(directory, SECRET_FILE)
+        secret = b""
+        try:
+            with open(path, "r", encoding="ascii") as handle:
+                secret = bytes.fromhex(handle.read().strip())
+        except (OSError, ValueError):
+            secret = b""
+        if len(secret) < 32:
+            secret = os.urandom(32)
+            try:
+                os.makedirs(directory, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="ascii") as handle:
+                    handle.write(secret.hex())
+                os.replace(tmp, path)
+            except OSError as exc:
+                # Still usable for this run; planted values change at the next
+                # start, which is worse than keeping them but not unsafe.
+                logger.warning("Could not store the decoy secret (%s); it will not survive a restart", exc)
+        _secret_cache[directory] = secret
+        return secret
+
+
+def decoy_digest(label: str) -> bytes:
+    """32 bytes, stable for this deployment and this label, revealing neither."""
+    return hmac.new(decoy_secret(), label.encode("utf-8"), hashlib.sha256).digest()
 
 
 def get_identity() -> HostIdentity:

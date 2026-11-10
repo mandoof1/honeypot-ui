@@ -37,6 +37,8 @@ class SessionRecord:
     authentication_attempts: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     keystroke_total: int = 0
+    #: How many of network_events are of a type the backend acts on.
+    significant_events: int = 0
     threat_profile: Optional[str] = None
     anomaly_score: float = 0.0
     #: Socket-level traffic statistics; the classifier's input.
@@ -44,6 +46,17 @@ class SessionRecord:
     #: Items dropped at the in-memory caps, by kind, so the record says it is
     #: partial rather than looking complete.
     truncated: dict[str, int] = field(default_factory=dict)
+    #: What identifies the client software rather than the person: the SSH
+    #: identification string and HASSH, the Telnet option sequence, and (set
+    #: by the web decoys) JA3/JA4 and the HTTP header order. Emulators fill
+    #: this in as they learn each value; see ``FINGERPRINT_KEYS``.
+    fingerprints: dict[str, Any] = field(default_factory=dict)
+    #: Uploads refused at a cap. Their bytes are not kept, but their digest
+    #: and size are, so the record still says what was sent.
+    dropped_uploads: list[dict] = field(default_factory=list)
+    #: Characters of command text and output held so far, against
+    #: ``MAX_TRANSCRIPT_CHARS``.
+    transcript_chars: int = 0
 
     @property
     def duration(self) -> float:
@@ -77,10 +90,34 @@ class SessionRecord:
     MAX_COMMANDS = 2000
     MAX_NETWORK_EVENTS = 500
     MAX_AUTH_ATTEMPTS = 200
+    #: Command text plus stored output one session may hold. The count cap
+    #: alone did not bound memory: a command line may be 256 KiB, so two
+    #: thousand of them was half a gigabyte in one session, and the output of
+    #: each was kept whole however long it was. Past this budget a command is
+    #: kept only as its first ``MIN_COMMAND_CHARS`` characters and counted.
+    MAX_TRANSCRIPT_CHARS = 2 * 1024 * 1024
+    MIN_COMMAND_CHARS = 512
+    #: Longest username or password kept from one login attempt.
+    MAX_CREDENTIAL_CHARS = 256
+    #: Refused uploads remembered as digest and size.
+    MAX_DROPPED_UPLOADS = 64
+
+    #: Event types forwarded to the backend. Everything else in
+    #: ``network_events`` is per-request detail that only feeds ``packets``.
+    BACKEND_EVENT_TYPES = frozenset({
+        "file_download", "payload_execution", "http_diversion",
+        "ai_canary_triggered", "honeytoken_used", "connection_refused",
+        "direct_tcpip",
+    })
+    #: Keys ``fingerprints`` may carry to the backend.
+    FINGERPRINT_KEYS = (
+        "ssh_client_version", "hassh", "hassh_algorithms", "hassh_server",
+        "ja3", "ja3_string", "ja4", "telnet_options", "http_header_order",
+    )
 
     def to_backend_payload(self, node_id: int = 1) -> dict[str, Any]:
         command_strings = [c["command"] for c in self.commands]
-        return {
+        payload = {
             # The engine's own id, so a delivery retried after a lost
             # response is recognised rather than stored twice.
             "session_id": self.session_id,
@@ -106,6 +143,9 @@ class SessionRecord:
                     "output": (c.get("output") or "")[: self.MAX_OUTPUT_CHARS],
                     "exit_code": c.get("exit_code", 0),
                     "timestamp": c["timestamp"],
+                    # HTTP entries carry the request's headers, already
+                    # bounded where they were recorded (emulators/http.py).
+                    **({"headers": c["headers"]} if c.get("headers") else {}),
                 }
                 for c in self.commands[: self.MAX_TRANSCRIPT_ENTRIES]
             ],
@@ -132,7 +172,7 @@ class SessionRecord:
                 {k: v for k, v in e.items() if k != "timestamp"} | {"at": e["timestamp"]}
                 for e in [
                     e for e in self.network_events
-                    if e.get("event_type") in ("file_download", "payload_execution", "http_diversion")
+                    if e.get("event_type") in self.BACKEND_EVENT_TYPES
                 ][: self.MAX_EVENTS]
             ],
             "packets": [
@@ -144,9 +184,51 @@ class SessionRecord:
             ],
             "truncated": dict(self.truncated),
         }
+        # Optional keys: present only when the session has something to say,
+        # so a backend that predates them sees the payload it always did.
+        fingerprints = {
+            key: self.fingerprints[key]
+            for key in self.FINGERPRINT_KEYS
+            if self.fingerprints.get(key) not in (None, "", [])
+        }
+        if fingerprints:
+            payload["fingerprints"] = fingerprints
+        if self.threat_profile:
+            payload["threat_profile"] = self.threat_profile
+        return payload
 
-    def _count_drop(self, kind: str) -> None:
-        self.truncated[kind] = self.truncated.get(kind, 0) + 1
+    def _count_drop(self, kind: str, amount: int = 1) -> None:
+        self.truncated[kind] = self.truncated.get(kind, 0) + amount
+
+    def _budget(self, text: str, floor: int = 0) -> str:
+        """Charge ``text`` to the transcript budget, cutting it if it is over.
+
+        ``floor`` is how much of the text is kept even with the budget
+        spent: the first few hundred characters of a command still say what
+        it was. The count cap on commands bounds what the floor can add up to.
+        """
+        remaining = max(0, self.MAX_TRANSCRIPT_CHARS - self.transcript_chars)
+        keep = max(floor, remaining)
+        if len(text) > keep:
+            text = text[:keep]
+            self._count_drop("transcript")
+        self.transcript_chars += len(text)
+        return text
+
+    def store_output(self, entry: dict, output: str, exit_code: int = 0) -> None:
+        """Attach what a recorded command printed, bounded at record time.
+
+        The 4096-character cap used to apply only when the payload was built,
+        so the whole output of every command stayed in memory until the
+        connection closed.
+        """
+        output = output or ""
+        if len(output) > self.MAX_OUTPUT_CHARS:
+            output = output[: self.MAX_OUTPUT_CHARS]
+            self._count_drop("outputs")
+        self.transcript_chars -= len(entry.get("output") or "")
+        entry["output"] = self._budget(output)
+        entry["exit_code"] = exit_code
 
     def _uploads_payload(self) -> list[dict[str, Any]]:
         """Captured files, with their bytes where the budget allows.
@@ -161,7 +243,7 @@ class SessionRecord:
         budget = config.upload_forward_session_bytes
         forwarded: set[str] = set()
         uploads = []
-        for f in self.files_uploaded:
+        for f in self.files_uploaded + self.dropped_uploads:
             entry = {
                 "filename": f["filename"],
                 "sha256": f["sha256"],
@@ -173,6 +255,11 @@ class SessionRecord:
                 ).isoformat(),
                 "methods": f.get("methods", []),
             }
+            if f.get("dropped"):
+                # Refused at a cap: the digest and size are all there is.
+                entry["dropped"] = f["dropped"]
+                uploads.append(entry)
+                continue
             sha = f["sha256"]
             if (
                 sha not in forwarded
@@ -206,6 +293,9 @@ class SessionRecord:
             "metadata": self.metadata,
             "threat_profile": self.threat_profile,
             "anomaly_score": self.anomaly_score,
+            "fingerprints": self.fingerprints,
+            "dropped_uploads": self.dropped_uploads,
+            "truncated": self.truncated,
         }
 
 
@@ -254,6 +344,14 @@ class SessionManager:
     SPOOL_RETRY_INTERVAL = 30
     SPOOL_RETRY_MAX_INTERVAL = 300
     SPOOL_BATCH = 20
+    #: Failed deliveries, each confirmed by the backend answering something
+    #: else afterwards, before a queued payload is moved to failed/.
+    SPOOL_MAX_ATTEMPTS = 5
+    #: Failures in a row that end one replay pass early.
+    SPOOL_MAX_CONSECUTIVE_FAILURES = 3
+    #: How long shutdown waits for a session still being written to the
+    #: spool, after the delivery drain has run out.
+    WRITE_AHEAD_GRACE = 5.0
 
     def __init__(self):
         self._sessions: dict[str, SessionRecord] = {}
@@ -273,7 +371,18 @@ class SessionManager:
         #: logs once rather than every tick.
         self._heartbeat_failures = 0
         self._register_failures = 0
-        self.ingest_stats = {"sent": 0, "spooled": 0, "replayed": 0, "rejected": 0}
+        self.ingest_stats = {
+            "sent": 0, "spooled": 0, "replayed": 0, "rejected": 0, "dead_lettered": 0,
+        }
+        #: Write-ahead tasks not yet on disk; shutdown waits for these.
+        self._spooling: set[asyncio.Future] = set()
+        #: Spool entries a first delivery attempt is still working on, which
+        #: the retry loop must leave alone.
+        self._in_flight: set[str] = set()
+        #: Spool entries the backend failed, by when; see _settle_suspects.
+        self._suspects: dict[str, float] = {}
+        #: Monotonic time of the backend's last good answer to anything.
+        self._backend_ok_at = 0.0
         Path(config.session_capture_dir).mkdir(parents=True, exist_ok=True)
         Path(config.file_capture_dir).mkdir(parents=True, exist_ok=True)
 
@@ -390,20 +499,36 @@ class SessionManager:
 
     async def record_command(
         self, session_id: str, command: str, output: str = "", exit_code: int = 0
-    ):
+    ) -> Optional[dict]:
+        """Record one command; returns its entry, or None if it was dropped.
+
+        A caller that records before it emulates (so a command is never lost
+        to an error in the emulation) passes no output here and hands the
+        returned entry to :meth:`set_command_result` afterwards.
+        """
         session = await self.get_session(session_id)
-        if session:
-            if len(session.commands) >= session.MAX_COMMANDS:
-                session._count_drop("commands")
-                return
-            session.commands.append(
-                {
-                    "timestamp": time.time(),
-                    "command": command,
-                    "output": output,
-                    "exit_code": exit_code,
-                }
-            )
+        if not session:
+            return None
+        if len(session.commands) >= session.MAX_COMMANDS:
+            session._count_drop("commands")
+            return None
+        entry = {
+            "timestamp": time.time(),
+            "command": session._budget(command, floor=session.MIN_COMMAND_CHARS),
+            "output": "",
+            "exit_code": exit_code,
+        }
+        session.commands.append(entry)
+        session.store_output(entry, output, exit_code)
+        return entry
+
+    async def set_command_result(
+        self, session_id: str, entry: Optional[dict], output: str, exit_code: int = 0
+    ) -> None:
+        """Fill in what a command recorded earlier turned out to print."""
+        session = await self.get_session(session_id)
+        if session and entry is not None:
+            session.store_output(entry, output, exit_code)
 
     async def record_file_upload(
         self,
@@ -428,14 +553,18 @@ class SessionManager:
         session = await self.get_session(session_id)
         if not session or not content:
             return None
+        refusal = None
         if len(content) > self.MAX_UPLOAD_BYTES:
-            logger.warning(
-                f"Discarding {len(content)} byte upload from session "
-                f"{session_id}: exceeds {self.MAX_UPLOAD_BYTES} byte cap"
+            refusal = "oversize"
+        elif len(session.files_uploaded) >= self.MAX_UPLOADS_PER_SESSION:
+            refusal = "over_count"
+        if refusal:
+            # Refused, but not silently: these used to leave one log line and
+            # no trace in the session. The digest and size are kept, and the
+            # record says it is partial.
+            await self._note_dropped_upload(
+                session, filename, content, remote_path, source, methods, refusal
             )
-            return None
-        if len(session.files_uploaded) >= self.MAX_UPLOADS_PER_SESSION:
-            logger.warning(f"Session {session_id} exceeded its upload count cap")
             return None
 
         # Hashing and writing up to 16 MiB blocks every other connection if
@@ -455,6 +584,32 @@ class SessionManager:
             }
         )
         return file_hash
+
+    async def _note_dropped_upload(
+        self, session: SessionRecord, filename: str, content: bytes,
+        remote_path: str, source: str, methods: Optional[list[str]], reason: str,
+    ) -> None:
+        session._count_drop(f"uploads_{reason}")
+        logger.warning(
+            "Upload of %d bytes from session %s not stored (%s)",
+            len(content), session.session_id, reason,
+        )
+        if len(session.dropped_uploads) >= session.MAX_DROPPED_UPLOADS:
+            return
+        file_hash = await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
+        session.dropped_uploads.append(
+            {
+                "timestamp": time.time(),
+                "filename": (filename or file_hash)[:255],
+                "remote_path": (remote_path or filename or "")[:500],
+                "size": len(content),
+                "sha256": file_hash,
+                "stored_path": None,
+                "source": source,
+                "methods": list(methods or [])[:8],
+                "dropped": reason,
+            }
+        )
 
     async def record_file_download(
         self, session_id: str, filename: str, content: bytes, remote_path: str = ""
@@ -477,7 +632,18 @@ class SessionManager:
     ):
         session = await self.get_session(session_id)
         if session:
-            if len(session.network_events) >= session.MAX_NETWORK_EVENTS:
+            # The events the backend acts on (a canary, a honeytoken, a
+            # download, a diversion) have their own allowance. Under one
+            # shared cap a web scan's five hundred request events filled it,
+            # and the canary request that followed was dropped: the alert
+            # the whole mechanism exists for never left the engine.
+            significant = event_type in session.BACKEND_EVENT_TYPES
+            if significant:
+                if session.significant_events >= session.MAX_EVENTS:
+                    session._count_drop("events")
+                    return
+                session.significant_events += 1
+            elif len(session.network_events) - session.significant_events >= session.MAX_NETWORK_EVENTS:
                 session._count_drop("events")
                 return
             session.network_events.append(
@@ -505,15 +671,45 @@ class SessionManager:
         if session:
             if len(session.authentication_attempts) >= session.MAX_AUTH_ATTEMPTS:
                 session._count_drop("credentials")
+                # Still checked: a planted login presented as attempt 201 is
+                # as much a finding as one presented first.
+                await self._check_honeytoken(session, username or "", password or "")
                 return
+            # Attacker-chosen strings, bounded where they enter: an SSH
+            # password may be as long as a packet.
+            limit = session.MAX_CREDENTIAL_CHARS
             session.authentication_attempts.append(
                 {
                     "timestamp": time.time(),
-                    "username": username,
-                    "password": password,
+                    "username": (username or "")[:limit],
+                    "password": (password or "")[:limit],
                     "success": success,
                 }
             )
+            await self._check_honeytoken(session, username or "", password or "")
+
+    async def _check_honeytoken(self, session: SessionRecord, username: str, password: str) -> None:
+        """Raise ``honeytoken_used`` when a login presents a planted secret.
+
+        Here rather than in any one emulator: SSH, Telnet, FTP and the web
+        login forms all record their attempts through this method, so all of
+        them are covered. Once per token per session — a brute-forcer
+        replaying the same planted password is one finding, not two hundred.
+        """
+        try:
+            from honeypot.core import honeytokens
+
+            hit = honeytokens.match_credential(username, password)
+        except Exception as exc:  # pragma: no cover - never fail a login record
+            logger.debug("Honeytoken check failed: %s", exc)
+            return
+        if hit is None:
+            return
+        seen = session.metadata.setdefault("honeytokens_seen", [])
+        if hit["token_id"] in seen:
+            return
+        seen.append(hit["token_id"])
+        await self.record_network_event(session.session_id, "honeytoken_used", hit)
 
     async def set_threat_profile(self, session_id: str, profile: str):
         session = await self.get_session(session_id)
@@ -537,42 +733,101 @@ class SessionManager:
         logger.info(f"Session persisted: {capture_file}")
 
     async def _send_to_backend(self, session: SessionRecord):
-        """Deliver one session, or queue it for the retry loop.
+        """Deliver one session, or leave it queued for the retry loop.
 
         Delivery used to be a single attempt: anything but an immediate 200
-        dropped the capture. Now a retryable failure (backend down, timing
-        out, 5xx, 429) spools the payload to disk and the retry loop takes it
-        from there; only a definite rejection (another 4xx) gives up, and
-        even that keeps a copy under failed/ for inspection.
+        dropped the capture. Then a retryable failure spooled the payload —
+        but only *after* the POST had failed, so an engine stopped or killed
+        with the POST in flight lost the session all the same.
+
+        Now the payload is written to the spool first and removed when the
+        backend confirms it. A retryable failure (backend down, timing out,
+        5xx, 429) simply leaves it there for the retry loop; a definite
+        rejection (another 4xx) moves it to failed/ for inspection.
         """
+        spooling = asyncio.ensure_future(self._write_ahead(session))
+        self._spooling.add(spooling)
+        spooling.add_done_callback(self._spooling.discard)
+        # Shielded: shutdown cancels the delivery, never the write that makes
+        # the delivery repeatable.
+        payload, path = await asyncio.shield(spooling)
+        if payload is None:
+            return
+        await self._deliver(session.session_id, payload, path)
+
+    async def _write_ahead(self, session: SessionRecord) -> tuple[Optional[dict], Optional[str]]:
+        """Build a session's payload and put it on disk before any POST."""
         try:
             # Reading uploads back and base64-encoding up to 24 MiB is CPU
             # work; it runs off the loop.
             payload = await asyncio.to_thread(session.to_backend_payload, self._node_id)
         except Exception as exc:
             logger.error("Could not build payload for session %s: %s", session.session_id, exc)
-            return
-        async with self._semaphore():
-            outcome, detail = await self._post_session(payload)
-        if outcome == "ok":
-            self.ingest_stats["sent"] += 1
-            logger.info(
-                f"Session {session.session_id} ingested to backend. Classification: {detail}"
-            )
-        elif outcome == "retry":
-            self.ingest_stats["spooled"] += 1
-            logger.warning(
-                "Backend unavailable (%s); session %s spooled for retry",
-                detail, session.session_id,
-            )
-            await asyncio.to_thread(self.spool.put, session.session_id, payload)
-        else:
-            self.ingest_stats["rejected"] += 1
-            logger.error("Backend rejected session %s: %s", session.session_id, detail)
-            await asyncio.to_thread(self.spool.put_failed, session.session_id, payload, detail)
+            return None, None
+        try:
+            path = await asyncio.to_thread(self.spool.put, session.session_id, payload)
+        except Exception as exc:
+            logger.error("Could not spool session %s: %s", session.session_id, exc)
+            path = None
+        if path is not None:
+            # Claimed before the retry loop can see it, so the two do not
+            # both send it.
+            self._in_flight.add(path)
+        return payload, path
+
+    async def _deliver(self, session_id: str, payload: dict, path: Optional[str]) -> None:
+        """First delivery attempt for a payload already in the spool."""
+        try:
+            async with self._semaphore():
+                outcome, detail = await self._post_session(payload)
+            if outcome == "ok":
+                self.ingest_stats["sent"] += 1
+                logger.info(
+                    f"Session {session_id} ingested to backend. Classification: {detail}"
+                )
+                if path is not None:
+                    await asyncio.to_thread(self.spool.remove, path)
+            elif outcome in ("retry", "unreachable"):
+                if path is None:
+                    logger.error(
+                        "Backend unavailable (%s) and session %s could not be "
+                        "spooled; it is lost", detail, session_id,
+                    )
+                    return
+                self.ingest_stats["spooled"] += 1
+                logger.warning(
+                    "Backend unavailable (%s); session %s stays spooled for retry",
+                    detail, session_id,
+                )
+                if outcome == "retry":
+                    self._suspects[path] = time.monotonic()
+            else:
+                self.ingest_stats["rejected"] += 1
+                logger.error("Backend rejected session %s: %s", session_id, detail)
+                if path is not None:
+                    await asyncio.to_thread(self.spool.dead_letter, path, detail)
+                else:
+                    await asyncio.to_thread(self.spool.put_failed, session_id, payload, detail)
+        finally:
+            if path is not None:
+                self._in_flight.discard(path)
 
     async def _post_session(self, payload: dict) -> tuple[str, str]:
-        """One POST. Returns ("ok"|"retry"|"drop", detail)."""
+        """One POST. Returns (outcome, detail).
+
+        ``ok`` and ``drop`` are final. ``unreachable`` means no backend
+        answered at all, so nothing was learned about this payload;
+        ``retry`` means a backend was there and failed it (5xx, 429, or it
+        stopped answering mid-request), which may be the payload's fault.
+        """
+        # Until the backend has told this engine its node id, the id is a
+        # placeholder, and with a token bound to this engine's node the
+        # backend answers a session posted under it with 403 or 404. That is
+        # not the session's fault, so it must wait, not be dead-lettered.
+        if not self._registered:
+            await self.register_node()
+            if not self._registered:
+                return "unreachable", "not registered with the backend yet"
         try:
             response = await self._http().post(
                 f"{config.backend_api_url}/sessions/ingest-internal",
@@ -580,12 +835,15 @@ class SessionManager:
                 params={"node_id": self._node_id},
                 timeout=self.INGEST_TIMEOUT,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            return "unreachable", f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             return "retry", f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         except Exception as exc:
             return "retry", f"{type(exc).__name__}: {exc}"
 
         if response.status_code == 200:
+            self._note_backend_ok()
             try:
                 body = response.json()
             except ValueError:
@@ -595,46 +853,109 @@ class SessionManager:
             return "ok", body.get("ai_classification", {}).get("category", "unknown")
         if response.status_code == 429 or response.status_code >= 500:
             return "retry", f"HTTP {response.status_code}"
+        if response.status_code in (401, 403, 404):
+            # The token or the node id was refused (a restarted backend that
+            # no longer knows the node, a token for another node). Register
+            # again and keep the session: refusing the engine says nothing
+            # about what the engine was carrying.
+            self._registered = False
+            return "unreachable", f"HTTP {response.status_code}: registration or token refused; will register again"
         return "drop", f"HTTP {response.status_code} - {response.text[:200]}"
+
+    def _note_backend_ok(self) -> None:
+        self._backend_ok_at = time.monotonic()
+
+    async def _settle_suspects(self) -> int:
+        """Charge an attempt to payloads the backend failed while healthy.
+
+        A 5xx or a timeout says either "the backend is in trouble" or "this
+        payload breaks it", and one failure cannot tell which. What can: the
+        backend answering something else correctly *afterwards*. Only then is
+        the failure counted against the payload, and after
+        ``SPOOL_MAX_ATTEMPTS`` of those it is moved to failed/ so the queue
+        behind it keeps moving. A backend that is simply down charges
+        nothing, however long the outage lasts.
+
+        Returns how many payloads were dead-lettered.
+        """
+        dead = 0
+        for path, failed_at in list(self._suspects.items()):
+            if self._backend_ok_at <= failed_at:
+                continue
+            self._suspects.pop(path, None)
+            renamed = await asyncio.to_thread(self.spool.note_attempt, path)
+            if renamed is None:
+                continue
+            attempts = Spool.attempts_of(renamed)
+            if attempts >= self.SPOOL_MAX_ATTEMPTS:
+                reason = f"backend failed it {attempts} times while answering other requests"
+                if await asyncio.to_thread(self.spool.dead_letter, renamed, reason):
+                    dead += 1
+                    self.ingest_stats["dead_lettered"] += 1
+                    logger.error(
+                        "Spooled session %s moved to failed/: %s",
+                        Spool.session_id_of(renamed), reason,
+                    )
+        return dead
 
     async def replay_spool(self, limit: Optional[int] = None) -> int:
         """Resend queued sessions, oldest first; the number delivered.
 
-        Stops at the first retryable failure: if the backend is still down,
-        every later entry would fail the same way.
+        A payload the backend fails is skipped, not waited behind: the pass
+        carries on with the rest, so one session the backend cannot digest
+        no longer blocks every session queued after it. The pass stops early
+        only when nothing is answering at all, or after a run of failures
+        long enough to say the backend is unwell.
         """
         delivered = 0
-        for path in self.spool.oldest(limit or self.SPOOL_BATCH):
-            payload = self.spool.load(path)
+        consecutive_failures = 0
+        paths = await asyncio.to_thread(self.spool.oldest, limit or self.SPOOL_BATCH)
+        for path in paths:
+            if path in self._in_flight:
+                continue
+            payload = await asyncio.to_thread(self.spool.load, path)
             if payload is None:
                 continue
             session_id = payload.get("session_id") or Spool.session_id_of(path)
             outcome, detail = await self._post_session(payload)
-            if outcome == "retry":
+            if outcome == "unreachable":
                 logger.warning("Spool replay paused: backend unavailable (%s)", detail)
                 break
-            self.spool.remove(path)
+            if outcome == "retry":
+                self._suspects[path] = time.monotonic()
+                consecutive_failures += 1
+                logger.warning("Spooled session %s not accepted (%s); trying the rest", session_id, detail)
+                if consecutive_failures >= self.SPOOL_MAX_CONSECUTIVE_FAILURES:
+                    logger.warning("Spool replay paused after %d failures in a row", consecutive_failures)
+                    break
+                continue
+            consecutive_failures = 0
+            self._suspects.pop(path, None)
             if outcome == "ok":
+                await asyncio.to_thread(self.spool.remove, path)
                 delivered += 1
                 self.ingest_stats["replayed"] += 1
             else:
                 self.ingest_stats["rejected"] += 1
                 logger.error("Backend rejected spooled session %s: %s", session_id, detail)
-                self.spool.put_failed(session_id, payload, detail)
+                await asyncio.to_thread(self.spool.dead_letter, path, detail)
+        await self._settle_suspects()
         if delivered:
-            logger.info("Replayed %d spooled session(s); %d still queued", delivered, self.spool.pending)
+            pending = await asyncio.to_thread(lambda: self.spool.pending)
+            logger.info("Replayed %d spooled session(s); %d still queued", delivered, pending)
         return delivered
 
     async def _spool_loop(self) -> None:
         interval = self.SPOOL_RETRY_INTERVAL
         while True:
             try:
-                if self.spool.pending:
-                    before = self.spool.pending
+                before = await asyncio.to_thread(lambda: self.spool.pending)
+                if before > len(self._in_flight):
                     await self.replay_spool()
                     # Anything still queued after a pass means the backend
                     # refused or vanished; back off, and reset once it drains.
-                    if self.spool.pending and self.spool.pending >= before:
+                    after = await asyncio.to_thread(lambda: self.spool.pending)
+                    if after > len(self._in_flight) and after >= before:
                         interval = min(interval * 2, self.SPOOL_RETRY_MAX_INTERVAL)
                     else:
                         interval = self.SPOOL_RETRY_INTERVAL
@@ -731,6 +1052,14 @@ class SessionManager:
         if self._heartbeat_failures:
             logger.info("Heartbeat restored after %d failure(s)", self._heartbeat_failures)
             self._heartbeat_failures = 0
+        # A good heartbeat is evidence the backend is healthy, which is what
+        # turns an earlier delivery failure into a mark against the payload.
+        self._note_backend_ok()
+        if self._suspects:
+            try:
+                await self._settle_suspects()
+            except Exception as exc:
+                logger.warning("Could not settle failed deliveries: %s", exc)
         try:
             data = response.json()
         except ValueError:
@@ -813,18 +1142,31 @@ class SessionManager:
         """Wait for in-flight backend ingests before shutting down.
 
         Bounded: Docker's stop grace period is finite, and a backend that is
-        down should not hold the engine's exit hostage. Anything still in
-        flight when time runs out has either been spooled or will be lost,
-        which the log says.
+        down should not hold the engine's exit hostage. A delivery still in
+        flight when time runs out is abandoned — the POST alone allows 15 s,
+        longer than this waits — but its payload is already in the spool, so
+        the next start sends it. The one thing that is waited for past the
+        timeout is a session that has not reached the spool yet.
         """
         pending = list(self._background)
         if not pending:
             return
         done, still = await asyncio.wait(pending, timeout=timeout)
-        if still:
-            logger.warning("%d ingest(s) still in flight at shutdown", len(still))
-            for task in still:
-                task.cancel()
+        if not still:
+            return
+        unspooled = [task for task in self._spooling if not task.done()]
+        if unspooled:
+            await asyncio.wait(unspooled, timeout=self.WRITE_AHEAD_GRACE)
+        lost = sum(1 for task in self._spooling if not task.done())
+        for task in still:
+            task.cancel()
+        await asyncio.gather(*still, return_exceptions=True)
+        logger.warning(
+            "%d delivery(ies) interrupted by shutdown; they stay in the spool "
+            "and are sent on the next start%s",
+            len(still) - lost,
+            f" ({lost} session(s) could not be spooled in time and are lost)" if lost else "",
+        )
 
 
 session_manager = SessionManager()

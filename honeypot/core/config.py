@@ -47,6 +47,11 @@ def _optional_int_env(name: str) -> Optional[int]:
         return None
 
 
+#: The ingest token the code ships with. Everyone who has read the
+#: repository knows it, so the engine refuses to start with it.
+DEFAULT_INGEST_TOKEN = "honeypot-ingest-token-change-in-production"
+
+
 class OperationalMode(str, Enum):
     ACTIVE_EMULATION = "active"
     PASSIVE_MONITORING = "passive"
@@ -151,6 +156,12 @@ class HoneypotConfig:
     #: accept time (security/rate_limiter.py), before any protocol work.
     max_connections_per_ip: int = _int_env("HONEYPOT_MAX_CONN_PER_IP", 5)
     max_connections: int = _int_env("HONEYPOT_MAX_CONNECTIONS", 500)
+    #: The same two per-address limits for the HTTP/HTTPS decoys. A browser
+    #: opens about six connections to load one page and keeps them alive,
+    #: and every tailnet or LAN visitor arrives from one bridge address, so
+    #: the shell-sized cap of 5 refused part of every page of the website.
+    http_max_connections_per_ip: int = _int_env("HONEYPOT_HTTP_MAX_CONN_PER_IP", 32)
+    http_rate_limit_per_minute: int = _int_env("HONEYPOT_HTTP_RATE_LIMIT", 600)
     #: Idle timeout in seconds for every protocol. Unset, each emulator keeps
     #: its own default (SSH 300, FTP 120, HTTP 60).
     connection_timeout: Optional[int] = _optional_int_env("HONEYPOT_CONN_TIMEOUT")
@@ -184,16 +195,44 @@ class HoneypotConfig:
         "HONEYPOT_ANTI_FINGERPRINT", "true"
     ).lower() == "true"
     banner_rotation_interval: int = _int_env("HONEYPOT_BANNER_ROTATION", 3600)
-    response_delay_min: float = _float_env("HONEYPOT_RESPONSE_DELAY_MIN", 0.05)
-    response_delay_max: float = _float_env("HONEYPOT_RESPONSE_DELAY_MAX", 0.5)
+    #: Random delay before each HTTP and FTP reply, in seconds. A few
+    #: milliseconds, the scale of a server doing real work; the old 50-500 ms
+    #: capped throughput and was slower than any server it imitated.
+    response_delay_min: float = _float_env("HONEYPOT_RESPONSE_DELAY_MIN", 0.001)
+    response_delay_max: float = _float_env("HONEYPOT_RESPONSE_DELAY_MAX", 0.006)
+    #: Also put the web canary comment (HONEYPOT_AI_CANARY) into HTML pages
+    #: relayed from HONEYPOT_HTTP_UPSTREAM. Off: only the decoy's own pages
+    #: carry it, and the application's responses pass through untouched.
+    http_ai_canary_upstream: bool = os.getenv(
+        "HONEYPOT_HTTP_AI_CANARY_UPSTREAM", "false"
+    ).lower() == "true"
 
     enable_isolation: bool = os.getenv(
         "HONEYPOT_ENABLE_ISOLATION", "true"
     ).lower() == "true"
     docker_network: str = os.getenv("HONEYPOT_DOCKER_NETWORK", "honeypot_isolated")
 
+    #: Profile each source address from what it does (tools, techniques,
+    #: volume) and send the resulting label to the backend with its sessions
+    #: as ``threat_profile``. Off: no profiling, no label. The name is
+    #: historical — nothing about the decoy's responses changes with it.
     adaptive_response: bool = os.getenv(
         "HONEYPOT_ADAPTIVE_RESPONSE", "true"
+    ).lower() == "true"
+    #: Plant a note addressed to automated assistants in each home directory
+    #: and raise ``ai_canary_triggered`` when a session acts on it; see
+    #: honeypot/core/canary.py.
+    ai_canary: bool = os.getenv("HONEYPOT_AI_CANARY", "true").lower() == "true"
+    #: Seconds a source that was let in with a guessed password may come
+    #: back with the same credential and be let in again.
+    accepted_login_ttl: int = _int_env("HONEYPOT_ACCEPTED_LOGIN_TTL", 7 * 86400)
+    #: Seconds between isolation checks, so the heartbeat reports the
+    #: current state and not the one found at startup. 0 checks only once.
+    isolation_check_interval: int = _int_env("HONEYPOT_ISOLATION_CHECK_INTERVAL", 600)
+    #: Start even though HONEYPOT_INGEST_TOKEN is still the published
+    #: default. For a throwaway local run only.
+    allow_default_token: bool = os.getenv(
+        "HONEYPOT_ALLOW_DEFAULT_TOKEN", "false"
     ).lower() == "true"
 
     # Management API. Bound separately from the emulators so it can be kept
@@ -207,8 +246,16 @@ class HoneypotConfig:
         "BACKEND_API_URL", "http://backend:8000/api/v1"
     )
     ingest_token: str = os.getenv(
-        "HONEYPOT_INGEST_TOKEN", "honeypot-ingest-token-change-in-production"
+        "HONEYPOT_INGEST_TOKEN", DEFAULT_INGEST_TOKEN
     )
+    #: Token the control API accepts. Unset, it is the ingest token, as it
+    #: always was; set, only this one opens the control API, so the secret
+    #: that can change the engine's mode is not the one every ingest carries.
+    control_token: str = os.getenv("HONEYPOT_CONTROL_TOKEN", "")
+
+    @property
+    def effective_control_token(self) -> str:
+        return self.control_token or self.ingest_token
 
 
 config = HoneypotConfig()

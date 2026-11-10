@@ -11,3 +11,8 @@ cryptography==50.0.1
 # protocol without one, and hand-rolling key exchange on the internet-facing
 # component would be a far worse trade than a maintained library.
 asyncssh==2.24.0
+
+# Pattern matching for the emulated grep/sed/awk. The standard library's re
+# has no way to stop a backtracking pattern, and those patterns come from the
+# attacker; regex takes a timeout on every match. See core/textfilters.py.
+regex==2026.11.9

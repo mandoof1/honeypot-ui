@@ -175,7 +175,7 @@ test('typing a search term issues one list request, not one per keystroke', asyn
   await page.goto('/sessions')
   await expect(page.getByText('1 matching session', { exact: true })).toBeVisible()
   searches.length = 0
-  await page.getByLabel('Search sessions by address or session ID').pressSequentially('root', { delay: 120 })
+  await page.getByLabel('Search sessions by address, session UUID or command text').pressSequentially('root', { delay: 120 })
   await expect.poll(() => searches).toEqual(['root'])
 })
 
@@ -236,12 +236,12 @@ test('triage shows its distribution, its route and the technique check', async (
   await page.goto('/sessions?session=77')
   // The mobile layout renders the detail in a sheet as well; read the one in view.
   const triage = page.getByTestId('triage-block').last()
-  await expect(triage).toContainText('kev-4b')
+  await expect(triage).toContainText('Read by the decision model kev-4b')
   await expect(triage.getByRole('list', { name: 'Category probabilities' })).toContainText('85%')
   await expect(triage).toContainText('Disagrees with the verdict above')
   await expect(triage).toContainText('Attempted compromise')
   await expect(triage).toContainText('Sent to the language model')
   await expect(page.getByText('checked 94%').last()).toBeVisible()
   await expect(page.getByText('unconfirmed 4%').last()).toBeVisible()
-  await expect(page.getByTestId('enrichment-block').last()).toContainText('techniques checked by kev-4b')
+  await expect(page.getByTestId('enrichment-block').last()).toContainText('techniques checked by the decision model kev-4b')
 })

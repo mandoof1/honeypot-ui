@@ -191,8 +191,15 @@ async def run(args) -> dict:
         if r["label"]["severity"] >= 2 and r["p_low"] >= settings.DECIDER_SKIP_THRESHOLD
     )
     return {
-        "model": decider.model_name,
-        "data": args.data,
+        **evidence_header(
+            args,
+            what=(
+                args.what
+                or f"Technique checks and triage by the decision model over {len(rows)} labelled "
+                   f"transcripts from {args.data}."
+            ),
+        ),
+        "data": args.data_description or args.data,
         "transcripts": len(rows),
         "synthetic": True,
         "technique_check": {
@@ -245,7 +252,32 @@ async def run(args) -> dict:
     }
 
 
-async def db_summary() -> dict:
+def evidence_header(args, what: str) -> dict:
+    """The fields every evidence file under docs/evaluation starts with.
+
+    The committed files carry ``measured``, ``what`` and a ``model`` line
+    naming the build and the hardware, which this tool never wrote: they
+    were added by hand afterwards, so a file could not be regenerated in the
+    same shape. The model's configured name is what the tool knows; the
+    quantisation, server build and CPU are the operator's to state with
+    ``--model-description``.
+    """
+    from app.ai.decider import decider
+    from app.ai.provenance import run_metadata
+
+    meta = run_metadata("app.tools.eval_decider")
+    return {
+        "measured": meta["measured"],
+        "what": what,
+        "model": args.model_description or decider.model_name,
+        "model_configured": decider.model_name,
+        "git_revision": meta["git_revision"],
+        "tool": meta["tool"],
+        "arguments": meta["arguments"],
+    }
+
+
+async def db_summary(args=None) -> dict:
     from sqlalchemy import select
 
     from app.core.database import async_session_factory
@@ -266,7 +298,18 @@ async def db_summary() -> dict:
     def quantile(values, q):
         return round(values[min(len(values) - 1, int(q * len(values)))]) if values else None
 
+    header = {}
+    if args is not None:
+        header = evidence_header(
+            args,
+            what=(
+                args.what
+                or f"Triage of the {len(rows)} stored session(s) that have a triage state. No labels "
+                   "exist; the comparison is with the rule layer's category."
+            ),
+        )
     return {
+        **header,
         "sessions": len(rows),
         "by_status": dict(Counter(r.triage_status for r in rows)),
         "by_protocol": dict(Counter((r.protocol or "unknown") for r in done)),
@@ -287,8 +330,14 @@ def main(argv=None) -> None:
     mode.add_argument("--data", help="JSONL in the Wolfram chat format")
     mode.add_argument("--db-summary", action="store_true", help="summarise triage of the stored sessions")
     parser.add_argument("--out", help="write the report here as JSON")
+    parser.add_argument("--model-description",
+                        help="the model as it was run: quantisation, server build, threads, CPU "
+                             "(default: the configured model name)")
+    parser.add_argument("--data-description",
+                        help="what the data file is and where it came from (default: its path)")
+    parser.add_argument("--what", help="one sentence on what was measured (default: generated)")
     args = parser.parse_args(argv)
-    report = asyncio.run(db_summary() if args.db_summary else run(args))
+    report = asyncio.run(db_summary(args) if args.db_summary else run(args))
     text = json.dumps(report, indent=2)
     print(text)
     if args.out:

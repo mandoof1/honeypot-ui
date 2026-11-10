@@ -83,6 +83,9 @@ test('an authenticator can be enrolled from Settings, and recovery codes are sho
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Set up an authenticator' }).click()
   await expect(page.getByAltText('Authenticator enrolment QR code')).toBeVisible()
+  // The setup key is the secret: it is shown when asked for, not before.
+  await expect(page.getByText('JBSWY3DPEHPK3PXP')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Show setup key' }).click()
   await expect(page.getByText('JBSWY3DPEHPK3PXP')).toBeVisible()
 
   await page.getByPlaceholder('123 456').fill('654 321')

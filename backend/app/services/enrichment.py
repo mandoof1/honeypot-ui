@@ -38,11 +38,17 @@ from typing import Dict, Optional, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.decider import DeciderUnavailable, decider
-from app.ai.llm import ModelUnavailable, chimera
+from app.ai import verdict as verdicts
+from app.ai.config import get_analysis_settings
+from app.ai.decider import TRIAGE_VERSION, DeciderUnavailable, decider
+from app.ai.llm import PROMPT_VERSION, ModelUnavailable, chimera
+from app.ai.mitre_mapper import tactics_of, validate_techniques
+from app.ai.nlp_engine import web_input_is_unusual
+from app.ai.signals import fit_indicator_value
 from app.core.config import get_settings
 from app.core.database import async_session_factory
 from app.core.encryption import decrypt_data
+from app.core.model_slot import model_slot
 from app.models import HoneypotSession, IndicatorOfCompromise
 
 logger = logging.getLogger(__name__)
@@ -55,6 +61,23 @@ UNAVAILABLE_SLEEP_SECONDS = 60
 MANUAL_PRIORITY = 10
 
 _WEB = {"http", "https"}
+
+#: A transcript longer than either of these is "long": the decision model
+#: may have read only part of it, so its confidence alone does not skip the
+#: language model when the rules found nothing.
+LONG_TRANSCRIPT_COMMANDS = 40
+LONG_TRANSCRIPT_CHARS = 4000
+
+#: Confidence recorded on an indicator the language model named and the
+#: transcript contains. A fixed value for "pointed at by a model, present in
+#: the text"; the model's own confidence in its whole answer says nothing
+#: about one host in it, and used to be copied onto every indicator.
+MODEL_IOC_CONFIDENCE = 0.6
+
+#: Tactics that only look. A session whose confirmed techniques all sit here
+#: went no further than reconnaissance.
+_LOOKING_TACTICS = {"TA0043", "TA0007"}
+_EXFILTRATION_TACTIC = "TA0010"
 
 #: Monotonic time until which the decision model is treated as down, so a
 #: stopped container is not called on every turn of the worker loop.
@@ -81,6 +104,7 @@ def initial_status(session: HoneypotSession, nlp_result: Dict, session_data: Dic
 
 def rules_verdict(session: HoneypotSession, nlp_result: Dict, session_data: Dict) -> str:
     """The rules' answer to "is this worth a model's time?", whatever is configured."""
+    # Set only when the session also behaved like a scan (services/analysis.py).
     if session.scanner_operator:
         return "skipped"
     commands = session_data.get("commands") or []
@@ -94,6 +118,12 @@ def rules_verdict(session: HoneypotSession, nlp_result: Dict, session_data: Dict
             or bool(nlp_result.get("web_attacks"))
             or bool(session_data.get("uploads"))
             or bool(nlp_result.get("tool_names"))
+            # A request the signatures did not match but that carries input
+            # no browser sends. The signatures are a fixed list; without
+            # this, whatever they missed was neither triaged nor read.
+            or any(web_input_is_unusual(str(c)) for c in commands[:200])
+            # The rules read only part of it.
+            or bool(nlp_result.get("truncated"))
         )
         return "pending" if interesting else "skipped"
     if protocol == "ftp":
@@ -131,7 +161,11 @@ def queue_at_ingest(session: HoneypotSession, nlp_result: Dict, session_data: Di
 
 
 def route_after_triage(
-    rules_verdict: str, rules_category: str, triage: Dict
+    rules_verdict: str,
+    rules_category: str,
+    triage: Dict,
+    rules_silent: bool = False,
+    partial_read: bool = False,
 ) -> Tuple[str, str]:
     """Where a triaged session goes next: ("pending" | "skipped", reason).
 
@@ -140,13 +174,24 @@ def route_after_triage(
     skipped session is never read by the language model unless an analyst
     asks. Escalating a session the rules skipped only needs a likely
     compromise: the cost of being wrong there is a few minutes of CPU.
+
+    "The rules found nothing" is not the rules agreeing. When they were
+    silent (``rules_silent``) and the transcript is long or was only partly
+    read (``partial_read``), the decision model's confidence rests on an
+    excerpt and nothing else vouches for the rest: the session goes on.
     """
     settings = get_settings()
     p_low = float(triage.get("p_low") or 0.0)
     p_compromise = float(triage.get("p_compromise") or 0.0)
     if rules_verdict == "pending":
         if p_low >= settings.DECIDER_SKIP_THRESHOLD and rules_category in ("benign", "reconnaissance"):
-            return "skipped", f"triage: information gathering at most ({p_low:.0%}), and the rules agree"
+            if rules_silent and partial_read:
+                return "pending", (
+                    "the rules found nothing in a long or partly read transcript; "
+                    "triage's confidence in an excerpt is not enough to skip it"
+                )
+            agreement = "the rules found nothing in a transcript read in full" if rules_silent else "the rules agree"
+            return "skipped", f"triage: information gathering at most ({p_low:.0%}), and {agreement}"
         return "pending", "the rules flagged it and triage did not rule it out"
     if p_compromise >= settings.DECIDER_ESCALATE_THRESHOLD:
         return "pending", f"triage: likely an attempted compromise ({p_compromise:.0%}) that the rules did not flag"
@@ -288,7 +333,20 @@ async def process_triage(db: AsyncSession, session: HoneypotSession) -> str:
         return session.triage_status
 
     result["reused_from_session"] = reused_from
+    # How much of the transcript the decision model was shown, for routing.
+    window = decider.window(commands, session.protocol or "ssh")
+    result["window"] = window.describe()
+    result["partial_read"] = bool(
+        window.truncated
+        or len(commands) > LONG_TRANSCRIPT_COMMANDS
+        or sum(len(c) for c in commands) > LONG_TRANSCRIPT_CHARS
+    )
     _finish_triage(session, previous, result, None)
+    await _act_on_model_finding(
+        db, session, source="triage", category=result["category"],
+        probability=float(result.get("p_compromise") or 0.0),
+        expected_level=float(result.get("severity") or 0.0),
+    )
     await db.commit()
     logger.info(
         "Triaged session %s: %s, severity %.2f, %s -> %s",
@@ -312,7 +370,13 @@ def _finish_triage(session: HoneypotSession, previous: Dict, result: Optional[Di
         route, reason = verdict, f"triage failed ({error}); the rules' verdict stands"
         session.triage_status = "failed"
     else:
-        route, reason = route_after_triage(verdict, category, result)
+        signals = session.signals if isinstance(session.signals, dict) else {}
+        rules_partial = bool((signals.get("verdict") or {}).get("rules_truncated"))
+        route, reason = route_after_triage(
+            verdict, category, result,
+            rules_silent=category == "benign" and not session.rule_reason,
+            partial_read=bool(result.get("partial_read")) or rules_partial,
+        )
         stored.update(result)
         stored["agrees_with_rules"] = result["category"] == category
         session.triage_status = "complete"
@@ -353,10 +417,14 @@ async def _cached_triage(db: AsyncSession, session: HoneypotSession) -> Optional
     ).scalar_one_or_none()
     if row is None or not isinstance(row.triage, dict) or "category" not in row.triage:
         return None
+    # An answer from another model, or from before the questions or the
+    # window changed, is not an answer to what would be asked now.
+    if row.triage.get("model") != decider.model_name or row.triage.get("prompt_version") != TRIAGE_VERSION:
+        return None
     keep = (
         "category", "category_probabilities", "severity", "severity_probabilities",
         "p_low", "p_compromise", "operator", "operator_probability", "model",
-        "input_tokens", "ms",
+        "prompt_version", "input_tokens", "ms",
     )
     cached = {k: row.triage.get(k) for k in keep}
     cached["_from_session"] = row.id
@@ -411,12 +479,16 @@ async def process(db: AsyncSession, session: HoneypotSession) -> str:
     if cached is not None:
         _store(session, cached, reused_from=cached.get("_from_session"))
         await _replace_iocs(db, session, cached)
+        await _act_on_llm_finding(db, session, cached)
         await db.commit()
         logger.info("Session %s reused the analysis of session %s", session.id, cached.get("_from_session"))
         return session.enrichment_status
 
     try:
-        analysis = await chimera.analyse(commands, protocol=session.protocol or "ssh")
+        # One caller on the language model at a time, shared with
+        # investigation reports (app/core/model_slot.py).
+        async with model_slot.hold("enrichment"):
+            analysis = await chimera.analyse(commands, protocol=session.protocol or "ssh")
     except ModelUnavailable as exc:
         # Not the session's fault: leave it queued and let the worker back off.
         session.enrichment_status = "pending"
@@ -431,9 +503,19 @@ async def process(db: AsyncSession, session: HoneypotSession) -> str:
         await db.commit()
         return session.enrichment_status
 
+    # Check the model's techniques against the ATT&CK catalog before anything
+    # is asked about them or stored: an id it does not know is set aside,
+    # a revoked one is followed, and names come from the catalog.
+    checked = validate_techniques(analysis.get("mitre_techniques") or [], source="chimera")
+    analysis = {
+        **analysis,
+        "mitre_techniques": checked["verified"],
+        "unverified_techniques": checked["unverified"],
+    }
     analysis = await _check_techniques(session, commands, analysis)
     _store(session, analysis)
     await _replace_iocs(db, session, analysis)
+    await _act_on_llm_finding(db, session, analysis)
     await db.commit()
     logger.info(
         "Enriched session %s: %d technique(s), %d objective(s)",
@@ -581,23 +663,39 @@ def _decrypt_commands(session: HoneypotSession) -> list[str]:
 
 
 async def _cached_analysis(db: AsyncSession, session: HoneypotSession) -> Optional[Dict]:
-    """An earlier complete analysis of the identical transcript, if any."""
+    """An earlier complete analysis of the identical transcript, if any.
+
+    Identical means more than the same commands: the same protocol (the
+    prompt names it), the same model and the same prompt version. The key
+    used to be the transcript hash alone, so an answer from a previous model
+    or prompt was handed to every later copy of a replayed script.
+    """
     if not session.transcript_sha256:
         return None
-    row = (
+    rows = (
         await db.execute(
             select(HoneypotSession)
             .where(
                 HoneypotSession.transcript_sha256 == session.transcript_sha256,
+                HoneypotSession.protocol == session.protocol,
                 HoneypotSession.enrichment_status == "complete",
                 HoneypotSession.id != session.id,
                 HoneypotSession.enrichment.isnot(None),
             )
-            .order_by(HoneypotSession.id.asc())
-            .limit(1)
+            .order_by(HoneypotSession.id.desc())
+            .limit(10)
         )
-    ).scalar_one_or_none()
-    if row is None or not isinstance(row.enrichment, dict):
+    ).scalars().all()
+    row = next(
+        (
+            r for r in reversed(rows)
+            if isinstance(r.enrichment, dict)
+            and r.enrichment.get("model") == chimera.model_name
+            and r.enrichment.get("prompt_version") == PROMPT_VERSION
+        ),
+        None,
+    )
+    if row is None:
         return None
     cached = dict(row.enrichment)
     cached["_from_session"] = row.id
@@ -617,7 +715,12 @@ def _store(session: HoneypotSession, analysis: Dict, reused_from: Optional[int] 
         "sophistication": analysis.get("sophistication", "unknown"),
         "confidence": analysis.get("confidence"),
         "model": analysis.get("model") or chimera.model_name,
+        "prompt_version": analysis.get("prompt_version") or PROMPT_VERSION,
         "mitre_techniques": list(analysis.get("mitre_techniques") or []),
+        # Named by the model, not in the ATT&CK catalog: shown, never counted.
+        "unverified_techniques": list(analysis.get("unverified_techniques") or []),
+        # How much of the transcript the model was shown.
+        "window": analysis.get("window"),
         "iocs": analysis.get("iocs") or {"hosts": [], "urls": [], "files": []},
         "tokens": analysis.get("tokens"),
         "reused_from_session": reused_from,
@@ -641,31 +744,27 @@ def _merge_techniques(session: HoneypotSession, analysis: Dict) -> None:
         if isinstance(t, dict) and t.get("source") != "chimera"
     ]
     known = {t.get("id") for t in existing}
-    tactics = list(session.mitre_tactics or [])
 
-    from app.ai.mitre_mapper import mitre_mapper
-
-    for technique in analysis.get("mitre_techniques") or []:
-        if technique["id"] in known:
+    # Validated here as well as before the check, so an answer reused from a
+    # row stored before the catalog existed is cleaned on its way in. The
+    # name and tactics are the catalog's (the model named T1203 "Product
+    # Discovery" in production); an id it does not have is not stored.
+    model_techniques = validate_techniques(analysis.get("mitre_techniques") or [], source="chimera")
+    for entry in model_techniques["verified"]:
+        if entry["id"] in known:
             continue
-        # The canonical name when the id is known; the model's own label only
-        # as a fallback (it named T1203 "Product Discovery" in production).
-        name = mitre_mapper.technique_name(technique["id"]) or technique.get("name") or ""
-        entry = {"id": technique["id"], "name": name, "source": "chimera",
-                 "confidence": analysis.get("confidence")}
-        if technique.get("support") is not None:
-            entry["support"] = technique["support"]
-            entry["unconfirmed"] = bool(technique.get("unconfirmed"))
+        # The model's confidence in its whole answer is not a confidence in
+        # one technique; the decision model's support is, when it was asked.
+        entry["confidence"] = entry.get("support")
+        if entry.get("support") is not None:
+            entry["unconfirmed"] = bool(entry.get("unconfirmed"))
         existing.append(entry)
-        known.add(technique["id"])
-        tactic = mitre_mapper.tactic_for_technique(technique["id"])
-        # An unconfirmed technique is still listed, but does not add a
-        # tactic to the session's coverage on its own say-so.
-        if tactic and tactic not in tactics and not entry.get("unconfirmed"):
-            tactics.append(tactic)
+        known.add(entry["id"])
 
     session.mitre_techniques = existing
-    session.mitre_tactics = tactics
+    # From the techniques, in kill-chain order. An unconfirmed technique is
+    # still listed, but does not add a tactic on its own say-so.
+    session.mitre_tactics = tactics_of(existing)
 
 
 async def _replace_iocs(db: AsyncSession, session: HoneypotSession, analysis: Dict) -> None:
@@ -686,14 +785,20 @@ async def _replace_iocs(db: AsyncSession, session: HoneypotSession, analysis: Di
         if not (isinstance(row.tags, list) and "chimera" in row.tags)
     }
     iocs = analysis.get("iocs") or {}
-    confidence = analysis.get("confidence")
     for kind, values in (("hosts", iocs.get("hosts")), ("urls", iocs.get("urls")), ("files", iocs.get("files"))):
         for value in values or []:
-            value = str(value).strip()[:500]
+            value = str(value).strip()
             if not value:
                 continue
+            # A value longer than the column keeps its start and gains a
+            # hash of the whole, rather than failing the insert.
+            value, cut = fit_indicator_value(value)
             ioc_type = _ioc_type(kind, value)
-            if (ioc_type, value) in existing_values:
+            # The rules may already hold the address as the session's own
+            # source or as one a dropper contacted; that is the better row.
+            if (ioc_type, value) in existing_values or (
+                ioc_type == "referenced_ip" and ("ip", value) in existing_values
+            ):
                 continue
             existing_values.add((ioc_type, value))
             db.add(
@@ -701,14 +806,19 @@ async def _replace_iocs(db: AsyncSession, session: HoneypotSession, analysis: Di
                     session_id=session.id,
                     ioc_type=ioc_type,
                     value=value,
-                    confidence=confidence,
-                    tags=["chimera", "model"],
+                    confidence=MODEL_IOC_CONFIDENCE,
+                    tags=["chimera", "model"] + (["truncated"] if cut else []),
                 )
             )
 
 
 def _ioc_type(kind: str, value: str) -> str:
-    """Use the pipeline's vocabulary (ip, domain, url, filename), not the model's."""
+    """Use the pipeline's vocabulary, not the model's.
+
+    An address the model points at is one that appears in the transcript:
+    ``referenced_ip``, never ``ip``, which is kept for the session's own
+    source and for hosts a dropper actually reached for.
+    """
     import ipaddress
 
     if kind == "urls":
@@ -718,6 +828,156 @@ def _ioc_type(kind: str, value: str) -> str:
     host = value.split(":")[0]
     try:
         ipaddress.ip_address(host)
-        return "ip"
+        return "referenced_ip"
     except ValueError:
         return "domain"
+
+
+# --------------------------------------------------------------------------
+# When a model stage finds more than the rules did
+
+def _rank(category: Optional[str]) -> int:
+    return verdicts.STAGE_RANK.get(category or verdicts.BENIGN, 0)
+
+
+def _record_disagreement(session: HoneypotSession, source: str, category: str, detail: Dict) -> None:
+    """Note on the session that a model stage and the rules disagree.
+
+    The stored category stays the rule layer's: a model that read text an
+    attacker wrote does not get to rewrite the verdict. The disagreement is
+    what an analyst needs to see, in either direction.
+    """
+    rules_category = session.attack_category.value if session.attack_category else verdicts.BENIGN
+    signals = dict(session.signals) if isinstance(session.signals, dict) else {}
+    disagreement = dict(signals.get("disagreement") or {})
+    disagreement.pop(source, None)
+    if category != rules_category:
+        disagreement["rules"] = rules_category
+        disagreement[source] = {"category": category, **detail}
+    if set(disagreement) - {"rules"}:
+        signals["disagreement"] = disagreement
+    else:
+        signals.pop("disagreement", None)
+    # A new dict, so the ORM writes the JSON column back.
+    session.signals = signals
+
+
+async def _raise_model_alert(
+    db: AsyncSession, session: HoneypotSession, source: str, category: str, level: str, reason: str, score: float
+) -> Optional[Dict]:
+    """Create or escalate the session's alert on a model stage's finding."""
+    from app.models import AttackSeverity
+    from app.services import alerts as alert_service
+    from app.services import thresholds
+
+    severity = AttackSeverity(level)
+    decision = await thresholds.evaluate(db, severity, 0.0)
+    if not decision.should_alert:
+        return None
+    profile = session.attacker_profile.value if session.attacker_profile else "unknown"
+    return await alert_service.raise_session_alert(
+        db,
+        session=session,
+        severity=severity,
+        category=category,
+        profile=profile,
+        tools=list(session.detected_tools or []),
+        mitre_result={
+            "tactic_ids": list(session.mitre_tactics or []),
+            "techniques": list(session.mitre_techniques or []),
+        },
+        geo={"country": session.geo_country, "country_name": session.geo_country_name, "city": session.geo_city},
+        decision=decision,
+        rule_reason=reason,
+        score=score,
+        source=source,
+    )
+
+
+async def _act_on_model_finding(
+    db: AsyncSession, session: HoneypotSession, source: str, category: str,
+    probability: float, expected_level: float,
+) -> None:
+    """After triage: flag a disagreement, and alert when triage found more.
+
+    The async stages could not raise an alert at all, so a compromise the
+    rules missed and a model caught changed nothing an operator would see.
+    Triage alerts only on a confident "attempted compromise" above what the
+    rules concluded: it read 30 of 32 benign browsing sessions as
+    reconnaissance on this deployment, so its lower categories do not alert.
+    """
+    _record_disagreement(session, source, category, {"p_compromise": round(probability, 4)})
+    rules_category = session.attack_category.value if session.attack_category else verdicts.BENIGN
+    if _rank(category) <= _rank(rules_category) or _rank(category) < _rank(verdicts.EXPLOIT):
+        return
+    if probability < get_analysis_settings().DECIDER_ALERT_THRESHOLD:
+        return
+    # The model's own 0-3 scale: 3 is high impact, 2 an attempted compromise.
+    level = "high" if expected_level >= 2.5 else "medium"
+    score = verdicts.severity_score(category, probability)
+    outcome = await _raise_model_alert(
+        db, session, source, category, level,
+        f"triage puts {probability:.0%} on an attempted compromise; the rules concluded {rules_category}",
+        score,
+    )
+    if outcome is not None:
+        signals = dict(session.signals or {})
+        signals["model_alert"] = {"source": source, **outcome}
+        session.signals = signals
+
+
+def llm_category(techniques: list) -> Tuple[str, bool]:
+    """The category the language model's techniques support, and whether
+    any of them was confirmed by the decision model.
+
+    Read from the tactics of verified techniques that were not marked
+    unconfirmed: nothing is benign, only Discovery or Reconnaissance is
+    reconnaissance, Exfiltration is exfiltration, anything else exploitation.
+    """
+    tactics = set()
+    confirmed = False
+    for technique in techniques or []:
+        if not isinstance(technique, dict) or technique.get("unconfirmed"):
+            continue
+        tactics.update(technique.get("tactics") or [])
+        confirmed = confirmed or technique.get("support") is not None
+    if not tactics:
+        return verdicts.BENIGN, confirmed
+    if _EXFILTRATION_TACTIC in tactics:
+        return verdicts.EXFIL, confirmed
+    if tactics <= _LOOKING_TACTICS:
+        return verdicts.RECON, confirmed
+    return verdicts.EXPLOIT, confirmed
+
+
+async def _act_on_llm_finding(db: AsyncSession, session: HoneypotSession, analysis: Dict) -> None:
+    """After the language model: flag a disagreement, alert when it found more.
+
+    Its techniques have been checked against the catalog and, when a
+    decision model is configured, against the transcript. Without that
+    second check the finding rests on one model's reading of attacker text,
+    so it raises at most a medium alert.
+    """
+    model_techniques = [
+        t for t in (session.mitre_techniques or [])
+        if isinstance(t, dict) and t.get("source") == "chimera"
+    ]
+    category, confirmed = llm_category(model_techniques)
+    _record_disagreement(session, "llm", category, {"confirmed_by_decision_model": confirmed})
+    rules_category = session.attack_category.value if session.attack_category else verdicts.BENIGN
+    if _rank(category) <= _rank(rules_category):
+        return
+    score = verdicts.severity_score(category, verdicts.CONFIDENCE_SINGLE if confirmed else 0.0)
+    level = verdicts.severity_level(score) if confirmed else min(
+        verdicts.severity_level(score), "medium", key=verdicts.SEVERITY_LEVELS.index
+    )
+    outcome = await _raise_model_alert(
+        db, session, "llm", category, level,
+        f"the language model's techniques support {category}; the rules concluded {rules_category}"
+        + ("" if confirmed else " (not confirmed by a decision model)"),
+        score,
+    )
+    if outcome is not None:
+        signals = dict(session.signals or {})
+        signals["model_alert"] = {"source": "llm", **outcome}
+        session.signals = signals

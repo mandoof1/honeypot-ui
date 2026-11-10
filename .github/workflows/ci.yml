@@ -1,0 +1,289 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, "release/**"]
+
+# Every job reads the repository and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Blocking jobs: engine, backend, backend-postgres, console, python-lint,
+# shell, compose. Report-only jobs (continue-on-error) are marked below with
+# the reason; they show a warning instead of failing the run.
+
+jobs:
+  engine:
+    name: Engine tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            honeypot/requirements.lock
+            honeypot/requirements-test.txt
+      # The hashed lock first, so the tests run on exactly what the image
+      # installs; the second command then only adds the test tools.
+      - run: pip install --require-hashes --no-deps -r honeypot/requirements.lock
+      - run: pip install -r honeypot/requirements-test.txt
+      - run: python -m pytest honeypot/tests -q
+      # The fingerprint self-audit tool shares the engine's interpreter and
+      # its one dependency (asyncssh); its probes run against in-process
+      # fake servers on loopback.
+      - run: python -m pytest tools/fingerprint_audit/tests -q
+
+  backend:
+    name: Backend tests (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.lock
+            backend/requirements-test.txt
+      - run: pip install --require-hashes --no-deps -r backend/requirements.lock
+      - run: pip install -r backend/requirements-test.txt
+      - run: python -m pytest tests -q
+        working-directory: backend
+
+  backend-postgres:
+    name: Backend migrations and PostgreSQL-only tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ENVIRONMENT: test
+      DATABASE_SSL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.lock
+            backend/requirements-test.txt
+      - run: pip install --require-hashes --no-deps -r backend/requirements.lock
+      - run: pip install -r backend/requirements-test.txt
+      # Migrations run on a database of their own: the tests below drop and
+      # recreate every table in theirs.
+      - name: Create the migration database
+        run: psql -h localhost -U postgres -c 'create database hs_migrate'
+        env:
+          PGPASSWORD: postgres
+      - name: alembic upgrade head, from an empty database
+        run: alembic upgrade head
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/hs_migrate
+          DATABASE_URL_SYNC: postgresql+psycopg2://postgres:postgres@localhost:5432/hs_migrate
+      # Exit code 5 means "no tests were selected". That is a pass here: the
+      # job must not fail on a branch that has no such tests yet.
+      - name: Tests marked postgres
+        run: |
+          status=0
+          python -m pytest tests -q -m postgres || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 5 ]
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/hs_test
+
+  console:
+    name: Console lint, unit tests, build and browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Cache the Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: test-results/
+
+  python-lint:
+    name: ruff (rules in ruff.toml)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.17.4
+      - run: ruff check .
+
+  shell:
+    name: Shell scripts (bash -n, shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: |
+          find deploy scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          for script in ./*.sh; do bash -n "$script"; done
+      # Warnings and errors fail the job; style notes do not. .shellcheckrc
+      # lists the two checks that are switched off, and why.
+      - name: shellcheck
+        run: find . -name '*.sh' -not -path './node_modules/*' -not -path './.git/*' -print0 | xargs -0 shellcheck --severity=warning -x
+
+  compose:
+    name: Compose files, address plan, lock files
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Dummy values only: nothing is built, pulled or started.
+      - name: docker compose config
+        run: |
+          env_file="$PWD/.github/ci/compose.env"
+          check() {
+            dir=$1; shift
+            args=""
+            for file in "$@"; do args="$args -f $file"; done
+            echo "::group::$dir $*"
+            (cd "$dir" && docker compose --env-file "$env_file" $args config -q)
+            # The same resolved project against the firewall's address plan
+            # and the hardening baseline.
+            (cd "$dir" && docker compose --env-file "$env_file" $args --profile '*' config --format json) \
+              | python3 scripts/check-network-plan.py --resolved -
+            echo "::endgroup::"
+          }
+          check deploy/server docker-compose.yml
+          check deploy/server docker-compose.yml docker-compose.override.example.yml
+          check deploy/server docker-compose.yml docker-compose.override.example.yml docker-compose.remote-sensors.example.yml
+          check deploy/server docker-compose.yml docker-compose.isolated-gateway.yml
+          check deploy/node docker-compose.yml
+          check deploy/cowrie-baseline docker-compose.yml
+          docker compose --env-file "$env_file" -f docker-compose.yml config -q
+      - name: Lock files match requirements.txt
+        run: bash scripts/lock-requirements.sh --check
+      - name: Helper scripts compile
+        run: python3 -m py_compile scripts/*.py deploy/server/*.py
+      # Report-only: the table is regenerated by hand
+      # (python3 scripts/list_routes.py), so a branch that adds a route
+      # should be told, not blocked.
+      - name: Route table in the technical reference is current
+        continue-on-error: true
+        run: |
+          have=$(python3 scripts/list_routes.py --count)
+          documented=$(sed -n 's/^\([0-9][0-9]*\) routes\.$/\1/p' docs/TECHNICAL_REFERENCE.md)
+          echo "code: $have, documented: $documented"
+          [ "$have" = "$documented" ] || { echo "::warning::docs/TECHNICAL_REFERENCE.md lists $documented routes, the code has $have. Regenerate with scripts/list_routes.py."; exit 1; }
+
+  firewall:
+    name: Egress rules, tested with real connections
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Report-only for now: the test passes on the development machine, but
+    # it has not yet run on a hosted runner, whose kernel may lack a module
+    # the bridge rules need. Make it blocking after the first green run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq nftables
+      # With br_netfilter loaded the test also runs its second variant.
+      - run: sudo modprobe br_netfilter || true
+      - run: sudo bash deploy/server/tests/egress-netns-test.sh
+
+  dockerfile-lint:
+    name: hadolint (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Report-only: the Dockerfiles have not been through hadolint before.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - backend/Dockerfile
+          - honeypot/Dockerfile
+          - deploy/server/Dockerfile.web
+          - Dockerfile.frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          failure-threshold: warning
+
+  dependency-audit:
+    name: pip-audit and npm audit (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Report-only: a newly published advisory must not turn an unrelated
+    # change red. Read the output; Dependabot opens the fix.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pip install pip-audit
+      # --no-deps --disable-pip: audit exactly the pinned, hashed set.
+      - name: pip-audit, backend
+        if: always()
+        run: pip-audit --no-deps --disable-pip -r backend/requirements.lock
+      - name: pip-audit, engine
+        if: always()
+        run: pip-audit --no-deps --disable-pip -r honeypot/requirements.lock
+      - name: npm audit, runtime dependencies
+        if: always()
+        run: npm audit --omit=dev
+
+  secrets:
+    name: gitleaks (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Report-only until a first run has shown what it flags in this history
+    # (test fixtures use token-shaped strings). Then make it blocking.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

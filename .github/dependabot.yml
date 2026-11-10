@@ -1,0 +1,43 @@
+# Weekly update proposals. Each is a pull request that CI tests; none merges
+# itself.
+#
+# Python: Dependabot edits requirements.txt. The image installs from
+# requirements.lock, so a Python update is complete only after
+# `bash scripts/lock-requirements.sh` has been run on the branch (CI's
+# "Lock files match requirements.txt" step fails until then).
+#
+# Container images pinned by digest (python, postgres, llama.cpp) are written
+# as `# name:tag` above `name@sha256:...`. Dependabot cannot follow a tag kept
+# in a comment, so those are updated with `scripts/pin-images.sh --write`
+# instead; the docker entry below covers the Dockerfiles that still use tags.
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /honeypot
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      console-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker
+    directory: /deploy/server
+    schedule: { interval: weekly }

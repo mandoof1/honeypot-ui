@@ -7,7 +7,8 @@
 #
 # Compose merges this file into docker-compose.yml automatically, so install.sh
 # and every `docker compose` command here include it. The shop's source is a
-# separate project at /opt/bolt-and-batten.
+# separate project at /opt/bolt-and-batten (SHOP_SOURCE); backup.sh archives
+# it and restore.sh puts it back, so a rebuilt machine can build the shop.
 #
 # The decoy records each request as usual and then has a shop answer it: the
 # live copy, or, once a client has given itself away as an attacker, the decoy
@@ -19,6 +20,9 @@
 #
 # Each copy sits alone with the engine on its own internal network: no
 # published ports, no route out, and no route from one copy to the other.
+# The host firewall allows exactly one thing on each of those bridges: the
+# web engine connecting to the shop's port 3000 (honeysentinel-egress.sh),
+# which is why the names, subnets and addresses below are fixed.
 # reset-shop.sh (nightly) regenerates the decoy copy and backs up the live one.
 
 x-shop: &shop
@@ -26,7 +30,7 @@ x-shop: &shop
   image: bolt-and-batten-web
   read_only: true
   tmpfs:
-    - /tmp
+    - /tmp:noexec,nosuid,nodev
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   healthcheck:
@@ -34,14 +38,19 @@ x-shop: &shop
     interval: 10s
     timeout: 5s
     retries: 10
+  mem_limit: 512m
+  pids_limit: 256
   restart: unless-stopped
   logging:
     driver: json-file
     options: { max-size: "20m", max-file: "5" }
 
 services:
-  honeypot:
+  # The website engine (see docker-compose.yml), listed in the dashboard as
+  # its own node under the shop's name.
+  honeypot-web:
     environment:
+      HONEYPOT_NODE_NAME: ${HONEYPOT_WEB_NODE_NAME:-bolt-and-batten-store}
       HONEYPOT_HTTP_UPSTREAM: http://shop:3000
       HONEYPOT_HTTP_DECOY_UPSTREAM: http://shop-decoy:3000
       # The shop's own pages, which would otherwise be decoy bait.
@@ -49,8 +58,10 @@ services:
       # So a diverted session stays diverted if its address changes.
       HONEYPOT_HTTP_SESSION_COOKIE: sid
     networks:
-      shop: {}
-      shop_decoy: {}
+      shop:
+        ipv4_address: 172.30.68.11
+      shop_decoy:
+        ipv4_address: 172.30.69.11
     depends_on:
       shop:
         condition: service_healthy
@@ -67,7 +78,9 @@ services:
       SHOP_SEED_TIME: ${SHOP_SEED_TIME:?add SHOP_SEED_TIME to .env}
     volumes:
       - shop_data:/app/data
-    networks: [shop]
+    networks:
+      shop:
+        ipv4_address: 172.30.68.20
 
   shop-decoy:
     <<: *shop
@@ -77,13 +90,29 @@ services:
       SHOP_SEED_TIME: ${SHOP_SEED_TIME:?add SHOP_SEED_TIME to .env}
     volumes:
       - shop_decoy_data:/app/data
-    networks: [shop_decoy]
+    networks:
+      shop_decoy:
+        ipv4_address: 172.30.69.20
 
 networks:
   shop:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-shop
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.68.0/24
+          ip_range: 172.30.68.128/25
   shop_decoy:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-shop-decoy
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.69.0/24
+          ip_range: 172.30.69.128/25
 
 volumes:
   shop_data:

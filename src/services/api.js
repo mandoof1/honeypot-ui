@@ -1,7 +1,36 @@
 const API_BASE = import.meta.env?.VITE_API_URL || 'http://localhost:8000/api/v1'
 
+/*
+ * Where the tokens live, and why.
+ *
+ * The right place for a refresh token is an HttpOnly cookie, out of reach of
+ * any script on the page. This API cannot do that: /auth/login returns both
+ * tokens in the response body, and /auth/refresh and /auth/logout read the
+ * refresh token from the request body. So both are kept in localStorage,
+ * which is also what lets a second tab stay signed in.
+ *
+ * What is done instead, to shorten the time a stored token is of use:
+ *
+ *  - Signing out in one tab signs every tab out. Other tabs learn of it from
+ *    the `storage` event and drop their user at once, instead of carrying on
+ *    with a token they still hold in memory.
+ *  - A rotated pair written by another tab is adopted, never replayed. The
+ *    server treats a second use of a refresh token as theft and revokes the
+ *    whole family, so two tabs refreshing on their own would sign each
+ *    other out. The refresh is serialised across tabs with a Web Lock.
+ *  - Both tokens are removed the moment the server rejects the refresh, and
+ *    sign-out revokes the refresh token on the server before discarding it.
+ *  - The refresh token is read from storage only at the instant it is sent.
+ *
+ * If the API gains cookie-based refresh, this block is the only place that
+ * has to change.
+ */
 const ACCESS_TOKEN_KEY = 'access_token'
 const REFRESH_TOKEN_KEY = 'refresh_token'
+const REFRESH_LOCK = 'honeysentinel-token-refresh'
+
+// Bumped whenever the stored pair changes, in this tab or another. A request
+// that started under an older version knows its 401 may already be stale.
 let tokenVersion = 0
 
 export function getAccessToken() {
@@ -20,6 +49,33 @@ export function clearTokens() {
   localStorage.removeItem(REFRESH_TOKEN_KEY)
 }
 
+const tokenListeners = new Set()
+
+/**
+ * Be told when another tab signs in, signs out or rotates the tokens.
+ * The listener receives `{ signedIn }`. Returns an unsubscribe function.
+ */
+export function onTokenChange(listener) {
+  tokenListeners.add(listener)
+  return () => tokenListeners.delete(listener)
+}
+
+/**
+ * Handle a `storage` event. Exported so the behaviour can be tested without a
+ * second browser tab; the page wires it to `window` below.
+ */
+export function applyExternalTokenChange(event) {
+  // `key` is null when the other tab cleared storage wholesale.
+  if (event?.key !== null && event?.key !== undefined && event.key !== ACCESS_TOKEN_KEY) return
+  tokenVersion++
+  const signedIn = Boolean(getAccessToken())
+  tokenListeners.forEach((listener) => listener({ signedIn }))
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', applyExternalTokenChange)
+}
+
 /** Raised for any non-2xx response, carrying the HTTP status. */
 export class ApiError extends Error {
   constructor(message, status) {
@@ -34,18 +90,80 @@ export function setUnauthorizedHandler(handler) {
   onUnauthorized = handler
 }
 
+/*
+ * Routes under /auth/ that are called without a session. A 401 from one of
+ * these is its own answer (wrong password, bad code) and must never trigger
+ * a token refresh. Everything else under /auth/ — the signed-in user, their
+ * password, their authenticator, account administration — is an ordinary
+ * authenticated route. The old rule skipped refresh for the whole prefix
+ * except /auth/me, so those failed with a raw 401 on the first click after
+ * the access token expired.
+ */
+const PUBLIC_AUTH_ROUTES = new Set([
+  '/auth/login',
+  '/auth/register',
+  '/auth/verify-otp',
+  '/auth/resend-otp',
+  '/auth/request-password-reset',
+  '/auth/reset-password',
+  '/auth/refresh',
+  '/auth/logout',
+  '/auth/capabilities',
+])
+
+/*
+ * Authenticated routes that also answer 401 for a reason of their own: a
+ * wrong current password, an authenticator code that did not match. That is
+ * not an expired session, and signing the user out for mistyping a code
+ * would be wrong.
+ */
+const ROUTES_WITH_OWN_401 = new Set([
+  '/auth/change-password',
+  '/auth/mfa/confirm',
+  '/auth/mfa/disable',
+])
+
+/** The detail the API sends when it is the token that was refused. */
+const TOKEN_REFUSED = 'Invalid or expired token'
+
+/** True when the stored access token's own expiry has passed. Unknown formats count as not expired. */
+function accessTokenExpired() {
+  try {
+    const payload = getAccessToken().split('.')[1]
+    const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now()
+  } catch {
+    return false
+  }
+}
+
+/** Run `task` while holding the cross-tab refresh lock, where the browser has one. */
+function withRefreshLock(task) {
+  const locks = globalThis.navigator?.locks
+  if (!locks || typeof locks.request !== 'function') return task()
+  return locks.request(REFRESH_LOCK, task)
+}
+
 // A single in-flight refresh shared by every concurrent 401, so a page with
 // four parallel requests does not fire four refreshes and invalidate itself.
 let refreshInFlight = null
 
 async function refreshAccessToken() {
-  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
-  if (!refreshToken) return false
+  if (!localStorage.getItem(REFRESH_TOKEN_KEY)) return false
 
   if (!refreshInFlight) {
-    const version = tokenVersion
-    refreshInFlight = (async () => {
+    const staleAccess = getAccessToken()
+    refreshInFlight = withRefreshLock(async () => {
       try {
+        // Another tab may have rotated the pair while this one waited for
+        // the lock. Its tokens are current; the one read earlier is spent.
+        const current = getAccessToken()
+        if (!current) return false
+        if (current !== staleAccess) return true
+
+        const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
+        if (!refreshToken) return false
+        const version = tokenVersion
         const res = await fetch(`${API_BASE}/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -53,6 +171,7 @@ async function refreshAccessToken() {
         })
         if (!res.ok) return false
         const tokens = await res.json()
+        // A sign-out that happened while the refresh was in the air wins.
         if (version !== tokenVersion || !tokens.access_token) return false
         setTokens(tokens)
         return true
@@ -63,7 +182,7 @@ async function refreshAccessToken() {
         // same settled promise.
         setTimeout(() => { refreshInFlight = null }, 0)
       }
-    })()
+    })
   }
   return refreshInFlight
 }
@@ -96,7 +215,8 @@ async function readError(res) {
 
 async function requestResponse(path, options = {}, { retry = true } = {}) {
   const version = tokenVersion
-  const authenticated = !path.startsWith('/auth/') || path === '/auth/me'
+  const route = path.split('?')[0]
+  const authenticated = !PUBLIC_AUTH_ROUTES.has(route)
   let res
   try {
     res = await fetch(`${API_BASE}${path}`, {
@@ -109,6 +229,14 @@ async function requestResponse(path, options = {}, { retry = true } = {}) {
   }
 
   if (res.status === 401 && authenticated) {
+    if (ROUTES_WITH_OWN_401.has(route)) {
+      const detail = await readError(res)
+      const tokenProblem = detail === TOKEN_REFUSED || accessTokenExpired()
+      // After a retry the token is known to be fresh, so whatever this says
+      // is the route's own verdict unless it names the token again.
+      const ownVerdict = retry ? !tokenProblem : detail !== TOKEN_REFUSED
+      if (ownVerdict) throw new ApiError(detail, 401)
+    }
     // Another request may already have rotated the token while this one ran.
     if (retry && getAccessToken() && (version !== tokenVersion || await refreshAccessToken())) {
       return requestResponse(path, options, { retry: false })
@@ -138,15 +266,15 @@ async function request(path, options = {}) {
   return res.text()
 }
 
-/** POST that returns the raw body plus its filename, for file downloads. */
-async function download(path, options = {}) {
+/** A request that returns the raw body plus its filename, for file downloads. */
+async function download(path, options = {}, fallbackName = 'export') {
   const res = await requestResponse(path, options)
 
   const disposition = res.headers.get('content-disposition') || ''
   const match = disposition.match(/filename="([^"]+)"|filename=([^;]+)/)
   return {
     blob: await res.blob(),
-    filename: match ? (match[1] || match[2]).trim() : 'export',
+    filename: match ? (match[1] || match[2]).trim() : fallbackName,
     count: Number(res.headers.get('x-export-count') || 0),
     truncated: res.headers.get('x-export-truncated') === 'true',
   }
@@ -162,6 +290,72 @@ function toQuery(params = {}) {
   return qs.toString()
 }
 
+function abortError() {
+  return new DOMException('The request was cancelled.', 'AbortError')
+}
+
+/** A timer that an AbortSignal can cut short, so no poll outlives its page. */
+function wait(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** How often a report job is asked for its status. */
+export const REPORT_POLL_MS = 4000
+/** How long the console waits for a report before saying so. The job itself carries on. */
+export const REPORT_WAIT_MS = 20 * 60 * 1000
+
+/**
+ * Ask for an investigation report, wait for the model to write it, and
+ * download it. `onProgress({ status, message, sessionCount })` is called for
+ * every state the job reports. Aborting `signal` stops the waiting and clears
+ * the timer; the job on the server is unaffected and can be asked for again.
+ */
+async function investigationReport(params, { onProgress, signal, pollMs = REPORT_POLL_MS } = {}) {
+  const { format, ...filters } = params
+  const report = (job) => onProgress?.({
+    status: job.status,
+    message: job.message || '',
+    sessionCount: typeof job.session_count === 'number' ? job.session_count : null,
+  })
+
+  let job = await request(`/export/reports?${toQuery(filters)}`, { method: 'POST', signal })
+  const deadline = Date.now() + REPORT_WAIT_MS
+  while (job.status !== 'complete') {
+    if (job.status === 'failed') {
+      throw new ApiError(job.message || 'The report could not be prepared.', 503)
+    }
+    if (Date.now() > deadline) {
+      throw new ApiError(
+        'The report is taking longer than expected. It is still being written; ask for it again shortly to collect the same report.',
+        504,
+      )
+    }
+    report(job)
+    await wait(pollMs, signal)
+    job = await request(`/export/reports/${encodeURIComponent(job.id)}`, { signal })
+  }
+  report({ ...job, message: 'The findings are ready. Preparing the file.' })
+  return download(
+    `/export/reports/${encodeURIComponent(job.id)}/download?format=${format}`,
+    { signal },
+    `investigation.${format}`,
+  )
+}
+
 export const api = {
   auth: {
     login: (email, password, totpCode) =>
@@ -171,6 +365,9 @@ export const api = {
           totpCode ? { email, password, totp_code: totpCode } : { email, password },
         ),
       }),
+    // What this deployment can actually do: send mail, accept sign-ups,
+    // reset a password by mail. Public, so the sign-in page can ask.
+    capabilities: (options = {}) => request('/auth/capabilities', options),
     mfa: {
       enroll: () => request('/auth/mfa/enroll', { method: 'POST' }),
       confirm: (code) =>
@@ -211,8 +408,6 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ current_password, new_password }),
       }),
-    // Administration. Sign-up needs email this deployment cannot send, so
-    // accounts are created here instead.
     users: {
       list: () => request('/auth/users'),
       create: (data) =>
@@ -231,15 +426,17 @@ export const api = {
   },
 
   dashboard: {
-    stats: () => request('/dashboard/stats'),
-    liveEvents: (limit = 50) => request(`/dashboard/live-events?limit=${limit}`),
+    stats: (options = {}) => request('/dashboard/stats', options),
+    liveEvents: (limit = 50, options = {}) => request(`/dashboard/live-events?limit=${limit}`, options),
+    // Sessions per UTC day, split by category.
+    trends: (days = 30, options = {}) => request(`/dashboard/trends?days=${days}`, options),
   },
 
   sessions: {
     list: (params = {}, options = {}) => request(`/sessions/?${toQuery(params)}`, options),
     get: (id, options = {}) => request(`/sessions/${id}`, options),
     getByUuid: (uuid) => request(`/sessions/uuid/${uuid}`),
-    transcript: (id) => request(`/sessions/${id}/transcript`),
+    transcript: (id, options = {}) => request(`/sessions/${id}/transcript`, options),
     // Admin only, and the read is audit-logged server side.
     credentials: (id) => request(`/sessions/${id}/credentials`),
     // Queue the language-model analysis stage for one session.
@@ -249,28 +446,41 @@ export const api = {
   },
 
   alerts: {
-    list: (params = {}) => request(`/alerts/?${toQuery(params)}`),
+    list: (params = {}, options = {}) => request(`/alerts/?${toQuery(params)}`, options),
     get: (id) => request(`/alerts/${id}`),
     update: (id, data) =>
       request(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     bulk: (ids, status) =>
       request('/alerts/bulk', { method: 'POST', body: JSON.stringify({ ids, status }) }),
-    stats: () => request('/alerts/stats'),
+    stats: (options = {}) => request('/alerts/stats', options),
   },
 
   iocs: {
-    list: (params = {}) => request(`/iocs/?${toQuery(params)}`),
+    list: (params = {}, options = {}) => request(`/iocs/?${toQuery(params)}`, options),
     forSession: (id) => request(`/iocs/session/${id}`),
     // Plain text, one value per line — downloaded rather than rendered.
-    feed: (params = {}) => download(`/iocs/feed?${toQuery(params)}`),
+    feed: (params = {}) => download(`/iocs/feed?${toQuery(params)}`, {}, 'indicators.txt'),
   },
 
   payloads: {
     list: (params = {}, options = {}) => request(`/payloads/?${toQuery(params)}`, options),
     get: (sha256, options = {}) => request(`/payloads/${sha256}`, options),
-    stats: () => request('/payloads/stats'),
+    stats: (options = {}) => request('/payloads/stats', options),
     // Raw sample bytes, admin only and audit-logged server side.
-    download: (sha256) => download(`/payloads/${sha256}/download`),
+    download: (sha256) => download(`/payloads/${sha256}/download`, {}, `${sha256}.bin`),
+  },
+
+  attack: {
+    // Technique counts per tactic, over the same filters as the session list.
+    matrix: (params = {}, options = {}) => request(`/attack/matrix?${toQuery(params)}`, options),
+    // The same counts as an ATT&CK Navigator layer file.
+    navigatorLayer: (params = {}) =>
+      download(`/attack/navigator-layer?${toQuery(params)}`, {}, 'honeysentinel-attack-layer.json'),
+  },
+
+  // Admin only.
+  auditLogs: {
+    list: (params = {}, options = {}) => request(`/audit-logs?${toQuery(params)}`, options),
   },
 
   nodes: {
@@ -306,13 +516,23 @@ export const api = {
   },
 
   export: {
-    // The backend route is POST; this used to issue a GET and always 405'd.
-    sessions: (params = {}) =>
-      download(`/export/?${toQuery(params)}`, { method: 'POST' }),
+    /**
+     * Export the sessions matching `params`. CSV, JSON, CEF and STIX come
+     * straight back as a file. PDF and Word reports are written by the model
+     * as a background job; see investigationReport for `onProgress` and
+     * `signal`.
+     */
+    sessions: (params = {}, { onProgress, signal, pollMs } = {}) => {
+      if (!['pdf', 'docx'].includes(params.format)) {
+        // The backend route is POST; this used to issue a GET and always 405'd.
+        return download(`/export/?${toQuery(params)}`, { method: 'POST', signal })
+      }
+      return investigationReport(params, { onProgress, signal, pollMs })
+    },
   },
 
   honeypot: {
-    status: () => request('/honeypot/status'),
+    status: (options = {}) => request('/honeypot/status', options),
     securityStatus: () => request('/honeypot/security-status'),
     updateMode: (mode) =>
       request('/honeypot/mode', {
@@ -329,7 +549,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ ip }),
       }),
-    blockedIPs: () => request('/honeypot/blocked-ips'),
+    blockedIPs: (options = {}) => request('/honeypot/blocked-ips', options),
     threatActors: () => request('/honeypot/threat-actors'),
     activeSessions: () => request('/honeypot/sessions/active'),
   },

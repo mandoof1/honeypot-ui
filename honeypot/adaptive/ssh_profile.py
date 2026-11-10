@@ -65,18 +65,25 @@ class SSHProfile:
     #: The server host-key algorithm name-list, in the order OpenSSH 8.2 sends
     #: it when ed25519, RSA and ECDSA-p256 keys are present — which a stock
     #: Ubuntu/Debian install has, because the package postinst generates all
-    #: three. asyncssh instead derives this from the RSA keypair's signature
+    #: three. sshd builds the list by walking its HostKey files in their
+    #: default order — RSA, ECDSA, ED25519 — and for the RSA key it puts the
+    #: two SHA-2 signature names ahead of ``ssh-rsa`` (sshd.c,
+    #: ``list_hostkey_types``). That is the line ``ssh -vv`` shows against an
+    #: Ubuntu 20.04 host: ``rsa-sha2-512,rsa-sha2-256,ssh-rsa,
+    #: ecdsa-sha2-nistp256,ssh-ed25519``. This used to list ECDSA and ED25519
+    #: first, which is the *client's* preference order, not the server's.
+    #: asyncssh instead derives this from the RSA keypair's signature
     #: algorithms, which include ``ssh-rsa-sha256@ssh.com`` and three more
     #: ``@ssh.com`` names that no OpenSSH has ever offered — a one-packet tell
     #: in the very KEXINIT this profile exists to make honest. Applied by
     #: :func:`apply_host_key_algs`.
     host_key_algs: tuple[str, ...] = field(
         default=(
-            "ecdsa-sha2-nistp256",
-            "ssh-ed25519",
             "rsa-sha2-512",
             "rsa-sha2-256",
             "ssh-rsa",
+            "ecdsa-sha2-nistp256",
+            "ssh-ed25519",
         )
     )
 

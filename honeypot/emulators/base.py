@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 class BaseEmulator(ABC):
+    #: Per-address admission limits for this protocol; None uses the
+    #: engine-wide HONEYPOT_MAX_CONN_PER_IP and HONEYPOT_RATE_LIMIT.
+    max_connections_per_ip: Optional[int] = None
+    rate_limit_per_minute: Optional[int] = None
+
     def __init__(self, protocol: str, port: int, ssl_context=None):
         self.protocol = protocol
         self.port = port
@@ -57,7 +62,10 @@ class BaseEmulator(ABC):
         live.
         """
         peer_ip, _ = self._get_peer_info(writer)
-        if not rate_limiter.admit(peer_ip):
+        if not rate_limiter.admit(
+            peer_ip, self.max_connections_per_ip, self.rate_limit_per_minute,
+            protocol=self.protocol,
+        ):
             writer.close()
             try:
                 await writer.wait_closed()

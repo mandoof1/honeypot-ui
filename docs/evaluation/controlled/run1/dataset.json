@@ -1,0 +1,59 @@
+{
+  "kind": "controlled test traffic",
+  "what": "Sessions produced by tools/controlled_traffic/generate.py against a throwaway engine on loopback. Labels were assigned by construction: each session carries the label of the scripted scenario that produced it. None of this is traffic from real attackers.",
+  "label_definitions": {
+    "benign": "Connects and leaves, mistypes one login, or browses ordinary pages. No attack behaviour.",
+    "reconnaissance": "Finds out what is there without changing anything: version scans, path enumeration, system enumeration after login.",
+    "exploitation": "Tries to gain or keep access: password guessing runs, injection and traversal requests, download-and-run, persistence.",
+    "exfiltration": "Reads sensitive files and sends them to another host."
+  },
+  "generator": {
+    "seed": 20261110,
+    "rounds": 6,
+    "gap": 4.0,
+    "target": "127.0.0.1"
+  },
+  "scenarios_run": 75,
+  "sessions_labelled": 91,
+  "by_label": {
+    "benign": 24,
+    "exfiltration": 6,
+    "exploitation": 35,
+    "reconnaissance": 26
+  },
+  "by_scenario": {
+    "ftp-connect-quit": 6,
+    "http-browse": 6,
+    "http-injection-requests": 10,
+    "http-path-enumeration": 6,
+    "nmap-http-enum": 3,
+    "nmap-version-scan": 11,
+    "sqlmap-default-run": 1,
+    "ssh-download-and-run": 6,
+    "ssh-enumeration": 6,
+    "ssh-one-mistyped-login": 6,
+    "ssh-password-guessing": 12,
+    "ssh-persistence": 6,
+    "ssh-read-and-send": 6,
+    "telnet-connect": 6
+  },
+  "by_protocol": {
+    "ftp": 8,
+    "http": 27,
+    "ssh": 42,
+    "telnet": 14
+  },
+  "scenarios_without_sessions": [
+    "ssh-banner-grab"
+  ],
+  "left_out": {
+    "outside every scenario window": 1,
+    "not a session record": 2
+  },
+  "generator_notes": [],
+  "limits": [
+    "The scripted shell and web scenarios were written by the team that wrote the rules, so the rule layer is being scored on traffic resembling what it was built for.",
+    "Every session comes from one source address on loopback.",
+    "A scenario's label is applied to every session inside its window; a scanner's individual probe connections all carry the scan's label."
+  ]
+}

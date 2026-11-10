@@ -14,7 +14,9 @@ call sends a customer to a shop that loses their order:
 - a bait path (/.env, /wp-login.php, ...): no page of the application links
   to one;
 - an attack pattern in the path, query or body (SQL injection, traversal,
-  ...);
+  ...), or in a request header: a JNDI lookup or a shell function
+  definition arrives in User-Agent, Referer or a made-up header at least as
+  often as in the URL, and no browser sends either;
 - the user agent of attack tooling (sqlmap, nikto, ...);
 - failed logins at a rate no person reaches by mistyping.
 
@@ -36,7 +38,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, Sequence
 
 from honeypot.core.config import config
 
@@ -48,6 +50,46 @@ SCANNER_AGENTS = (
     "nmap scripting engine", "acunetix", "netsparker", "openvas", "nessus",
     "commix", "xsstrike", "arachni", "skipfish", "w3af", "whatweb", "zmeu",
     "jaeles", "hydra",
+)
+
+#: Substrings in a header value (or name) that mark an attack, and what
+#: each one attempts. Deliberately narrow: a header match moves a client to
+#: the decoy application for hours, so every entry is a string no browser,
+#: crawler or API client puts in a header. Compared lower-cased.
+HEADER_ATTACK_INDICATORS = (
+    # Log4Shell: the lookup itself, and the nested lookups used to spell
+    # "jndi" without writing it.
+    ("${jndi:", "log4shell_attempt"),
+    ("${${", "log4shell_attempt"),
+    ("${::-", "log4shell_attempt"),
+    ("${lower:", "log4shell_attempt"),
+    ("${upper:", "log4shell_attempt"),
+    ("${env:", "log4shell_attempt"),
+    ("${sys:", "log4shell_attempt"),
+    # Shellshock: a bash function definition in an environment variable.
+    ("() {", "shellshock_attempt"),
+    # Code and markup meant for a log viewer or an include of the log file.
+    ("<?php", "php_injection"),
+    ("<?=", "php_injection"),
+    ("<script", "xss_attempt"),
+    ("union select", "sql_injection"),
+    ("union all select", "sql_injection"),
+    ("union+select", "sql_injection"),
+    ("union%20select", "sql_injection"),
+    ("' or '1'='1", "sql_injection"),
+    ("../../", "path_traversal"),
+    ("..%2f..%2f", "path_traversal"),
+    ("/etc/passwd", "lfi_attempt"),
+    ("/bin/sh", "command_injection"),
+    ("/bin/bash", "command_injection"),
+    ("$(curl", "command_injection"),
+    ("$(wget", "command_injection"),
+    ("`curl", "command_injection"),
+    ("`wget", "command_injection"),
+    (";wget ", "command_injection"),
+    ("; wget ", "command_injection"),
+    (";curl ", "command_injection"),
+    ("; curl ", "command_injection"),
 )
 
 #: Bait paths that browsers and crawlers fetch of their own accord. The decoy
@@ -78,6 +120,21 @@ def scanner_agent(agent: str) -> Optional[str]:
     return next((name for name in SCANNER_AGENTS if name in lowered), None)
 
 
+def header_attack(headers: Sequence[tuple[str, str]]) -> Optional[tuple[str, str]]:
+    """The first attack pattern in a request's headers: (type, header name).
+
+    Takes the headers as (name, value) pairs in arrival order. Names are
+    checked as well as values, since a payload placed in a header *name*
+    reaches the same log line.
+    """
+    for name, value in headers:
+        lowered = f"{name}: {value}".lower()
+        for indicator, attack_type in HEADER_ATTACK_INDICATORS:
+            if indicator in lowered:
+                return attack_type, name.lower()
+    return None
+
+
 def request_token(headers: dict, cookie_name: str) -> Optional[str]:
     """The value of the session cookie a request carries."""
     if not cookie_name:
@@ -93,7 +150,10 @@ def issued_tokens(response: bytes, cookie_name: str) -> list[str]:
     """Session cookie values an application's response sets."""
     if not cookie_name:
         return []
-    head = response.split(b"\r\n\r\n", 1)[0].decode("latin-1")
+    # Only the head is looked at. Splitting the whole response copied its
+    # body, which can be megabytes, to read a few header lines.
+    end = response.find(b"\r\n\r\n")
+    head = (response if end == -1 else response[:end]).decode("latin-1")
     tokens = []
     for line in head.split("\r\n")[1:]:
         name, _, value = line.partition(":")
@@ -172,6 +232,10 @@ class DiversionTable:
         key = _key(ip, agent)
         recent = [t for t in self._failures.get(key, []) if t > now - FAILED_LOGIN_WINDOW]
         recent.append(now)
+        # Only "at least the limit" is ever asked of this list, so there is
+        # no reason to keep more of it than that for a client hammering a
+        # login form.
+        recent = recent[-(max(self.failed_login_limit, 1) + 1):]
         self._failures[key] = recent
         if len(self._failures) > self.MAX_ENTRIES:
             self._failures.pop(next(iter(self._failures)))

@@ -115,7 +115,7 @@ async def test_one_session_records_every_request_on_a_kept_alive_connection(shop
     async with httpx.AsyncClient(base_url=base_url) as client:
         first = await client.get("/")
         second = await client.get("/api/products")
-    assert first.headers["connection"] == "keep-alive"
+    assert first.headers["connection"].lower() == "keep-alive"
     assert second.status_code == 201
 
     payload = await asyncio.wait_for(ingested.get(), timeout=10)
@@ -158,7 +158,7 @@ async def test_bait_paths_stay_with_the_decoy_unless_the_shop_owns_them(shop):
         env = await client.get("/.env")
         wordpress = await client.get("/wp-login.php")
         login = await client.get("/login")
-    assert "DB_PASS=" in env.text
+    assert "DB_PASSWORD=" in env.text
     assert wordpress.status_code == 200 and "target" not in wordpress.text
     assert login.json()["target"] == "/login"
 
@@ -186,4 +186,6 @@ async def test_upstream_down_gives_a_bad_gateway(shop):
     await upstream.wait_closed()
     async with httpx.AsyncClient(base_url=base_url) as client:
         response = await client.get("/")
-    assert response.status_code == 502
+    # nginx calls an unreachable application a bad gateway; Apache's proxy
+    # calls the service unavailable.
+    assert response.status_code in (502, 503)

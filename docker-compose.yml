@@ -1,8 +1,14 @@
-# Local development stack.
+# Local development stack. Not for a machine anyone else can reach: use
+# deploy/server/ for that.
 #
-# The honeypot engine runs on an internal-only network with dropped
-# capabilities and a read-only root filesystem. Only the backend bridges the
-# isolated network and the outside world.
+#   ./start.sh      # writes .env with generated secrets, then starts this
+#
+# Everything is published on 127.0.0.1 only. The engine runs with dropped
+# capabilities and a read-only root filesystem, and reaches the backend over
+# an internal network, but it is NOT contained here: its decoy ports need a
+# second, ordinary bridge (honeypot_ingress), that bridge routes outwards,
+# and no firewall on a development machine stops it. The host firewall that
+# does is part of deploy/server/.
 
 services:
   postgres:
@@ -39,12 +45,16 @@ services:
       # Generated per-stack; see .env.example for how to produce real values.
       SECRET_KEY: ${SECRET_KEY:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:-local-dev-ingest-token}
+      # No built-in fallback: a token published in this file would be the same
+      # on every checkout. ./start.sh generates one into .env.
+      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run ./start.sh, which generates one into .env}
       HONEYPOT_CONTROL_URL: http://honeypot:8000
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
       SEED_ON_STARTUP: "true"
     ports:
-      - "8000:8000"
+      # Loopback only. The API was published on every interface, with
+      # demo data and a development configuration behind it.
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,7 +103,9 @@ services:
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
       BACKEND_API_URL: http://backend:8000/api/v1
-      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:-local-dev-ingest-token}
+      # No built-in fallback: a token published in this file would be the same
+      # on every checkout. ./start.sh generates one into .env.
+      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run ./start.sh, which generates one into .env}
     ports:
       # Emulated services, published on loopback for local testing. (A
       # deployment that faces the internet is deploy/server/.)
@@ -141,7 +153,7 @@ services:
     environment:
       VITE_API_URL: http://localhost:8000/api/v1
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     depends_on:
       - backend
     networks:
@@ -157,8 +169,8 @@ networks:
     driver: bridge
   honeypot_isolated:
     driver: bridge
-    # No route out to the internet: a process that escapes an emulator cannot
-    # reach anything but the backend.
+    # No route out on this network. The engine is also on honeypot_ingress,
+    # which has one; see the note at the top of this file.
     internal: true
     ipam:
       config:

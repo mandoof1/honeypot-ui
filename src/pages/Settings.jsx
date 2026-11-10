@@ -1,15 +1,24 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Mail, Plus, ShieldCheck, Trash2, Webhook } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
+import { Mail, Pause, Play, Plus, ShieldCheck, Trash2, Webhook } from 'lucide-react'
 import qrcode from 'qrcode-generator'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
+import { useCapabilities } from '../hooks/useCapabilities'
+import { useSecretsHidden } from '../hooks/useSecretsHidden'
+import AuditLogPanel from '../components/AuditLogPanel'
+import { BlockedAddressesPanel } from '../components/BlockControls'
+import CopyButton from '../components/CopyButton'
 import ErrorBanner from '../components/ErrorBanner'
 import EmptyState from '../components/EmptyState'
 import { LoadingRegion } from '../components/Loading'
+import PageHeader from '../components/PageHeader'
+import Secret from '../components/Secret'
 import { SeverityRail } from '../components/Severity'
 import EnginesPanel from '../components/EnginesPanel'
 import UsersPanel, { ChangePasswordPanel } from '../components/UsersPanel'
 import { SEVERITY_ORDER } from '../lib/severity'
+import { cleanLine } from '../lib/text'
 
 const BLANK_THRESHOLD = {
   name: '',
@@ -60,7 +69,7 @@ function Toggle({ checked, onChange, disabled, icon: Icon, children }) {
 }
 
 /** Shared editor for both creating and editing a threshold. */
-function ThresholdForm({ value, onChange, onSubmit, onCancel, submitLabel }) {
+function ThresholdForm({ value, onChange, onSubmit, onCancel, submitLabel, emailAvailable }) {
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -109,7 +118,8 @@ function ThresholdForm({ value, onChange, onSubmit, onCancel, submitLabel }) {
 
       <div className="flex flex-wrap items-center gap-5">
         <Toggle
-          checked={value.email_enabled}
+          checked={value.email_enabled && emailAvailable}
+          disabled={!emailAvailable}
           onChange={(v) => onChange({ ...value, email_enabled: v })}
           icon={Mail}
         >
@@ -123,6 +133,14 @@ function ThresholdForm({ value, onChange, onSubmit, onCancel, submitLabel }) {
           Webhook
         </Toggle>
       </div>
+
+      {!emailAvailable && (
+        <p className="text-[12px] leading-relaxed text-paper-3" data-testid="email-unavailable">
+          E-mail delivery is not available: this deployment has no mail provider configured, so
+          an e-mail channel would deliver nothing. Alerts still appear in the console, and a
+          webhook can carry them elsewhere.
+        </p>
+      )}
 
       <div className="flex items-center gap-2 pt-1">
         <button
@@ -145,9 +163,18 @@ function ThresholdForm({ value, onChange, onSubmit, onCancel, submitLabel }) {
   )
 }
 
-function ThresholdRow({ threshold, onUpdate, onDelete, canEdit }) {
+function ThresholdRow({ threshold, onUpdate, onDelete, canEdit, emailAvailable }) {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState(threshold)
+  const [toggling, setToggling] = useState(false)
+
+  // "Paused" was a label with nothing to press: a threshold could be seen to
+  // be paused but not paused or resumed.
+  const toggleActive = async () => {
+    setToggling(true)
+    await onUpdate(threshold.id, { is_active: !threshold.is_active })
+    setToggling(false)
+  }
 
   const startEditing = () => {
     setForm(threshold)
@@ -156,7 +183,13 @@ function ThresholdRow({ threshold, onUpdate, onDelete, canEdit }) {
 
   const save = async () => {
     // Stay in the editor on failure, so a rejected change is not lost.
-    const ok = await onUpdate(threshold.id, form)
+    const ok = await onUpdate(threshold.id, {
+      name: form.name,
+      min_severity: form.min_severity,
+      anomaly_score_threshold: form.anomaly_score_threshold,
+      email_enabled: form.email_enabled && emailAvailable,
+      webhook_enabled: form.webhook_enabled,
+    })
     if (ok) setEditing(false)
   }
 
@@ -169,22 +202,25 @@ function ThresholdRow({ threshold, onUpdate, onDelete, canEdit }) {
           onSubmit={save}
           onCancel={() => setEditing(false)}
           submitLabel="Save changes"
+          emailAvailable={emailAvailable}
         />
       </div>
     )
   }
 
   const channels = [
-    threshold.email_enabled && 'Email',
+    threshold.email_enabled && emailAvailable && 'Email',
     threshold.webhook_enabled && 'Webhook',
   ].filter(Boolean)
+  const emailDead = threshold.email_enabled && !emailAvailable
 
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-line px-4 py-3 last:border-0">
       <div className="min-w-40 flex-1">
-        <p className="text-sm font-semibold text-paper">{threshold.name}</p>
+        <p className="text-sm font-semibold text-paper">{cleanLine(threshold.name)}</p>
         <p className="mt-0.5 text-[13px] text-paper-3">
-          {channels.length ? `Notifies by ${channels.join(' and ').toLowerCase()}` : 'No delivery channel selected'}
+          {channels.length ? `Notifies by ${channels.join(' and ').toLowerCase()}` : 'Raises alerts in the console only'}
+          {emailDead && '. E-mail is selected but cannot be sent: no mail provider is configured'}
         </p>
       </div>
 
@@ -215,6 +251,18 @@ function ThresholdRow({ threshold, onUpdate, onDelete, canEdit }) {
         </span>
         {canEdit && (
           <>
+            <button
+              type="button"
+              onClick={toggleActive}
+              disabled={toggling}
+              className="inline-flex items-center gap-1 text-[13px] font-medium text-paper-2 transition-colors hover:text-paper disabled:opacity-50"
+              aria-label={`${threshold.is_active ? 'Pause' : 'Resume'} ${threshold.name}`}
+            >
+              {threshold.is_active
+                ? <Pause className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+                : <Play className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />}
+              {threshold.is_active ? 'Pause' : 'Resume'}
+            </button>
             <button
               type="button"
               onClick={startEditing}
@@ -259,8 +307,9 @@ function EnrolmentQR({ uri }) {
  * the user out of the dashboard. Enrolment is two steps on purpose: the
  * secret is only activated once a code proves the app holds it.
  */
-function TwoFactorPanel() {
+function TwoFactorPanel({ resetByMail }) {
   const { user, refreshUser } = useAuth()
+  const masked = useSecretsHidden()
   const [step, setStep] = useState('idle') // idle | scanning | done | disabling
   const [enrolment, setEnrolment] = useState(null)
   const [code, setCode] = useState('')
@@ -345,19 +394,25 @@ function TwoFactorPanel() {
               Save these recovery codes now. They are shown once, and each works once.
             </p>
             <p className="mt-1 text-[13px] text-paper-3">
-              Password reset needs email, which this deployment does not have, so
-              losing both your phone and these codes means losing the account.
+              {resetByMail
+                ? 'If you lose both your phone and these codes, an administrator has to reset your authenticator.'
+                : 'This deployment cannot reset a password by e-mail, so losing both your phone and these codes means an administrator has to reset your authenticator.'}
             </p>
-            <ul className="readout mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] text-paper sm:grid-cols-4">
-              {recovery.map((c) => <li key={c}>{c}</li>)}
-            </ul>
-            <button
-              type="button"
-              className="control mt-3"
-              onClick={() => navigator.clipboard?.writeText(recovery.join('\n'))}
-            >
-              Copy all
-            </button>
+            {masked ? (
+              <p className="mt-3 text-[13px] text-paper-2" data-testid="recovery-masked">
+                The {recovery.length} codes are masked while presentation mode is on. Copy them
+                now, or turn presentation mode off to read them.
+              </p>
+            ) : (
+              <ul className="readout mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] text-paper sm:grid-cols-4">
+                {recovery.map((c) => <li key={c}>{c}</li>)}
+              </ul>
+            )}
+            <div className="mt-3">
+              <CopyButton value={recovery.join('\n')} label="Copy all recovery codes" raw>
+                Copy all
+              </CopyButton>
+            </div>
           </div>
         )}
 
@@ -369,15 +424,25 @@ function TwoFactorPanel() {
 
         {step === 'scanning' && enrolment && (
           <form onSubmit={confirm} className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <EnrolmentQR uri={enrolment.otpauth_uri} />
+            {masked ? (
+              // The QR code is the secret, drawn as a picture.
+              <div
+                className="flex h-44 w-44 shrink-0 items-center justify-center rounded-[3px] border border-line bg-ink-2 p-3 text-center text-[12px] leading-relaxed text-paper-2"
+                data-testid="qr-masked"
+              >
+                The QR code is hidden while presentation mode is on.
+              </div>
+            ) : (
+              <EnrolmentQR uri={enrolment.otpauth_uri} />
+            )}
             <div className="min-w-0 space-y-3">
               <p className="text-[13px] text-paper-2">
                 Scan the code with Google Authenticator, 1Password, Authy or any
                 TOTP app, then enter the six digits it shows.
               </p>
               <p className="text-[12px] text-paper-3">
-                Can't scan? Enter this key manually:{' '}
-                <span className="readout break-all text-paper">{enrolment.secret}</span>
+                Can&rsquo;t scan? Enter this key manually:{' '}
+                <Secret value={enrolment.secret} label="setup key" />
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 {codeInput}
@@ -418,6 +483,9 @@ function TwoFactorPanel() {
 export default function Settings() {
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
+  const capabilities = useCapabilities()
+  const emailAvailable = capabilities.email_delivery
+  const location = useLocation()
   const [error, setError] = useState(null)
   const [thresholds, setThresholds] = useState([])
   const [systemConfig, setSystemConfig] = useState(null)
@@ -476,7 +544,10 @@ export default function Settings() {
 
   const handleCreateThreshold = async () => {
     if (!newThreshold.name.trim()) return
-    const ok = await run(() => api.settings.createThreshold(newThreshold))
+    const ok = await run(() => api.settings.createThreshold({
+      ...newThreshold,
+      email_enabled: newThreshold.email_enabled && emailAvailable,
+    }))
     if (!ok) return
     setNewThreshold(BLANK_THRESHOLD)
     setCreating(false)
@@ -500,12 +571,28 @@ export default function Settings() {
     setSaving(false)
   }
 
+  // A link to /settings#engines has to wait for the page to exist: the
+  // sections are drawn only after the settings load, so the browser's own
+  // jump to the fragment found nothing and the link went nowhere.
+  useEffect(() => {
+    if (loading || !location.hash) return
+    const target = document.getElementById(decodeURIComponent(location.hash.slice(1)))
+    if (!target) return
+    target.scrollIntoView({ block: 'start' })
+    target.focus({ preventScroll: true })
+  }, [loading, location.hash, location.key])
+
   if (loading) return <LoadingRegion label="Loading settings" className="py-24" />
 
   const modeChanged = honeypotMode !== (systemConfig?.honeypot_mode || 'active')
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
+      <PageHeader
+        eyebrow="Console"
+        title="Settings"
+        description="How the decoys behave, what raises an alert, who can sign in, and what has been done."
+      />
       {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
       {!isAdmin && (
@@ -546,13 +633,13 @@ export default function Settings() {
                   className={`rounded-[3px] border p-3.5 text-left transition-colors ${
                     selected
                       ? 'border-paper bg-ink-2'
-                      : 'border-line bg-ink-0 hover:border-bone-mute'
+                      : 'border-line bg-ink-0 hover:border-line-2'
                   } ${!isAdmin ? 'cursor-not-allowed opacity-60' : ''}`}
                 >
                   <span className="flex items-center gap-2">
                     <span
                       className={`h-2.5 w-2.5 shrink-0 rounded-full border-2 ${
-                        selected ? 'border-paper bg-paper' : 'border-bone-mute'
+                        selected ? 'border-paper bg-paper' : 'border-line-2'
                       }`}
                       aria-hidden="true"
                     />
@@ -610,9 +697,11 @@ export default function Settings() {
         </dl>
       </Panel>
 
-      <div id="engines">
+      <div id="engines" tabIndex={-1} className="scroll-mt-4 outline-none">
         <EnginesPanel />
       </div>
+
+      <BlockedAddressesPanel />
 
       <Panel
         title="Alert thresholds"
@@ -638,6 +727,7 @@ export default function Settings() {
               onSubmit={handleCreateThreshold}
               onCancel={() => { setCreating(false); setNewThreshold(BLANK_THRESHOLD) }}
               submitLabel="Create threshold"
+              emailAvailable={emailAvailable}
             />
           </div>
         )}
@@ -649,6 +739,7 @@ export default function Settings() {
                 key={t.id}
                 threshold={t}
                 canEdit={isAdmin}
+                emailAvailable={emailAvailable}
                 onUpdate={handleUpdateThreshold}
                 onDelete={handleDeleteThreshold}
               />
@@ -679,34 +770,44 @@ export default function Settings() {
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
             <dt className="eyebrow">Export formats</dt>
-            {/* JSON, CEF and STIX 2.1 are what the export route actually
-                serves. This previously advertised TAXII, which is not
-                implemented anywhere in the backend. */}
-            <dd className="readout text-[13px] text-paper">CSV · JSON · CEF · STIX 2.1</dd>
+            {/* What the export route actually serves. This previously
+                advertised TAXII, which is not implemented anywhere in the
+                backend. */}
+            <dd className="readout text-[13px] text-paper">CSV · JSON · CEF · STIX 2.1 · PDF and Word reports</dd>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
             <dt className="eyebrow">Alert delivery</dt>
-            <dd className="readout text-[13px] text-paper">In-app · Email · Signed webhook</dd>
+            <dd className="readout text-[13px] text-paper" data-testid="delivery-channels">
+              In-app · Signed webhook · {emailAvailable
+                ? 'E-mail'
+                : capabilities.status === 'loading'
+                  ? 'E-mail (checking)'
+                  : 'E-mail not available (no mail provider configured)'}
+            </dd>
           </div>
           {systemConfig?.enrichment && (
             <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
-              <dt className="eyebrow">Model analysis</dt>
+              <dt className="eyebrow" title="The language model that reads transcripts and writes each session's intent and objectives">
+                Language-model analysis
+              </dt>
               <dd className="readout text-[13px] text-paper">
                 {systemConfig.enrichment.configured
-                  ? `On · ${systemConfig.enrichment.model || 'local model'}`
-                  : 'Not configured (CHIMERA_URL unset)'}
+                  ? `On · language model ${cleanLine(systemConfig.enrichment.model || '') || '(unnamed)'}`
+                  : 'Off: the API has no model address (its CHIMERA_URL setting is empty)'}
               </dd>
             </div>
           )}
           {systemConfig?.triage && (
             <div className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5">
-              <dt className="eyebrow">Triage</dt>
+              <dt className="eyebrow" title="The small decision model that reads a session first and decides whether the language model should">
+                Decision-model triage
+              </dt>
               <dd className="readout text-[13px] text-paper">
                 {systemConfig.triage.configured
-                  ? `On · ${systemConfig.triage.model || 'decision model'} · skip ≥ ${Math.round(
+                  ? `On · decision model ${cleanLine(systemConfig.triage.model || '') || '(unnamed)'} · skip ≥ ${Math.round(
                       systemConfig.triage.skip_threshold * 100,
                     )}% · confirm ≥ ${Math.round(systemConfig.triage.support_threshold * 100)}%`
-                  : 'Not configured (DECIDER_URL unset)'}
+                  : 'Off: the API has no model address (its DECIDER_URL setting is empty)'}
               </dd>
             </div>
           )}
@@ -733,9 +834,10 @@ export default function Settings() {
           )}
         </dl>
       </Panel>
-      <TwoFactorPanel />
-      <ChangePasswordPanel />
-      {isAdmin && <UsersPanel />}
+      <TwoFactorPanel resetByMail={capabilities.password_reset} />
+      <ChangePasswordPanel resetByMail={capabilities.password_reset} />
+      {isAdmin && <UsersPanel signupAvailable={capabilities.signup} />}
+      {isAdmin && <AuditLogPanel />}
     </div>
   )
 }

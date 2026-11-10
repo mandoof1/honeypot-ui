@@ -54,6 +54,42 @@
   --color-s4: #d5405f;
 }
 
+/*
+ * Light, high-contrast theme.
+ *
+ * For a projector or a bright room, where the dark palette washes out. The
+ * same tokens are re-pointed rather than a second set of classes written, so
+ * every surface, rule and label follows without being touched.
+ *
+ * Text is near-black on white (19:1; secondary 11:1, tertiary 6.8:1) and the
+ * rules are dark enough to read as lines from the back of a room (3.4:1).
+ *
+ * The severity ramp is re-stepped, not reused: the dark theme's steps sit
+ * between 1.8:1 and 2.7:1 on white. These were chosen by search and checked
+ * with the palette validator against a white surface: every step is at least
+ * 4.7:1 as text, adjacent steps are 8.4 apart under protanopia and 16.3 apart
+ * for full colour vision.
+ */
+:root[data-theme='light'] {
+  --color-ink-0: #ffffff;
+  --color-ink-1: #ffffff;
+  --color-ink-2: #f1f1ee;
+  --color-ink-3: #e4e4e0;
+  --color-line: #8a8a93;
+  --color-line-2: #55555e;
+
+  --color-paper: #0b0b0d;
+  --color-paper-2: #34343b;
+  --color-paper-3: #55555e;
+
+  --color-s1: #15632f;
+  --color-s2: #926e10;
+  --color-s3: #932605;
+  --color-s4: #cf1e64;
+
+  color-scheme: light;
+}
+
 @layer base {
   html {
     background-color: var(--color-ink-0);
@@ -127,7 +163,7 @@
    */
   .eyebrow {
     font-family: var(--font-sans);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -146,6 +182,20 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.03em;
+    /* Readouts hold captured values. A right-to-left run inside one must not
+       reorder the text around it. */
+    unicode-bidi: isolate;
+  }
+
+  /*
+   * One line of captured text: a command, a line of output, a header. Laid
+   * out left to right as a terminal would, and isolated so that a
+   * right-to-left run in it cannot pull neighbouring characters, or the next
+   * line, out of order.
+   */
+  .bidi-isolate {
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
   /* A headline figure. Display face, tight, optically large. */
@@ -189,8 +239,8 @@
   }
 
   .control-primary:hover:not(:disabled) {
-    background: #ffffff;
-    border-color: #ffffff;
+    background: color-mix(in oklab, var(--color-paper) 86%, var(--color-ink-0));
+    border-color: color-mix(in oklab, var(--color-paper) 86%, var(--color-ink-0));
   }
 
   .control-primary:disabled {
@@ -224,12 +274,34 @@
     border-radius: 999px;
     border: 1px solid currentColor;
     font-family: var(--font-sans);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
     line-height: 1;
     padding: 0.1875rem 0.5rem;
     white-space: nowrap;
   }
+
+  /*
+   * Heat steps for the ATT&CK matrix. The matrix measures volume, not threat,
+   * so it shades in ivory like every other volume chart here: one hue, five
+   * steps, light to strong. The count is always printed in the cell, so the
+   * shade is never the only way to read it.
+   */
+  .heat-0 { background: transparent; }
+  .heat-1 { background: color-mix(in oklab, var(--color-paper) 9%, var(--color-ink-1)); }
+  .heat-2 { background: color-mix(in oklab, var(--color-paper) 20%, var(--color-ink-1)); }
+  .heat-3 { background: color-mix(in oklab, var(--color-paper) 34%, var(--color-ink-1)); }
+  .heat-4 { background: color-mix(in oklab, var(--color-paper) 52%, var(--color-ink-1)); }
+
+  /* Text on a heat cell. The strongest step is light enough in the dark
+     theme to need dark text; in the light theme every step takes the
+     ordinary text colour. Both pairings are above 4.5:1. */
+  .heat-0, .heat-1, .heat-2, .heat-3 { color: var(--color-paper); }
+  .heat-4 { color: var(--color-ink-0); }
+  :root[data-theme='light'] .heat-4 { color: var(--color-paper); }
+
+  /* Data that is on screen but was not refreshed: dimmed, never hidden. */
+  .is-stale { opacity: 0.62; }
 
   /* Row in a ranked list: label, drawn bar, value. */
   .rank-row {
@@ -281,11 +353,15 @@
     filter: invert(1) hue-rotate(180deg) brightness(0.8) contrast(0.85) saturate(0.25);
   }
 
+  :root[data-theme='light'] .map-tiles-dark {
+    filter: saturate(0.35) contrast(1.05);
+  }
+
   .leaflet-control-attribution {
-    background: rgb(10 10 12 / 0.85) !important;
+    background: color-mix(in oklab, var(--color-ink-0) 85%, transparent) !important;
     color: var(--color-paper-3) !important;
     font-family: var(--font-sans) !important;
-    font-size: 10px !important;
+    font-size: 11px !important;
   }
 
   .leaflet-control-attribution a { color: var(--color-paper-2) !important; }

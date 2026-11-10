@@ -1,12 +1,14 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
-import { Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Bell, ChevronUp, LogOut, Menu, X } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
+import DisplayControls from '../components/DisplayControls'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { LoadingRegion } from '../components/Loading'
 import { api } from '../services/api'
 import { useVisiblePoll } from '../hooks/useVisiblePoll'
 import { nodeLiveness, relativeTime } from '../lib/format'
+import { cleanLine } from '../lib/text'
 
 const NAV = [
   { to: '/', label: 'Overview' },
@@ -14,12 +16,23 @@ const NAV = [
   { to: '/alerts', label: 'Alerts' },
   { to: '/indicators', label: 'Indicators' },
   { to: '/payloads', label: 'Payloads' },
+  { to: '/attack', label: 'ATT&CK' },
   { to: '/map', label: 'Origins' },
   { to: '/settings', label: 'Settings' },
 ]
 
 const STATUS_POLL_MS = 30000
-const BASE_TITLE = 'HoneySentinel — Honeypot Console'
+const PRODUCT = 'HoneySentinel'
+
+/** The name of the view at `pathname`, for the tab title and for assistive technology. */
+function pageName(pathname) {
+  if (pathname.startsWith('/attackers/')) {
+    const address = decodeURIComponent(pathname.slice('/attackers/'.length))
+    return `Address ${cleanLine(address)}`
+  }
+  const match = NAV.find(({ to }) => to === pathname)
+  return match ? match.label : 'Console'
+}
 
 /** The console's mark: a cell, drawn rather than pulled from an icon set. */
 function Mark({ className = '' }) {
@@ -40,12 +53,18 @@ function Mark({ className = '' }) {
  * This is the one fact that stays relevant on every page: if the engine is
  * down, nothing else on screen is being updated. It sits above the account
  * block so it is the last thing in the reading order before the fold.
+ *
+ * Two different things can be wrong and they are named separately. "Engine
+ * unreachable" means the API answered and said it cannot reach the engine.
+ * "Console API unreachable" means the question itself got no answer, in
+ * which case nothing is known about the engine at all.
  */
-function EngineReadout({ engine, nodes, now }) {
+function EngineReadout({ engine, engineError, nodes, nodesStale, now }) {
   const state =
-    engine === null ? 'unknown'
-      : !engine.reachable ? 'unreachable'
-        : engine.running ? 'running' : 'stopped'
+    engineError ? 'api'
+      : engine === null ? 'unknown'
+        : !engine.reachable ? 'unreachable'
+          : engine.running ? 'running' : 'stopped'
 
   const nodeCount = nodes === null ? null : nodes.length
   const liveness = (nodes || []).map((n) => nodeLiveness(n, now))
@@ -55,6 +74,7 @@ function EngineReadout({ engine, nodes, now }) {
 
   const tone = {
     unknown: 'var(--color-paper-3)',
+    api: 'var(--color-s4)',
     unreachable: 'var(--color-s4)',
     stopped: 'var(--color-s3)',
     running: 'var(--color-s1)',
@@ -62,14 +82,21 @@ function EngineReadout({ engine, nodes, now }) {
 
   const text = {
     unknown: 'Checking engine',
+    api: 'Console API unreachable',
     unreachable: 'Engine unreachable',
     stopped: 'Engine stopped',
     running: 'Engine running',
   }[state]
 
+  const enginesNote = nodesStale
+    ? 'engines · count not refreshed'
+    : stale.length
+      ? `engines · stale ${relativeTime(now - oldest * 1000, now)}`
+      : 'engines online'
+
   return (
     <div className="border-t border-line px-4 py-3.5">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" data-testid="engine-state">
         <span
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${state === 'running' ? 'pulse-live' : ''}`}
           style={{ background: tone }}
@@ -77,6 +104,11 @@ function EngineReadout({ engine, nodes, now }) {
         />
         <span className="text-[13px] font-medium text-paper">{text}</span>
       </div>
+      {state === 'api' && (
+        <p className="mt-1 text-[12px] leading-snug text-paper-3">
+          The engine&rsquo;s state is unknown until the API answers.
+        </p>
+      )}
       <NavLink
         to="/settings#engines"
         className="mt-2 flex items-baseline gap-1.5 transition-colors hover:text-paper"
@@ -84,16 +116,14 @@ function EngineReadout({ engine, nodes, now }) {
         data-testid="engines-chip"
       >
         <span
-          className="readout text-[11px]"
+          className="readout text-[12px]"
           style={{ color: stale.length ? 'var(--color-s4)' : 'var(--color-paper-2)' }}
         >
           {nodeCount === null ? '—' : `${online}/${nodeCount}`}
         </span>
-        <span className="text-[11px] text-paper-3">
-          {stale.length ? `engines · stale ${relativeTime(now - oldest * 1000, now)}` : 'engines online'}
-        </span>
-        {!stale.length && engine?.protocols?.length > 0 && (
-          <span className="readout ml-auto truncate text-[11px] uppercase text-paper-3">
+        <span className="text-[12px] text-paper-3">{enginesNote}</span>
+        {!stale.length && !nodesStale && state !== 'api' && engine?.protocols?.length > 0 && (
+          <span className="readout ml-auto truncate text-[12px] uppercase text-paper-3">
             {engine.protocols.join(' ')}
           </span>
         )}
@@ -107,21 +137,36 @@ export default function DashboardLayout() {
   const [railOpen, setRailOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const [engine, setEngine] = useState(null)
+  const [engineError, setEngineError] = useState(false)
   const [nodes, setNodes] = useState(null)
+  const [nodesStale, setNodesStale] = useState(false)
   const [polledAt, setPolledAt] = useState(() => Date.now())
-  const [newAlerts, setNewAlerts] = useState(0)
+  // null until a count has been received: "not known" is not "none".
+  const [newAlerts, setNewAlerts] = useState(null)
+  const [alertsStale, setAlertsStale] = useState(false)
   const location = useLocation()
+  const name = pageName(location.pathname)
 
   const poll = useCallback(async () => {
-    const [status, nodeRows, alertStats] = await Promise.all([
-      api.honeypot.status().catch(() => ({ reachable: false })),
-      api.nodes.list(true).catch(() => null),
-      api.alerts.stats().catch(() => null),
+    const [status, nodeRows, alertStats] = await Promise.allSettled([
+      api.honeypot.status(),
+      api.nodes.list(true),
+      api.alerts.stats(),
     ])
-    setEngine(status)
-    setNodes(Array.isArray(nodeRows) ? nodeRows : null)
+
+    // A failed request leaves the last known value in place, marked as not
+    // refreshed. It is never turned into "unreachable", "0" or "none".
+    if (status.status === 'fulfilled') setEngine(status.value)
+    setEngineError(status.status === 'rejected')
+
+    if (nodeRows.status === 'fulfilled' && Array.isArray(nodeRows.value)) setNodes(nodeRows.value)
+    setNodesStale(nodeRows.status === 'rejected')
+
+    if (alertStats.status === 'fulfilled' && typeof alertStats.value?.new === 'number') {
+      setNewAlerts(alertStats.value.new)
+    }
+    setAlertsStale(alertStats.status === 'rejected')
     setPolledAt(Date.now())
-    setNewAlerts(alertStats?.new ?? 0)
   }, [])
 
   useEffect(() => {
@@ -130,13 +175,26 @@ export default function DashboardLayout() {
   }, [poll])
   useVisiblePoll(poll, STATUS_POLL_MS)
 
-  // The unread count belongs in the tab title too: an analyst with the
-  // console in a background tab should see "(3) HoneySentinel" without
-  // switching to it.
+  // The tab title names the view, so history entries and open tabs can be
+  // told apart, and leads with the unread count: an analyst with the console
+  // in a background tab should see "(3) Alerts" without switching to it.
+  const unread = newAlerts ?? 0
   useEffect(() => {
-    document.title = newAlerts > 0 ? `(${newAlerts > 99 ? '99+' : newAlerts}) ${BASE_TITLE}` : BASE_TITLE
-    return () => { document.title = BASE_TITLE }
-  }, [newAlerts])
+    const count = unread > 0 ? `(${unread > 99 ? '99+' : unread}) ` : ''
+    document.title = `${count}${name} · ${PRODUCT}`
+    return () => { document.title = PRODUCT }
+  }, [unread, name])
+
+  // After a route change, move focus to the new view. Without this a
+  // keyboard or screen-reader user stays on the link they pressed, with no
+  // sign that anything changed. Skipped on first load, where the browser's
+  // own starting position is right.
+  const previousPath = useRef(location.pathname)
+  useEffect(() => {
+    if (previousPath.current === location.pathname) return
+    previousPath.current = location.pathname
+    document.getElementById('main-content')?.focus({ preventScroll: true })
+  }, [location.pathname])
 
   useEffect(() => {
     if (!accountOpen && !railOpen) return undefined
@@ -144,6 +202,11 @@ export default function DashboardLayout() {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [accountOpen, railOpen])
+
+  const unreadText =
+    newAlerts === null
+      ? (alertsStale ? 'Unread count unavailable' : 'Checking alerts')
+      : `${newAlerts > 0 ? `${newAlerts} unread alert${newAlerts === 1 ? '' : 's'}` : 'No unread alerts'}${alertsStale ? ' (not refreshed)' : ''}`
 
   return (
     <div className="flex h-dvh overflow-hidden bg-ink-0">
@@ -209,9 +272,10 @@ export default function DashboardLayout() {
                     aria-hidden="true"
                   />
                   {label}
-                  {to === '/alerts' && newAlerts > 0 && (
-                    <span className="readout ml-2 align-middle text-[11px] text-s4">
-                      {newAlerts > 99 ? '99+' : newAlerts}
+                  {to === '/alerts' && unread > 0 && (
+                    <span className="readout ml-2 align-middle text-[12px] text-s4">
+                      {unread > 99 ? '99+' : unread}
+                      <span className="sr-only"> unread</span>
                     </span>
                   )}
                 </>
@@ -220,7 +284,15 @@ export default function DashboardLayout() {
           ))}
         </nav>
 
-        <EngineReadout engine={engine} nodes={nodes} now={polledAt} />
+        <DisplayControls />
+
+        <EngineReadout
+          engine={engine}
+          engineError={engineError}
+          nodes={nodes}
+          nodesStale={nodesStale}
+          now={polledAt}
+        />
 
         <div className="relative border-t border-line">
           <button
@@ -230,14 +302,14 @@ export default function DashboardLayout() {
             aria-haspopup="menu"
             className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-ink-2"
           >
-            <span className="readout flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] bg-ink-3 text-[11px] font-semibold text-paper">
+            <span className="readout flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] bg-ink-3 text-[12px] font-semibold text-paper">
               {user?.email?.[0]?.toUpperCase() || '?'}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] text-paper">
                 {user?.email || ''}
               </span>
-              <span className="block text-[11px] capitalize text-paper-3">
+              <span className="block text-[12px] capitalize text-paper-3">
                 {user?.role || 'analyst'}
               </span>
             </span>
@@ -264,7 +336,7 @@ export default function DashboardLayout() {
                   className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium text-paper-2 transition-colors hover:bg-ink-2 hover:text-paper"
                 >
                   <Bell className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  {newAlerts > 0 ? `${newAlerts} unread alerts` : 'No unread alerts'}
+                  {unreadText}
                 </NavLink>
                 <button
                   type="button"
@@ -295,8 +367,9 @@ export default function DashboardLayout() {
         <main
           id="main-content"
           tabIndex={-1}
+          aria-label={name}
           key={location.pathname}
-          className="flex-1 overflow-y-auto px-4 pb-6 pt-14 lg:px-6 lg:pt-6"
+          className="flex-1 overflow-y-auto px-4 pb-6 pt-14 outline-none lg:px-6 lg:pt-6"
         >
           <ErrorBoundary key={location.pathname}>
             <Suspense fallback={<LoadingRegion label="Loading view" />}><Outlet /></Suspense>

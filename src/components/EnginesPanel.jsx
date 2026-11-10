@@ -67,7 +67,7 @@ export function NodeCard({ node, now }) {
           <span className="text-[12px] text-paper-3">last seen {lastSeen}</span>
         )}
         {node.version && (
-          <span className="readout ml-auto text-[11px] text-paper-3">v{clean(node.version)}</span>
+          <span className="readout ml-auto text-[12px] text-paper-3">v{clean(node.version)}</span>
         )}
       </div>
 

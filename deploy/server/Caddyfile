@@ -3,10 +3,12 @@
 	auto_https off
 	servers {
 		# Tailscale Serve terminates TLS on the host and forwards from
-		# loopback, which reaches this container through Docker's bridge.
-		# Trusting private ranges keeps the X-Forwarded-For it sets, so the
-		# API's per-client rate limit sees the real tailnet address.
-		trusted_proxies static private_ranges
+		# loopback, which reaches this container through the hs-edge bridge.
+		# Trusting that bridge keeps the X-Forwarded-For Serve sets, so the
+		# API's per-client rate limit sees the real tailnet address. Only
+		# that bridge: with every private range trusted, anything that could
+		# reach this port could name any client it liked.
+		trusted_proxies static 172.30.72.0/24
 	}
 }
 
@@ -18,8 +20,15 @@
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		# Tailscale Serve terminates TLS; this is what the browser sees.
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# No HSTS pin. A browser applies HSTS to every port on the host, and
+		# the HTTP decoys share this hostname: once the dashboard was opened,
+		# http://<host>:8080 was rewritten to https:// (a TLS hello to a plain
+		# HTTP port) and the self-signed cert on 8443 could not be clicked
+		# through, so the website was unreachable from that browser. The
+		# dashboard is only served by Tailscale Serve over HTTPS inside the
+		# tailnet, with nothing on port 80 to downgrade to. max-age=0 also
+		# clears the pin that browsers cached from the old one-year header.
+		Strict-Transport-Security "max-age=0"
 		# Tokens live in localStorage, so script injection is the thing to
 		# shut out: scripts only from this origin (Vite inlines nothing),
 		# styles and fonts from here and Google Fonts (index.html), map tiles

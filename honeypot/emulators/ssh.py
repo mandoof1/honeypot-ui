@@ -23,18 +23,23 @@ component would be a far worse trade than a maintained library.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import struct
 from typing import Optional
 
 import asyncssh
 
 from honeypot.capture.flow import FlowMeter
 from honeypot.capture.sftp import DecoySFTPServer, wait_for_transfers
-from honeypot.capture.shell_capture import capture_command, flush_session_files
+from honeypot.capture.shell_capture import flush_session_files
 from honeypot.capture.shell_writes import HeredocBuffer, needs_continuation
+from honeypot.core import shell_dispatch
 from honeypot.core.config import config
+from honeypot.core.login_policy import FAKE_USERS, SOFT_ACCEPT_AFTER, login_policy  # noqa: F401 - re-exported
 from honeypot.core.session import session_manager
+from honeypot.core.shell_dispatch import LineEditor
 from honeypot.core.shell_state import shell_states
 from honeypot.adaptive.ssh_profile import apply_extra_kex_algs, apply_host_key_algs, get_profile
 from honeypot.core.modes import mode_handler
@@ -45,19 +50,6 @@ from honeypot.security.rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
-#: Credentials the decoy accepts. Weak on purpose — the point is to let an
-#: attacker in and record what they do next.
-FAKE_USERS = {
-    "root": "root",
-    "admin": "admin",
-    "user": "password",
-    "test": "test",
-    "ubuntu": "ubuntu",
-    "pi": "raspberry",
-    "oracle": "oracle",
-    "postgres": "postgres",
-}
-
 #: Longest command line accepted. This was 4096, which cut base64 one-liners
 #: off mid-payload: the part of the line that mattered most was the part
 #: thrown away. An exec request has to fit in one SSH packet anyway, so this
@@ -65,16 +57,9 @@ FAKE_USERS = {
 MAX_COMMAND_LENGTH = 256 * 1024
 MAX_AUTH_ATTEMPTS = 6
 
-#: Attempts after which any password is accepted, so a brute-forcer that
-#: never guesses the advertised credential still gets in and reveals what it
-#: does next. Instant success on attempt one is a fingerprint.
-SOFT_ACCEPT_AFTER = 3
-
-#: Failed attempts per source address, not per connection. Most brute-force
-#: tools open a fresh connection for every password, so a per-connection
-#: counter would never reach the threshold and the soft accept above would be
-#: dead code. Bounded so a long scan cannot grow it without limit.
-_failures_by_ip: dict[str, int] = {}
+#: Failed attempts per source address; the login policy owns it. Kept under
+#: this name because the Telnet decoy and the tests reach it here.
+_failures_by_ip = login_policy.failures
 _MAX_TRACKED_IPS = 4096
 
 #: Session-closing tasks spawned from connection_lost. asyncio keeps only a
@@ -87,6 +72,47 @@ _close_tasks: set[asyncio.Task] = set()
 #: is unset.
 DEFAULT_IDLE_TIMEOUT = 300
 
+#: Port-forward requests recorded per connection. A client using the decoy
+#: as a proxy sends thousands; the first few dozen destinations say what it
+#: is for.
+MAX_FORWARD_EVENTS = 64
+
+
+def kexinit_name_lists(payload: bytes) -> Optional[list[str]]:
+    """The ten name-lists of an SSH_MSG_KEXINIT payload, or None if malformed."""
+    if len(payload) < 17 or payload[0] != 20:
+        return None
+    offset = 17  # message type and the 16-byte cookie
+    lists: list[str] = []
+    for _ in range(10):
+        if offset + 4 > len(payload):
+            return None
+        (length,) = struct.unpack(">I", payload[offset:offset + 4])
+        offset += 4
+        if length > 65536 or offset + length > len(payload):
+            return None
+        lists.append(payload[offset:offset + length].decode("ascii", "replace"))
+        offset += length
+    return lists
+
+
+def hassh(payload: bytes, server: bool = False) -> Optional[tuple[str, str]]:
+    """(digest, algorithm string) for a KEXINIT: HASSH, or hasshServer.
+
+    HASSH is the MD5 of ``kex;encryption;mac;compression`` — the
+    client-to-server lists for a client's KEXINIT, the server-to-client lists
+    for a server's. It identifies the SSH *implementation* behind a
+    connection, and so survives a change of address or credentials.
+    """
+    lists = kexinit_name_lists(payload)
+    if lists is None:
+        return None
+    # Name-list order in KEXINIT: kex, host key, enc c2s, enc s2c, mac c2s,
+    # mac s2c, compression c2s, compression s2c, languages c2s, languages s2c.
+    chosen = (lists[0], lists[3], lists[5], lists[7]) if server else (lists[0], lists[2], lists[4], lists[6])
+    algorithms = ";".join(chosen)
+    return hashlib.md5(algorithms.encode("ascii", "replace")).hexdigest(), algorithms
+
 
 class _SessionState:
     def __init__(self) -> None:
@@ -96,12 +122,24 @@ class _SessionState:
         self.is_root = False
         self.cwd = "/home/user"
         self.auth_attempts = 0
+        #: Exit status of the last command, which is the channel's.
+        self.exit_status = 0
 
 
 async def _close_session(session_id: str, shell) -> None:
-    await wait_for_transfers(session_id)
-    await flush_session_files(session_id, shell)
-    await session_manager.end_session(session_id)
+    """Record what the session wrote, then end it — whatever goes wrong.
+
+    Each step used to follow the last with nothing guarding it, so an OSError
+    while flushing a file skipped ``end_session`` and the session was never
+    delivered at all.
+    """
+    try:
+        await wait_for_transfers(session_id)
+        await flush_session_files(session_id, shell)
+    except Exception as exc:
+        logger.warning("Could not flush files for session %s: %s", session_id, exc)
+    finally:
+        await session_manager.end_session(session_id)
 
 
 class _HoneypotSSHServer(asyncssh.SSHServer):
@@ -116,28 +154,48 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         self.admitted = False
         self.connected_at = 0.0
         self._conn: Optional[asyncssh.SSHServerConnection] = None
+        self._expiry: Optional[asyncio.TimerHandle] = None
+        self._forward_events = 0
+        self._tasks: set[asyncio.Task] = set()
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         peer = conn.get_extra_info("peername")
         if peer:
             self.source_ip, self.source_port = peer[0], peer[1]
         self._conn = conn
-        self.connected_at = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        self.connected_at = loop.time()
         conn.set_extra_info(honeypot_server=self)
         # Admission before the key exchange: a blocked or over-quota address
         # used to be refused only in begin_auth, after it had cost a full KEX
         # on the event loop.
-        self.admitted = rate_limiter.admit(self.source_ip)
+        self.admitted = rate_limiter.admit(self.source_ip, protocol="ssh")
         if not self.admitted:
             logger.warning("SSH connection from %s refused at accept", self.source_ip)
             conn.abort()
             return
         self._emulator.track(conn)
+        # The session cap belongs to the connection, not to a channel. It was
+        # enforced only around a shell or exec, so a client that authenticated
+        # and then sat idle, or opened nothing but SFTP, held its slot — and
+        # its undelivered session — for as long as it liked.
+        self._expiry = loop.call_later(config.max_session_seconds, self._expire)
         # Before asyncssh sends its version string, so the key exchange is
         # counted too.
         self.flow = FlowMeter.for_ssh(conn)
 
+    def _expire(self) -> None:
+        if self._conn is not None:
+            logger.info(
+                "SSH connection from %s closed: over the %ss session limit",
+                self.source_ip, config.max_session_seconds,
+            )
+            self._conn.close()
+
     def connection_lost(self, exc: Optional[Exception]) -> None:
+        if self._expiry is not None:
+            self._expiry.cancel()
+            self._expiry = None
         if self.admitted:
             rate_limiter.release(self.source_ip)
             self.admitted = False
@@ -180,10 +238,41 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
                 "ssh_client_banner",
                 {"banner": self._client_version()},
             )
+            await self._record_fingerprints()
         return True
 
     def _client_version(self) -> str:
-        return "unknown"
+        """The client's identification string, as it sent it."""
+        version = self._conn.get_extra_info("client_version") if self._conn else None
+        if not version:
+            return "unknown"
+        version = str(version)
+        return (version if version.startswith("SSH-") else "SSH-2.0-" + version)[:255]
+
+    async def _record_fingerprints(self) -> None:
+        """Note what identifies the client's software, from the key exchange.
+
+        The key exchange is over by the time authentication starts, so both
+        KEXINIT packets are there to read. They are asyncssh's private
+        attributes; if a later release renames them the fingerprint is simply
+        absent, and the session is otherwise unaffected.
+        """
+        session = await session_manager.get_session(self.state.session_id)
+        if session is None or self._conn is None:
+            return
+        version = self._client_version()
+        if version != "unknown":
+            session.fingerprints["ssh_client_version"] = version
+        try:
+            client = hassh(bytes(getattr(self._conn, "_client_kexinit", b"") or b""))
+            server = hassh(bytes(getattr(self._conn, "_server_kexinit", b"") or b""), server=True)
+        except Exception as exc:  # pragma: no cover - defensive against asyncssh internals
+            logger.debug("Could not read KEXINIT for %s: %s", self.source_ip, exc)
+            return
+        if client is not None:
+            session.fingerprints["hassh"], session.fingerprints["hassh_algorithms"] = client[0], client[1][:2048]
+        if server is not None:
+            session.fingerprints["hassh_server"] = server[0]
 
     def password_auth_supported(self) -> bool:
         return True
@@ -200,11 +289,11 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
     async def validate_password(self, username: str, password: str) -> bool:
         """Decide whether this attempt "succeeds".
 
-        Two ways in: the weak credential the decoy advertises for that user,
-        or persistence — any password is accepted once an attacker has tried
-        ``SOFT_ACCEPT_AFTER`` times.
+        The decision is the login policy's (``core/login_policy.py``): the
+        weak credential the decoy advertises for that user, persistence, a
+        credential this source was let in with before, or the planted one.
 
-        Letting every password through on the first attempt (the previous
+        Letting every password through on the first attempt (the original
         behaviour) is its own tell: real systems do not accept ``root`` with
         one random guess, and a brute-forcer that succeeds instantly learns it
         is talking to a decoy. Making it work only after a few failures keeps
@@ -215,30 +304,20 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         state.auth_attempts += 1
         state.username = username
 
-        prior_failures = _failures_by_ip.get(self.source_ip, 0)
-        expected = FAKE_USERS.get(username)
-        accepted = expected is not None and (
-            password == expected or prior_failures >= SOFT_ACCEPT_AFTER
-        )
-        if not accepted:
-            if len(_failures_by_ip) >= _MAX_TRACKED_IPS:
-                _failures_by_ip.clear()
-            _failures_by_ip[self.source_ip] = prior_failures + 1
-        else:
-            _failures_by_ip.pop(self.source_ip, None)
+        accepted = login_policy.check(self.source_ip, username, password)
         await session_manager.record_auth_attempt(
             state.session_id, username, password, accepted
         )
 
         if accepted:
             state.authenticated = True
-            if username == "root":
-                state.is_root = True
-                state.cwd = "/root"
-                # Keep the emulator's view of the shell in step with the
-                # session's, or `pwd` and the prompt disagree from the first
-                # command.
-                shell_states.get(state.session_id).cwd = "/root"
+            state.is_root = username == "root"
+            # Each account starts in its own home, and the emulator's view of
+            # the shell is set to match, or `pwd` and the prompt disagree from
+            # the first command.
+            state.cwd = shell_dispatch.start_shell(
+                state.session_id, username, state.is_root, self.source_ip, self.source_port
+            )
             await adaptive_engine.profile_actor(
                 state.session_id,
                 self.source_ip,
@@ -266,6 +345,46 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
             "ssh_pubkey_offered",
             {"username": username, "fingerprint": fingerprint},
         )
+        return False
+
+    # -- forwarding ----------------------------------------------------------
+
+    def _note(self, event_type: str, details: dict) -> None:
+        """Record an event from a synchronous asyncssh callback."""
+        if not self.state.session_id or self._forward_events >= MAX_FORWARD_EVENTS:
+            return
+        self._forward_events += 1
+        task = asyncio.ensure_future(
+            session_manager.record_network_event(self.state.session_id, event_type, details)
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def connection_requested(self, dest_host: str, dest_port: int, orig_host: str, orig_port: int):
+        """A ``direct-tcpip`` channel: the client wants the decoy to dial out.
+
+        This is how compromised SSH hosts are used as proxies, and it was
+        invisible: asyncssh's default refused the channel and nothing was
+        written down. The destination is what matters — it is where the
+        client's real traffic was headed — so it is recorded, and the channel
+        is then refused the way sshd refuses it when forwarding is switched
+        off. Nothing is ever dialled.
+        """
+        self._note("direct_tcpip", {
+            "dest_host": str(dest_host)[:255],
+            "dest_port": int(dest_port),
+            "orig_host": str(orig_host)[:255],
+            "orig_port": int(orig_port),
+        })
+        raise asyncssh.ChannelOpenError(
+            asyncssh.OPEN_ADMINISTRATIVELY_PROHIBITED, "open failed"
+        )
+
+    def server_requested(self, listen_host: str, listen_port: int):
+        """A ``tcpip-forward`` request: listen here and send it back. Refused."""
+        self._note("ssh_tcpip_forward", {
+            "listen_host": str(listen_host)[:255], "listen_port": int(listen_port),
+        })
         return False
 
 
@@ -402,6 +521,20 @@ class SSHHoneypot(BaseEmulator):
             await asyncio.wait(pending, timeout=5)
         logger.info("SSH honeypot stopped")
 
+    # -- channels ------------------------------------------------------------
+
+    async def _write(self, process, text: str, pty: bool) -> None:
+        """Send output and wait for the client to take it.
+
+        Writing without draining let a client that had stopped reading make
+        the engine buffer everything it produced; the drain is what turns
+        that into the client's problem instead of the engine's memory.
+        """
+        if not text:
+            return
+        process.stdout.write(shell_dispatch.encode(text, pty))
+        await process.stdout.drain()
+
     async def _handle_process(self, process: asyncssh.SSHServerProcess) -> None:
         conn = process.get_extra_info("connection")
         server: _HoneypotSSHServer = conn.get_extra_info("honeypot_server")
@@ -425,7 +558,7 @@ class SSHHoneypot(BaseEmulator):
             logger.error("SSH session error: %s", exc, exc_info=True)
         finally:
             if not process.is_closing():
-                process.exit(0)
+                process.exit(state.exit_status & 0xFF)
 
     async def _serve_process(self, process, server, state) -> None:
         try:
@@ -440,19 +573,26 @@ class SSHHoneypot(BaseEmulator):
                     {"subsystem": process.subsystem},
                 )
                 process.stderr.write(b"subsystem request failed on channel 0\r\n")
-                process.exit(1)
+                state.exit_status = 1
                 return
+            elif process.get_terminal_type() is None:
+                await self._script_shell(process, server, state)
             else:
                 await self._interactive_shell(process, server, state)
         except (asyncssh.BreakReceived, asyncssh.TerminalSizeChanged):
             pass
 
+    async def _dispatch(self, server, state, command: str, pty: bool) -> str:
+        response, state.exit_status = await shell_dispatch.run_command(
+            state.session_id, server.source_ip, state, command, pty
+        )
+        return response
+
     async def _run_command(self, process, server, state, command: str) -> None:
         command = command[:MAX_COMMAND_LENGTH]
-        response = await self._dispatch(server, state, command)
-        if response:
-            process.stdout.write(response.encode())
-        process.exit(0)
+        pty = process.get_terminal_type() is not None
+        response = await self._dispatch(server, state, command, pty)
+        await self._write(process, response, pty)
 
     async def _prompt(self, state) -> str:
         return await mode_handler.handle_interaction(
@@ -467,6 +607,79 @@ class SSHHoneypot(BaseEmulator):
             },
         )
 
+    def _leaves_shell(self, state, command: str) -> bool:
+        """Whether ``command`` is an ``exit`` that ends the session.
+
+        Sets the exit status it asks for. An ``exit`` typed inside a nested
+        ``bash`` only leaves that.
+        """
+        status = shell_dispatch.parse_exit(command, state.exit_status)
+        if status is None:
+            return False
+        shell = shell_states.get(state.session_id)
+        if shell.subshells > 0:
+            shell.subshells -= 1
+            return False
+        state.exit_status = status
+        return True
+
+    async def _script_shell(self, process, server, state) -> None:
+        """A shell with no terminal: ``ssh host < script`` or ``ssh -T``.
+
+        sshd runs the login shell non-interactively here, so there is no
+        banner, no prompt and no echo — only what the commands print. Sending
+        a MOTD and a prompt into a pipe, as this used to, is something a
+        client reading that pipe notices at once.
+        """
+        buffer = ""
+        pending: Optional[HeredocBuffer] = None
+        idle_timeout = config.connection_timeout or DEFAULT_IDLE_TIMEOUT
+        at_eof = False
+        while not at_eof:
+            try:
+                data = await asyncio.wait_for(process.stdin.read(4096), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                return
+            except asyncssh.TerminalSizeChanged:
+                continue
+            if data:
+                text = data.decode("utf-8", errors="replace")
+                session = await session_manager.get_session(state.session_id)
+                if session is not None:
+                    session.keystroke_total += len(text)
+                buffer += text
+            else:
+                at_eof = True
+                if buffer and not buffer.endswith("\n"):
+                    buffer += "\n"
+            if len(buffer) > 4 * MAX_COMMAND_LENGTH:
+                buffer = buffer[-4 * MAX_COMMAND_LENGTH:]
+
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")[:MAX_COMMAND_LENGTH]
+                if pending is not None:
+                    # Inside a heredoc: the line is content, whitespace and
+                    # all, until the delimiter closes it.
+                    pending.feed(line)
+                    if pending.open:
+                        continue
+                    command, pending = pending.text(), None
+                else:
+                    command = line.strip()
+                    if command and needs_continuation(command):
+                        # bash keeps reading until the heredoc closes.
+                        pending = HeredocBuffer(command, MAX_COMMAND_LENGTH)
+                        continue
+                if not command:
+                    continue
+                if self._leaves_shell(state, command):
+                    return
+                await self._write(process, await self._dispatch(server, state, command, False), False)
+        if pending is not None:
+            # The input ended inside a heredoc: run what there is of it.
+            await self._write(process, await self._dispatch(server, state, pending.text(), False), False)
+
     async def _interactive_shell(self, process, server, state) -> None:
         welcome = await mode_handler.handle_interaction(
             state.session_id,
@@ -474,15 +687,12 @@ class SSHHoneypot(BaseEmulator):
             "auth_success",
             {"source_ip": server.source_ip, "username": state.username},
         )
-        if welcome:
-            process.stdout.write(welcome.encode())
-        process.stdout.write((await self._prompt(state)).encode())
+        await self._write(process, (welcome or "") + await self._prompt(state), True)
 
-        buffer = ""
+        shell = shell_states.get(state.session_id)
+        editor = LineEditor(MAX_COMMAND_LENGTH, shell.history)
         #: Lines of a heredoc still waiting for their delimiter.
         pending: Optional[HeredocBuffer] = None
-        #: Without a terminal the input is a script, where tabs are content.
-        keep_tabs = process.get_terminal_type() is None
         idle_timeout = config.connection_timeout or DEFAULT_IDLE_TIMEOUT
         while not process.stdin.at_eof():
             try:
@@ -496,92 +706,63 @@ class SSHHoneypot(BaseEmulator):
             if not data:
                 return
 
+            echo = bytearray()
             for char in data.decode("utf-8", errors="replace"):
                 await session_manager.record_keystroke(state.session_id, char)
+                # Echo locally: the client is in raw mode and shows nothing
+                # unless the server sends it back.
+                echoed, event = editor.feed(char)
+                echo += echoed
+                if event is None:
+                    continue
+                process.stdout.write(bytes(echo))
+                echo.clear()
+                kind, line = event
 
-                if char in ("\r", "\n"):
-                    process.stdout.write(b"\r\n")
-                    if pending is not None:
-                        # Inside a heredoc: the line is content, whitespace
-                        # and all, until the delimiter closes it. Each line
-                        # is checked against the delimiter owed, not re-lexed
-                        # with everything before it.
-                        pending.feed(buffer)
-                        buffer = ""
-                        if pending.open:
-                            process.stdout.write(b"> ")
-                            continue
-                        command, pending = pending.text(), None
-                    else:
-                        command = buffer.strip()
-                        buffer = ""
-                        if command and needs_continuation(command):
-                            # bash keeps reading until the heredoc closes.
-                            pending = HeredocBuffer(command, MAX_COMMAND_LENGTH)
-                            process.stdout.write(b"> ")
-                            continue
-                    if not command:
-                        process.stdout.write((await self._prompt(state)).encode())
+                if kind == "eof":
+                    process.stdout.write(b"logout\r\n")
+                    return
+                if kind == "interrupt":
+                    # Ctrl-C abandons the line, and a heredoc being typed.
+                    pending = None
+                    await self._write(process, await self._prompt(state), True)
+                    continue
+                if kind == "redraw":
+                    await self._write(process, await self._prompt(state) + editor.buffer, True)
+                    continue
+
+                if pending is not None:
+                    # Inside a heredoc: the line is content, whitespace
+                    # and all, until the delimiter closes it. Each line
+                    # is checked against the delimiter owed, not re-lexed
+                    # with everything before it.
+                    pending.feed(line)
+                    if pending.open:
+                        process.stdout.write(b"> ")
                         continue
+                    command, pending = pending.text(), None
+                else:
+                    command = line.strip()
+                    if command and needs_continuation(command):
+                        # bash keeps reading until the heredoc closes.
+                        pending = HeredocBuffer(command, MAX_COMMAND_LENGTH)
+                        process.stdout.write(b"> ")
+                        continue
+                if not command:
+                    await self._write(process, await self._prompt(state), True)
+                    continue
 
-                    if command in ("exit", "logout"):
+                if shell_dispatch.parse_exit(command, 0) is not None:
+                    nested = shell.subshells > 0
+                    if self._leaves_shell(state, command):
                         process.stdout.write(b"logout\r\n")
                         return
+                    if nested:
+                        await self._write(process, "exit\n" + await self._prompt(state), True)
+                        continue
 
-                    await self._run_interactive_command(process, server, state, command)
-                    process.stdout.write((await self._prompt(state)).encode())
-
-                elif char in ("\x7f", "\x08"):
-                    if buffer:
-                        buffer = buffer[:-1]
-                        process.stdout.write(b"\x08 \x08")
-
-                elif char == "\x04":  # Ctrl-D
-                    return
-
-                elif ord(char) >= 32 or (char == "\t" and keep_tabs):
-                    if len(buffer) < MAX_COMMAND_LENGTH:
-                        buffer += char
-                        # Echo locally: the client is in raw mode and shows
-                        # nothing unless the server sends it back.
-                        process.stdout.write(char.encode())
-
-    async def _run_interactive_command(self, process, server, state, command: str) -> None:
-        response = await self._dispatch(server, state, command)
-        if response:
-            process.stdout.write(response.encode())
-
-    async def _dispatch(self, server, state, command: str) -> str:
-        """Run one command and record it with what it actually printed.
-
-        Both call sites used to record the command with a hardcoded empty
-        output before the emulator had produced one, so every stored session
-        held commands with no responses. The transcript an analyst reads is
-        half the evidence: what the attacker typed only means something beside
-        what the machine appeared to tell them.
-        """
-        await adaptive_engine.profile_actor(
-            state.session_id, server.source_ip, {"command": command}
-        )
-        # Capture runs on the raw command, before anything lowercases it, and
-        # in passive mode too: recording what an attacker wrote is observation.
-        await capture_command(
-            state.session_id, command, "/root" if state.is_root else "/home/user"
-        )
-        payload = {
-            "command": command,
-            "username": state.username,
-            "cwd": state.cwd,
-            "is_root": state.is_root,
-        }
-        response = await mode_handler.handle_interaction(
-            state.session_id, "ssh", "command", payload
-        )
-        # The emulator reports a directory change through the payload dict so
-        # the prompt and later commands agree with it.
-        if payload.get("cwd_after"):
-            state.cwd = payload["cwd_after"]
-        await session_manager.record_command(
-            state.session_id, command, response or "", 0
-        )
-        return response
+                response = await self._dispatch(server, state, command, True)
+                await self._write(process, response + await self._prompt(state), True)
+            if echo:
+                process.stdout.write(bytes(echo))
+                await process.stdout.drain()

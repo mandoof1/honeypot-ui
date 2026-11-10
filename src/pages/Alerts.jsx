@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Check, CircleSlash, ExternalLink, Server, UserMinus, UserPlus } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Check, CircleSlash, ExternalLink, RefreshCw, Server, UserMinus, UserPlus } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
-import { useVisiblePoll } from '../hooks/useVisiblePoll'
+import { usePreferences } from '../context/usePreferences'
+import { usePolledResource } from '../hooks/usePolledResource'
 import EmptyState from '../components/EmptyState'
 import ErrorBanner from '../components/ErrorBanner'
+import { LoadFailure, StaleNotice } from '../components/LoadState'
 import { LoadingRegion } from '../components/Loading'
+import PageHeader from '../components/PageHeader'
+import SavedSearches, { ShareLink } from '../components/SavedSearches'
 import { SEVERITY_COLOR, SEVERITY_ORDER } from '../lib/severity'
-import { clean } from '../lib/text'
+import { clean, cleanLine } from '../lib/text'
+import { fromInputValue, toInputValue } from '../lib/time'
 
 /*
  * Alerts.
@@ -123,6 +128,11 @@ function NotesEditor({ alert, onSave, canAct }) {
 }
 
 function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, me }) {
+  const { formatTime } = usePreferences()
+  // Every session folded into this alert; session_id is the most serious.
+  const sessionIds = Array.isArray(alert.session_ids) && alert.session_ids.length > 0
+    ? alert.session_ids
+    : (alert.session_id != null ? [alert.session_id] : [])
   const color = SEVERITY_COLOR[alert.severity] || 'var(--color-paper-3)'
   const open = isOpen(alert)
   const system = alert.kind === 'system' || alert.session_id == null
@@ -160,7 +170,7 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
             </h3>
             {occurrences > 1 && (
               <span
-                className="readout shrink-0 text-[11px] text-paper-2"
+                className="readout shrink-0 text-[12px] text-paper-2"
                 title={`Seen ${occurrences} times; last ${alert.last_seen_at ? timeAgo(alert.last_seen_at) : 'recently'}`}
               >
                 ×{occurrences}
@@ -183,20 +193,30 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
           )}
 
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-paper-3">
-            <span className="readout" title={new Date(alert.created_at).toLocaleString()}>
+            <span className="readout" title={formatTime(alert.created_at)}>
               {timeAgo(alert.created_at)}
             </span>
             {alert.last_seen_at && occurrences > 1 && (
               <span className="readout">last {timeAgo(alert.last_seen_at)}</span>
             )}
-            {!system && alert.session_id != null && (
-              <Link
-                to={`/sessions?session=${alert.session_id}`}
-                className="inline-flex items-center gap-1 transition-colors hover:text-paper"
-              >
-                Session {alert.session_id}
-                <ExternalLink className="h-3 w-3" strokeWidth={2} />
-              </Link>
+            {!system && sessionIds.length > 0 && (
+              <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5" data-testid="alert-sessions">
+                {sessionIds.length === 1 ? 'Session' : `${sessionIds.length} sessions:`}
+                {sessionIds.slice(0, 12).map((id) => (
+                  <Link
+                    key={id}
+                    to={`/sessions?session=${id}`}
+                    aria-label={`Session ${id}`}
+                    className="readout inline-flex items-center gap-0.5 transition-colors hover:text-paper"
+                  >
+                    {id}
+                    {id === alert.session_id && sessionIds.length === 1 && (
+                      <ExternalLink className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
+                    )}
+                  </Link>
+                ))}
+                {sessionIds.length > 12 && <span>and {sessionIds.length - 12} more</span>}
+              </span>
             )}
             {alert.attacker_ip && (
               <Link
@@ -204,12 +224,12 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
                 className="readout transition-colors hover:text-paper"
                 title="Everything this address has done"
               >
-                {clean(alert.attacker_ip)}
+                {cleanLine(alert.attacker_ip)}
               </Link>
             )}
             {alert.mitre_techniques?.length > 0 && (
               <span className="readout">
-                {alert.mitre_techniques.map((t) => t.id).join(' · ')}
+                {alert.mitre_techniques.map((t) => cleanLine(t.id)).join(' · ')}
               </span>
             )}
             {alert.assigned_to_id != null && (
@@ -219,12 +239,12 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
               </span>
             )}
             {alert.acknowledged_at && (
-              <span title={new Date(alert.acknowledged_at).toLocaleString()}>
+              <span title={formatTime(alert.acknowledged_at)}>
                 acknowledged {timeAgo(alert.acknowledged_at)}
               </span>
             )}
             {alert.resolved_at && (
-              <span title={new Date(alert.resolved_at).toLocaleString()}>
+              <span title={formatTime(alert.resolved_at)}>
                 closed {timeAgo(alert.resolved_at)}
               </span>
             )}
@@ -296,81 +316,117 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
   )
 }
 
+const FILTER_DEFAULTS = { status: 'new', severity: '', kind: '', ip: '', mine: '', since: '' }
+const NO_SELECTION = new Set()
+
 export default function Alerts() {
   const { hasRole, user } = useAuth()
+  const { zone, zoneLabel } = usePreferences()
   const canAct = hasRole('analyst')
-
-  const [alerts, setAlerts] = useState([])
-  const [stats, setStats] = useState(null)
-  const [status, setStatus] = useState('new')
-  const [severity, setSeverity] = useState('')
-  const [kind, setKind] = useState('')
-  const [ip, setIp] = useState('')
-  const [mine, setMine] = useState(false)
-  const [since, setSince] = useState('')
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [busyId, setBusyId] = useState(null)
-  const [error, setError] = useState(null)
-  const [selected, setSelected] = useState(() => new Set())
+  const [actionError, setActionError] = useState(null)
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  // Only the newest request may commit its result. Without this a slow
-  // response for an earlier filter could overwrite the current one.
-  const requestId = useRef(0)
+  // The filters are the URL. They used to be component state, so a link to
+  // "resolved alerts" opened the default queue and a reload lost the view.
+  // No `status` parameter means the working default, new alerts; "any" is
+  // spelled out as status=all.
+  const statusParam = searchParams.get('status')
+  const status = statusParam === null ? 'new' : (statusParam === 'all' ? '' : statusParam)
+  const severity = searchParams.get('severity') || ''
+  const kind = searchParams.get('kind') || ''
+  const ip = searchParams.get('ip') || ''
+  const mine = searchParams.get('mine') === '1'
+  const since = searchParams.get('since') || ''
+  const page = Math.max(1, Math.floor(Number(searchParams.get('page'))) || 1)
   const userId = user?.id
 
-  const buildParams = useCallback(() => {
-    const params = { page, page_size: PAGE_SIZE }
-    if (status) params.status = status
-    if (severity) params.severity = severity
-    if (kind) params.kind = kind
-    if (ip.trim()) params.attacker_ip = ip.trim()
-    if (mine && userId != null) params.assigned_to_id = userId
-    if (since) params.since = new Date(since).toISOString()
-    return params
-  }, [page, status, severity, kind, ip, mine, since, userId])
+  const setParams = (changes, replace = false) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      Object.entries(changes).forEach(([key, value]) => {
+        if (value === '' || value == null) next.delete(key)
+        else next.set(key, value)
+      })
+      return next
+    }, { replace })
+  }
+  const setFilter = (key, value, replace = false) => setParams({ [key]: value, page: '' }, replace)
+  const setStatus = (value) => setFilter('status', value === 'new' ? '' : (value === '' ? 'all' : value))
 
-  const load = useCallback(async ({ silent = false } = {}) => {
-    const id = ++requestId.current
-    if (!silent) setLoading(true)
-    try {
-      const [list, summary] = await Promise.all([
-        api.alerts.list(buildParams()),
-        api.alerts.stats(),
+  const params = { page, page_size: PAGE_SIZE }
+  if (status) params.status = status
+  if (severity) params.severity = severity
+  if (kind) params.kind = kind
+  if (ip.trim()) params.attacker_ip = ip.trim()
+  if (mine && userId != null) params.assigned_to_id = userId
+  if (since) params.since = since
+  const requestKey = JSON.stringify(params)
+
+  // The list is what the page is for; the counts are a convenience. A
+  // failure to count must not hide a list that loaded.
+  const queue = usePolledResource(
+    async ({ signal }) => {
+      const [list, summary] = await Promise.allSettled([
+        api.alerts.list(params, { signal }),
+        api.alerts.stats({ signal }),
       ])
-      if (id !== requestId.current) return
-      setAlerts(list.alerts || [])
-      setTotal(list.total || 0)
-      setStats(summary)
-      setError(null)
-    } catch (err) {
-      if (id !== requestId.current) return
-      setError(err.message || 'Could not load alerts')
-    } finally {
-      if (id === requestId.current && !silent) setLoading(false)
-    }
-  }, [buildParams])
+      if (list.status === 'rejected') throw list.reason
+      return {
+        alerts: list.value.alerts || [],
+        total: list.value.total || 0,
+        stats: summary.status === 'fulfilled' ? summary.value : null,
+      }
+    },
+    { key: requestKey, intervalMs: REFRESH_MS },
+  )
+  const alerts = queue.data?.alerts ?? []
+  const total = queue.data?.total ?? 0
+  const stats = queue.data?.stats ?? null
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  // Resolving the last alert on the last page used to leave the reader on a
+  // page that no longer exists, looking at "No alerts match".
+  const beyondLastPage = queue.data !== null && alerts.length === 0 && total > 0 && page > pages
   useEffect(() => {
-    // Deferred by a tick rather than called in the effect body: `load` sets
-    // loading state synchronously, which would cascade a second render.
-    const timer = setTimeout(load, 0)
-    return () => clearTimeout(timer)
-  }, [load])
+    if (!beyondLastPage) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (pages > 1) next.set('page', pages)
+      else next.delete('page')
+      return next
+    }, { replace: true })
+  }, [beyondLastPage, pages, setSearchParams])
 
-  // Silent: replaces the page in place without a loading flash, so the
-  // reader's scroll position and open note editors survive the refresh.
-  useVisiblePoll(() => load({ silent: true }), REFRESH_MS, [load])
+  // A selection belongs to the page and filters it was made under. Keyed to
+  // them, it is empty the moment either changes, so a bulk action can only
+  // ever reach alerts that are on screen.
+  const [selection, setSelection] = useState({ key: null, ids: NO_SELECTION })
+  const visibleIds = new Set(alerts.map((alert) => alert.id))
+  const selected = selection.key === requestKey
+    ? new Set([...selection.ids].filter((id) => visibleIds.has(id)))
+    : NO_SELECTION
+
+  const toggleSelected = (id, on) => {
+    const next = new Set(selected)
+    if (on) next.add(id)
+    else next.delete(id)
+    setSelection({ key: requestKey, ids: next })
+  }
+  const selectAllOpen = () => {
+    setSelection({ key: requestKey, ids: new Set(alerts.filter(isOpen).map((a) => a.id)) })
+  }
+  const clearSelection = () => setSelection({ key: null, ids: NO_SELECTION })
 
   const patch = async (id, data) => {
     setBusyId(id)
+    setActionError(null)
     try {
       await api.alerts.update(id, data)
-      await load({ silent: true })
+      await queue.refresh()
     } catch (err) {
-      setError(err.message || 'Could not update the alert')
+      setActionError(err.message || 'Could not update the alert')
       throw err
     } finally {
       setBusyId(null)
@@ -379,41 +435,44 @@ export default function Alerts() {
 
   const update = (id, nextStatus) => patch(id, { status: nextStatus }).catch(() => {})
 
-  const toggleSelected = (id, on) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (on) next.add(id)
-      else next.delete(id)
-      return next
-    })
-  }
-
-  const selectAllOpen = () => {
-    setSelected(new Set(alerts.filter(isOpen).map((a) => a.id)))
-  }
-
   const bulk = async (nextStatus) => {
     const ids = [...selected]
     if (!ids.length) return
     setBulkBusy(true)
+    setActionError(null)
     try {
       await api.alerts.bulk(ids, nextStatus)
-      setSelected(new Set())
-      await load({ silent: true })
+      clearSelection()
+      await queue.refresh()
     } catch (err) {
-      setError(err.message || 'Could not update the selected alerts')
+      setActionError(err.message || 'Could not update the selected alerts')
     } finally {
       setBulkBusy(false)
     }
   }
 
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const resetPage = () => setPage(1)
   const anyFilter = status !== 'new' || severity || kind || ip || mine || since
+  const resetFilters = () => setParams(
+    { ...Object.fromEntries(Object.keys(FILTER_DEFAULTS).map((key) => [key, ''])), page: '' },
+  )
 
   return (
     <div className="mx-auto flex h-full max-w-[1100px] flex-col gap-3">
-      {error && <ErrorBanner message={error} onRetry={() => load()} />}
+      <PageHeader
+        eyebrow="Triage queue"
+        title="Alerts"
+        description="Detections and platform warnings waiting for a decision."
+      >
+        <SavedSearches scope="alerts" />
+        <ShareLink />
+        <button type="button" className="control" onClick={queue.reload} disabled={queue.loading || queue.refreshing}>
+          <RefreshCw className={`h-3.5 w-3.5 ${queue.refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+          Refresh
+        </button>
+      </PageHeader>
+
+      {actionError && <ErrorBanner title="The change was not applied" message={actionError} />}
+      {queue.stale && <StaleNotice what="The alert queue" error={queue.error} loadedAt={queue.loadedAt} onRetry={queue.reload} />}
 
       {/* The counts are the queue's shape: how much is waiting, how much has
           been touched, how much is done. */}
@@ -436,13 +495,18 @@ export default function Alerts() {
           ))}
         </div>
       )}
+      {queue.data !== null && !stats && (
+        <p className="text-[13px] text-paper-3" role="alert">
+          The queue totals could not be loaded. The list below is unaffected.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1">
           <span className="eyebrow">Status</span>
           <select
             value={status}
-            onChange={(e) => { setStatus(e.target.value); resetPage() }}
+            onChange={(e) => setStatus(e.target.value)}
             className="control"
           >
             <option value="">Any</option>
@@ -456,7 +520,7 @@ export default function Alerts() {
           <span className="eyebrow">Severity</span>
           <select
             value={severity}
-            onChange={(e) => { setSeverity(e.target.value); resetPage() }}
+            onChange={(e) => setFilter('severity', e.target.value)}
             className="control capitalize"
           >
             <option value="">Any</option>
@@ -468,7 +532,7 @@ export default function Alerts() {
           <span className="eyebrow">Kind</span>
           <select
             value={kind}
-            onChange={(e) => { setKind(e.target.value); resetPage() }}
+            onChange={(e) => setFilter('kind', e.target.value)}
             className="control"
           >
             <option value="">Any</option>
@@ -483,17 +547,17 @@ export default function Alerts() {
             type="search"
             value={ip}
             placeholder="203.0.113.7"
-            onChange={(e) => { setIp(e.target.value); resetPage() }}
+            onChange={(e) => setFilter('ip', e.target.value, true)}
             className="field readout w-40"
           />
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="eyebrow">Since</span>
+          <span className="eyebrow">Since ({zoneLabel()})</span>
           <input
             type="datetime-local"
-            value={since}
-            onChange={(e) => { setSince(e.target.value); resetPage() }}
+            value={toInputValue(since, zone)}
+            onChange={(e) => setFilter('since', fromInputValue(e.target.value, zone))}
             className="field"
           />
         </label>
@@ -502,7 +566,7 @@ export default function Alerts() {
           <input
             type="checkbox"
             checked={mine}
-            onChange={(e) => { setMine(e.target.checked); resetPage() }}
+            onChange={(e) => setFilter('mine', e.target.checked ? '1' : '')}
             className="h-3.5 w-3.5 accent-paper"
           />
           <span className="text-[13px] font-medium text-paper-2">Assigned to me</span>
@@ -511,7 +575,7 @@ export default function Alerts() {
         {anyFilter && (
           <button
             type="button"
-            onClick={() => { setStatus('new'); setSeverity(''); setKind(''); setIp(''); setMine(false); setSince(''); resetPage() }}
+            onClick={resetFilters}
             className="pb-2 text-[13px] font-medium text-paper-2 transition-colors hover:text-paper"
           >
             Reset
@@ -542,7 +606,7 @@ export default function Alerts() {
               <button
                 type="button"
                 className="text-[13px] font-medium text-paper-2 hover:text-paper"
-                onClick={() => setSelected(new Set())}
+                onClick={clearSelection}
               >
                 Clear
               </button>
@@ -551,9 +615,11 @@ export default function Alerts() {
         </div>
       )}
 
-      <section className="panel flex min-h-0 flex-1 flex-col overflow-hidden">
-        {loading ? (
+      <section className="panel flex min-h-0 flex-1 flex-col overflow-hidden" aria-label="Alerts">
+        {queue.loading ? (
           <LoadingRegion label="Loading alerts" />
+        ) : queue.failed ? (
+          <LoadFailure what="alerts" error={queue.error} onRetry={queue.reload} />
         ) : alerts.length === 0 ? (
           <EmptyState
             title={status === 'new' && !anyFilter ? 'Nothing waiting' : 'No alerts match'}
@@ -564,7 +630,7 @@ export default function Alerts() {
             }
           />
         ) : (
-          <ul className="min-h-0 flex-1 overflow-y-auto">
+          <ul className={`min-h-0 flex-1 overflow-y-auto ${queue.stale ? 'is-stale' : ''}`}>
             {alerts.map((alert) => (
               <AlertRow
                 key={alert.id}
@@ -581,23 +647,23 @@ export default function Alerts() {
           </ul>
         )}
 
-        {pages > 1 && (
+        {pages > 1 && !queue.loading && !queue.failed && (
           <div className="flex items-center justify-between border-t border-line px-3 py-2">
             <button
               type="button"
               disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
+              onClick={() => setParams({ page: page - 1 > 1 ? page - 1 : '' })}
               className="control"
             >
               Previous
             </button>
             <span className="readout text-[12px] text-paper-3">
-              {page} / {pages}
+              {Math.min(page, pages)} / {pages}
             </span>
             <button
               type="button"
               disabled={page >= pages}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => setParams({ page: page + 1 })}
               className="control"
             >
               Next

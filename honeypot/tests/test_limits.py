@@ -117,6 +117,38 @@ def test_admit_enforces_per_ip_and_global_caps(monkeypatch):
     assert limiter.active_connections() == 0
 
 
+def test_admit_takes_a_protocol_specific_limit():
+    limiter = RateLimiter()
+    limiter._max_per_ip = 2
+    limiter._max_requests = 1000
+    for _ in range(6):
+        assert limiter.admit("10.0.0.7", max_per_ip=8)
+    # The engine-wide cap still applies to callers that pass none.
+    assert not limiter.admit("10.0.0.7")
+    assert limiter.admit("10.0.0.8", max_per_ip=8, max_per_minute=1)
+    assert not limiter.admit("10.0.0.8", max_per_ip=8, max_per_minute=1)
+    assert limiter.is_blocked("10.0.0.8")
+
+
+async def test_a_browser_page_load_is_not_refused(http_server, monkeypatch):
+    # Six parallel keep-alive connections, as a browser opens for one page,
+    # while the engine-wide cap stays at the shell-sized default of 5.
+    honeypot, port = http_server
+    monkeypatch.setattr(rate_limiter, "_max_per_ip", 5)
+    assert honeypot.max_connections_per_ip > 6
+    connections = [await _open(port) for _ in range(6)]
+    try:
+        for reader, writer in connections:
+            writer.write(b"GET / HTTP/1.1\r\nHost: shop\r\n\r\n")
+            await writer.drain()
+        for reader, _ in connections:
+            assert (await asyncio.wait_for(reader.readline(), timeout=5)).startswith(b"HTTP/1.1")
+        assert rate_limiter.refused["per_ip"] == 0
+    finally:
+        for _, w in connections:
+            w.close()
+
+
 def test_admit_respects_blocks_without_counting():
     limiter = RateLimiter()
     limiter._blocked["10.0.0.5"] = time.time() + 60
@@ -132,8 +164,8 @@ async def _open(port):
 
 
 async def test_per_ip_concurrent_connections_are_capped(http_server, monkeypatch):
-    _, port = http_server
-    monkeypatch.setattr(rate_limiter, "_max_per_ip", 2)
+    honeypot, port = http_server
+    monkeypatch.setattr(honeypot, "max_connections_per_ip", 2)
     connections = []
     try:
         for _ in range(2):

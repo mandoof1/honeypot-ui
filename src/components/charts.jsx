@@ -1,6 +1,8 @@
 import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { usePreferences } from '../context/usePreferences'
 import { CATEGORY_COLOR, CATEGORY_LABEL, CATEGORY_ORDER } from '../lib/severity'
+import { hourOfDay, localOffsetMinutes, offsetLabel, shiftHourBuckets } from '../lib/time'
 
 /*
  * Charts for the console.
@@ -22,14 +24,25 @@ const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
  * and the API has been returning it since the beginning without anything
  * drawing it.
  */
-export function HourTrace({ byHour = {}, height = 132 }) {
+export function HourTrace({ byHour = {}, height = 132, bucketZone = 'UTC' }) {
   const [hover, setHover] = useState(null)
   const clipId = useId()
+  const { zone } = usePreferences()
 
-  const values = HOURS.map((h) => byHour[h] ?? 0)
+  // The API counts by UTC hour. The buckets are re-keyed to the zone the
+  // reader chose, and the hour that is highlighted is the current hour in
+  // that same zone. Before, the bars were UTC and the highlight was the
+  // browser's local hour, so the chart pointed at the wrong bar for anyone
+  // not on UTC, and said nothing about which zone it was drawn in.
+  const convertible = bucketZone === 'UTC'
+  const local = convertible && zone === 'local'
+  const offset = local ? localOffsetMinutes() : 0
+  const { values, exact } = shiftHourBuckets(byHour, offset)
+  const zoneName = !convertible ? bucketZone : local ? offsetLabel(offset) : 'UTC'
   const peak = Math.max(...values, 1)
   const total = values.reduce((a, b) => a + b, 0)
-  const currentHour = new Date().getHours()
+  const currentHour = convertible ? hourOfDay(local ? 'local' : 'utc') : -1
+  const peakHour = values.indexOf(Math.max(...values))
 
   // A fixed viewBox with a 24-column grid; the SVG scales to its container.
   const COLS = 24
@@ -47,9 +60,9 @@ export function HourTrace({ byHour = {}, height = 132 }) {
           className="block w-full"
           style={{ height }}
           role="img"
-          aria-label={`Sessions by hour of day. Peak ${peak} at ${
-            HOURS[values.indexOf(peak)]
-          }:00. ${total} total.`}
+          aria-label={total === 0
+            ? `Sessions by hour of day, ${zoneName}. None recorded.`
+            : `Sessions by hour of day, ${zoneName}. Peak ${values[peakHour]} at ${HOURS[peakHour]}:00. ${total} in total.`}
         >
           <defs>
             <clipPath id={clipId}>
@@ -118,11 +131,38 @@ export function HourTrace({ byHour = {}, height = 132 }) {
       </div>
 
       {/* Ticks at the quarters only; 24 labels would be noise. */}
-      <div className="mt-1.5 flex justify-between">
+      <div className="mt-1.5 flex justify-between" aria-hidden="true">
         {['00:00', '06:00', '12:00', '18:00', '23:00'].map((t) => (
-          <span key={t} className="readout text-[10px] text-paper-3">{t}</span>
+          <span key={t} className="readout text-[12px] text-paper-3">{t}</span>
         ))}
       </div>
+
+      <figcaption className="mt-2 text-[12px] leading-relaxed text-paper-3" data-testid="hour-zone">
+        Hours in <span className="text-paper-2">{zoneName}</span>
+        {local && ', converted from the server’s UTC counts'}
+        {local && !exact && '; the offset is not a whole hour, so each bar is shifted to the nearest one'}
+        {total > 0 && <>. Busiest hour {HOURS[peakHour]}:00 with {values[peakHour].toLocaleString()}</>}
+        {currentHour >= 0 && <>; the bright bar is the current hour</>}.
+      </figcaption>
+
+      {/* The same numbers without the pointer: values used to be reachable
+          only by hovering a bar. */}
+      <details className="mt-1.5">
+        <summary className="cursor-pointer text-[12px] font-medium text-paper-2 hover:text-paper">
+          Sessions by hour as a table
+        </summary>
+        <table className="mt-2 w-full border-collapse text-left text-[12px]" data-testid="hour-table">
+          <caption className="sr-only">Sessions by hour of day, {zoneName}</caption>
+          <tbody className="grid grid-cols-4 gap-x-4 sm:grid-cols-6">
+            {values.map((value, hour) => (
+              <tr key={hour} className="flex items-baseline justify-between border-b border-line py-0.5">
+                <th scope="row" className="readout font-normal text-paper-3">{HOURS[hour]}:00</th>
+                <td className="readout text-paper">{value.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
     </figure>
   )
 }
@@ -214,7 +254,7 @@ export function RankList({ items, emptyHint, mono = false }) {
                 {label}
               </span>
             )}
-            {sub && <span className="readout shrink-0 text-[11px] text-paper-3">{sub}</span>}
+            {sub && <span className="readout shrink-0 text-[12px] text-paper-3">{sub}</span>}
             <span className="readout shrink-0 text-[13px] text-paper-2">
               {value.toLocaleString()}
             </span>
