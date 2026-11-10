@@ -32,8 +32,15 @@ PROBE = {
 class TestRegistry:
     def test_known_operators_are_identified(self):
         assert scanner_registry.identify("162.142.125.13") == "censys"
-        assert scanner_registry.identify("71.6.135.131") == "shodan"
-        assert scanner_registry.identify("184.105.247.1") == "shadowserver"
+        assert scanner_registry.identify("5.63.151.100") == "rapid7"
+
+    def test_hosting_provider_space_is_not_attributed_to_a_scanner(self):
+        """The seed list held 71.6.128.0/17, half a hosting provider's
+        allocation, as "shodan": every other tenant in it was labelled a
+        research scanner, and a labelled session raises no alert."""
+        assert scanner_registry.identify("71.6.135.131") is None
+        assert scanner_registry.identify("71.6.200.1") is None
+        assert scanner_registry.identify("184.105.247.1") is None
 
     def test_ordinary_addresses_are_not(self):
         assert scanner_registry.identify("185.220.101.5") is None
@@ -128,7 +135,12 @@ class TestDiscardedMeasurements:
         probabilities = body["class_probabilities"]
         assert probabilities and len(probabilities) > 1
         assert abs(sum(probabilities.values()) - 1.0) < 0.01
-        assert max(probabilities.values()) == body["attack_confidence"]
+        # The flow model's verdict is advisory: its confidence is reported
+        # beside the rule layer's verdict, not as the session's confidence.
+        flow = body["signals"]["verdict"]["flow"]
+        assert flow["role"] == "advisory"
+        assert max(probabilities.values()) == flow["confidence"]
+        assert body["model_source"] == "rules"
 
     async def test_analysis_time_is_persisted_not_only_logged(
         self, client, auth_headers

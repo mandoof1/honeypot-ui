@@ -1,0 +1,12 @@
+[Unit]
+Description=HoneySentinel: verify the egress rules, re-apply and alert if they were missing
+# The rules are loaded before Docker starts, but nothing kept them there:
+# `nft flush ruleset`, a firewall reload or a mistake could remove them and
+# the engines would have a way out until the next reboot. This re-checks the
+# loaded ruleset and the Docker networks against what the script defines.
+After=docker.service honeysentinel-egress.service
+OnFailure=honeysentinel-alert@%p.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh watch

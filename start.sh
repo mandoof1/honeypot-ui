@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Start the local development stack.
+# Start the local development stack (docker-compose.yml in this directory).
+# Everything it publishes is on 127.0.0.1. For a machine that faces a
+# network, use deploy/server/install.sh instead.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -28,6 +30,7 @@ echo
 echo "Emulated services (safe to probe):"
 echo "  SSH  : localhost:2222"
 echo "  FTP  : localhost:2121"
+echo "  Telnet : localhost:2323"
 echo "  HTTP : localhost:8080"
 echo
 echo "To stop: ./stop.sh"

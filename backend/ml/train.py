@@ -51,6 +51,7 @@ from sklearn.preprocessing import LabelEncoder
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.ai.classifier import ATTACK_LABELS, FeatureExtractor  # noqa: E402
+from app.ai.provenance import git_revision  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from ml import cicids  # noqa: E402
 
@@ -309,6 +310,9 @@ def main() -> int:
     model.fit(X_train, y_train)
 
     metrics = evaluate(model, encoder, X_test, y_test)
+    # Which code produced these numbers, and how it was invoked.
+    metrics["git_revision"] = git_revision()
+    metrics["arguments"] = sys.argv[1:]
     metrics["training"] = {
         "source": "cicids2017",
         "n_train": int(len(X_train)),

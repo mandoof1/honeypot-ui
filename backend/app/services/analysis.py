@@ -1,14 +1,16 @@
 from __future__ import annotations
+import asyncio
 import hashlib
 import ipaddress
 import json
 import logging
 import re
 import time
-from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import String, cast, select, func, desc, or_
 
 from app.models import (
     Alert, AlertStatus, AttackCategory, AttackerProfile, AttackSeverity,
@@ -16,11 +18,17 @@ from app.models import (
 )
 from app.schemas import DashboardStats
 # AI modules imported lazily below
+from app.ai import verdict as verdicts
+from app.ai.config import get_analysis_settings
+from app.ai.signals import ai_agent_signal, cap_fingerprints, honeytoken_signal
+from app.ai.signals import fit_indicator_value as fit_ioc_value
+from app.core.sql import LIKE_ESCAPE, escape_like
 from app.services.geoip import geoip_service
 from app.services import thresholds
 from app.services import alerts as alert_service
 from app.services import enrichment
 from app.services.scanners import scanner_registry
+from app.services.thresholds import AlertDecision
 from app.core.encryption import encrypt_data
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,9 @@ _SECRET_PARAM = re.compile(
     r"([?&;](?:password|passwd|pass|pwd|pma_password|token|secret|api_key|apikey|cvc|cvv)=)[^&;#\s]*",
     re.IGNORECASE,
 )
+#: Requests a research scanner makes: it asks, it does not send a body.
+_BANNER_METHODS = ("GET ", "HEAD ", "OPTIONS ")
+_MAX_SCAN_REQUESTS = 30
 
 
 def summarise_commands(commands: List[str], protocol: str) -> Optional[str]:
@@ -123,31 +134,6 @@ _CATEGORY_RANK = {
     AttackCategory.EXFILTRATION: 3,
 }
 
-#: NLP tool/web-signature categories collapsed onto the four stored classes. The
-#: NLP layer recognises far more specific categories than the flow model's four;
-#: this is how a signature hit (sqlmap, a UNION SELECT, a webshell upload) sets
-#: the session's category even when the flow model — trained on CIC-IDS2017
-#: network flows and domain-shifted onto command/web sessions — calls it benign.
-_RECON_SIGNALS = {
-    "scanner", "directory_enum", "vulnerability_scanner", "reconnaissance",
-    "path_traversal",
-}
-_EXPLOIT_SIGNALS = {
-    "sql_injection", "xss", "command_injection", "log4shell", "lfi_rfi",
-    "webshell", "ssrf", "exploitation_framework", "reverse_shell", "c2_framework",
-    "credential_theft", "password_cracker", "privilege_modification",
-    "persistence", "lateral_movement", "web_proxy", "cryptomining", "iot_botnet",
-}
-_EXFIL_SIGNALS = {"exfiltration"}
-_EXPLOIT_INTENTS = {
-    "credential_harvesting", "privilege_escalation", "lateral_movement",
-    "persistence", "ransomware", "botnet", "defacement", "denial_of_service",
-    "web_exploitation", "cryptomining",
-}
-
-#: Failed logins at or above this in one session read as a brute-force attempt.
-_BRUTE_FORCE_THRESHOLD = 3
-
 
 def _valid_uuid(value) -> Optional[str]:
     """The engine's own session id, when it sent a well-formed one.
@@ -174,7 +160,251 @@ def _looks_like_ip(value: str) -> bool:
     return True
 
 
+def scan_consistency(session_data: Dict, rules: verdicts.RuleVerdict) -> Tuple[bool, List[str]]:
+    """Whether a session behaved like a research scan, and why not if not.
+
+    An address inside a scanner's published range used to be enough to
+    silence alerts and skip the language model whatever the session did.
+    The range is now only half of it. A scan connects, reads a banner or
+    asks for a page, and leaves: it does not log in, type commands, upload
+    anything or send what the rules read as an exploit.
+    """
+    reasons: List[str] = []
+    credentials = [c for c in (session_data.get("credentials") or []) if isinstance(c, dict)]
+    if any(c.get("success") for c in credentials):
+        reasons.append("logged in")
+    if verdicts.STAGE_RANK.get(rules.category, 0) >= verdicts.STAGE_RANK[verdicts.EXPLOIT]:
+        reasons.append("exploitation evidence")
+    if session_data.get("uploads"):
+        reasons.append("uploaded a file")
+    events = [e for e in (session_data.get("events") or []) if isinstance(e, dict)]
+    if any(e.get("event_type") in ("ai_canary_triggered", "honeytoken_used", "direct_tcpip") for e in events):
+        reasons.append("triggered a canary, honeytoken or forward")
+
+    commands = [str(c) for c in (session_data.get("commands") or [])]
+    if (str(session_data.get("protocol") or "")).lower() in _WEB_PROTOCOLS:
+        if len(commands) > _MAX_SCAN_REQUESTS:
+            reasons.append(f"more than {_MAX_SCAN_REQUESTS} requests")
+        elif any(not c.startswith(_BANNER_METHODS) or "\n" in c.strip() for c in commands):
+            reasons.append("sent a request with a body or an unusual method")
+    elif commands:
+        reasons.append("ran commands")
+    return not reasons, reasons
+
+
+# -- running the CPU part off the event loop --------------------------------
+
+_executor: Optional[ThreadPoolExecutor] = None
+#: False until the models have been loaded in this process. A session
+#: analysed before that pays for loading them and is recorded as cold.
+_models_ready = False
+
+
+def _pool() -> ThreadPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(
+            max_workers=max(1, get_analysis_settings().ANALYSIS_EXECUTOR_THREADS),
+            thread_name_prefix="analysis",
+        )
+    return _executor
+
+
+def preload_models() -> None:
+    """Load everything the ingest path needs, before the first session.
+
+    Each model used to be loaded (or, for the bootstraps, fitted) lazily
+    inside the first timed analysis of every worker process, which is where
+    part of the 200 ms overruns came from.
+    """
+    global _models_ready
+    from app.ai.anomaly_detector import anomaly_detector
+    from app.ai.attack_catalog import catalog
+    from app.ai.classifier import classifier
+    from app.ai.clustering import clusterer
+    from app.ai.session_view import run_rules
+
+    classifier.preload()
+    anomaly_detector.preload()
+    clusterer.preload()
+    catalog.load()
+    scanner_registry.load()
+    # Compiles nothing new (patterns are built at import) but touches every
+    # code path once, so the first real session does not.
+    run_rules({"commands": ["true"], "protocol": "ssh"})
+    _models_ready = True
+
+
+async def warm_up() -> None:
+    """Preload the models at start-up without blocking the event loop."""
+    try:
+        await asyncio.get_running_loop().run_in_executor(_pool(), preload_models)
+        logger.info("Analysis models loaded")
+    except Exception:
+        # Start-up must not fail on this: the first session will load them.
+        logger.exception("Could not preload the analysis models; they will load on first use")
+
+
 class AnalysisPipeline:
+    def analyse(self, session_data: Dict) -> Dict:
+        """Everything about a session that needs no database.
+
+        Pure computation: the models, the rules, the verdict, the indicators
+        and the encryption of what will be stored. ``process_session`` runs
+        it on a worker thread; the evaluation tools call it directly.
+        """
+        global _models_ready
+        cpu_started = time.perf_counter()
+        cold = not _models_ready
+
+        # Import the singletons, not the modules: `from app.ai import
+        # classifier` bound the *module* (app/ai/__init__.py is empty), so
+        # every call raised AttributeError and no session was ever ingested.
+        from app.ai.anomaly_detector import anomaly_detector, features_from_session
+        from app.ai.attacker_profiler import attacker_profiler
+        from app.ai.classifier import classifier
+        from app.ai.clustering import clusterer
+        from app.ai.mitre_mapper import mitre_mapper
+        from app.ai.session_view import is_refusal, run_rules
+
+        attacker_ip = str(session_data.get("attacker_ip", ""))[:45]
+        protocol = str(session_data.get("protocol") or "")
+        commands = [
+            str(c) for c in (session_data.get("commands") or [])[:MAX_COMMANDS]
+        ]
+        # One view of the session for every stage below.
+        view = {**session_data, "commands": commands}
+        refusal = is_refusal(session_data)
+
+        # Stage 1 classifies the traffic's shape, measured at the engine's
+        # socket. Its verdict is advisory (see verdict.reconcile).
+        ai_result = classifier.classify_flow(session_data.get("flow"), protocol)
+
+        nlp_result = run_rules(view)
+        anomaly_result = anomaly_detector.detect(features_from_session(view))
+        profile_result = attacker_profiler.profile_from_session(view, nlp_result, ai_result)
+
+        # Behavioural clustering runs alongside the rule-based profile rather
+        # than replacing it, and the two are reported separately. The scorecard
+        # is interpretable and works on the first session ever seen; clustering
+        # cannot do either, but it groups sessions that behave alike without
+        # anyone deciding in advance what alike means — which is how a campaign
+        # reusing one toolkit becomes visible across many sessions.
+        cluster_result = (
+            {"fitted": False, "cluster": None, "distance": None}
+            if refusal else clusterer.assign_session(view, nlp_result)
+        )
+
+        # The category is the rule layer's; the flow model's label sits
+        # beside it. Its own distribution is kept verbatim in
+        # class_probabilities.
+        rules = verdicts.rule_verdict(nlp_result, view)
+        final = verdicts.reconcile(ai_result, rules)
+        flow_probabilities = ai_result.get("probabilities")
+        # What downstream readers of the result see as the classification.
+        classification = {
+            "category": final["category"],
+            "confidence": final["confidence"],
+            "model_source": final["source"],
+            "probabilities": flow_probabilities,
+            "flow": final["flow"],
+        }
+
+        mitre_result = mitre_mapper.map_evidence(rules.evidence)
+        iocs = [] if refusal else self._extract_iocs(attacker_ip, nlp_result, view)
+
+        honeytoken = honeytoken_signal(view)
+        ai_agent = ai_agent_signal(view)
+        score = verdicts.severity_score(
+            final["category"],
+            final["confidence"],
+            nlp_result.get("detected_intents"),
+            nlp_result.get("critical_tools"),
+            anomalous=bool(anomaly_result["is_anomalous"]),
+        )
+        # A planted credential being used is serious whatever else the
+        # session shows.
+        severity = verdicts.severity_level(score, floor="high" if honeytoken else "low")
+
+        operator = None if refusal else scanner_registry.identify(attacker_ip)
+        scan_like, scan_reasons = scan_consistency(view, rules) if operator else (False, [])
+
+        signals: Dict = {
+            "severity": severity,
+            "severity_score": score,
+            "verdict": {
+                "source": final["source"],
+                "evidence": list(dict.fromkeys(item["key"] for item in rules.evidence))[:40],
+                "independent_findings": len(rules.supporting),
+                "flow": final["flow"],
+                # The rules read the start and end of a session too long for
+                # their budget; silence from a partial read is not clearance.
+                "rules_truncated": bool(nlp_result.get("truncated")),
+            },
+            "anomaly": {
+                "calibrated": bool(anomaly_result["calibrated"]),
+                "model_source": anomaly_result["model_source"],
+                "fitted_at": anomaly_result.get("fitted_at"),
+                "fitted_on": anomaly_result.get("fitted_on"),
+            },
+        }
+        if ai_agent is not None:
+            signals["ai_agent"] = ai_agent
+        if honeytoken is not None:
+            signals["honeytoken"] = honeytoken
+        if operator:
+            signals["scanner"] = {
+                "operator": operator,
+                "consistent_with_scanning": scan_like,
+                "reasons": scan_reasons,
+            }
+        if refusal:
+            signals["refusal"] = True
+
+        payload = str(session_data.get("payload") or "")[:MAX_PAYLOAD_CHARS]
+        # Transcript and credentials are encrypted with the same AES-256-GCM
+        # as the command list. Credentials in particular are live passwords in
+        # circulation against real hosts; storing them readable would make the
+        # honeypot's database more dangerous than the attack it recorded.
+        transcript = session_data.get("transcript") or []
+        credentials = session_data.get("credentials") or []
+        joined = "\n".join(commands)
+        stored = {
+            "raw_commands_encrypted": encrypt_data(joined) if commands else None,
+            "raw_payloads_encrypted": encrypt_data(payload) if payload else None,
+            "transcript_encrypted": encrypt_data(json.dumps(transcript)) if transcript else None,
+            "credentials_encrypted": encrypt_data(json.dumps(credentials)) if credentials else None,
+            "transcript_sha256": (
+                hashlib.sha256(joined.encode("utf-8", "replace")).hexdigest() if commands else None
+            ),
+            "command_summary": summarise_commands(commands, protocol),
+        }
+
+        _models_ready = True
+        return {
+            "attacker_ip": attacker_ip,
+            "protocol": protocol,
+            "commands": commands,
+            "refusal": refusal,
+            "ai_result": ai_result,
+            "classification": classification,
+            "nlp_result": nlp_result,
+            "anomaly_result": anomaly_result,
+            "profile_result": profile_result,
+            "cluster_result": cluster_result,
+            "rules": rules,
+            "mitre_result": mitre_result,
+            "iocs": iocs,
+            "severity": severity,
+            "severity_score": score,
+            "signals": signals,
+            "scanner_operator": operator if scan_like else None,
+            "fingerprints": cap_fingerprints(session_data.get("fingerprints")),
+            "stored": stored,
+            "cold": cold,
+            "cpu_ms": round((time.perf_counter() - cpu_started) * 1000.0, 2),
+        }
+
     async def process_session(
         self,
         db: AsyncSession,
@@ -188,118 +418,29 @@ class AnalysisPipeline:
         # it includes the database writes as well as the models.
         started = time.perf_counter()
 
-        # Import the singletons, not the modules: `from app.ai import
-        # classifier` bound the *module* (app/ai/__init__.py is empty), so
-        # every call raised AttributeError and no session was ever ingested.
-        # Imported lazily so loading the AI stack does not block app startup.
-        from app.ai.anomaly_detector import anomaly_detector
-        from app.ai.attacker_profiler import attacker_profiler
-        from app.ai.classifier import classifier
-        from app.ai.mitre_mapper import mitre_mapper
-        from app.ai.nlp_engine import nlp_engine
-        attacker_ip = str(session_data.get("attacker_ip", ""))[:45]
-        commands = [
-            str(c) for c in (session_data.get("commands") or [])[:MAX_COMMANDS]
-        ]
+        # The models, the rules and the encryption are CPU work on text an
+        # attacker chose. On the event loop they stopped this worker from
+        # accepting anything else for as long as one session took.
+        result = await asyncio.get_running_loop().run_in_executor(_pool(), self.analyse, session_data)
+
+        attacker_ip = result["attacker_ip"]
+        commands = result["commands"]
+        nlp_result = result["nlp_result"]
+        anomaly_result = result["anomaly_result"]
+        profile_result = result["profile_result"]
+        cluster_result = result["cluster_result"]
+        classification = result["classification"]
+        mitre_result = result["mitre_result"]
+        rules: verdicts.RuleVerdict = result["rules"]
+        signals = result["signals"]
+        refusal = result["refusal"]
+        stored = result["stored"]
+        severity = AttackSeverity(result["severity"])
+        final_category = AttackCategory(classification["category"])
         duration = float(session_data.get("duration_seconds") or 0)
 
         geo = geoip_service.lookup(attacker_ip)
-
-        # Stage 1 classifies the traffic's shape, measured at the engine's
-        # socket; the commands are stage 2's (NLP and Chimera) to read.
-        ai_result = classifier.classify_flow(
-            session_data.get("flow"), str(session_data.get("protocol") or "")
-        )
-
-        protocol = str(session_data.get("protocol") or "")
-        nlp_result = nlp_engine.analyze_commands(commands, protocol)
-
-        payload = str(session_data.get("payload") or "")[:MAX_PAYLOAD_CHARS]
-        if payload:
-            payload_analysis = nlp_engine.analyze_payload(payload)
-        else:
-            payload_analysis = {"is_suspicious": False, "suspicion_score": 0.0}
-
         _now = datetime.now(timezone.utc)
-        anomaly_features = {
-            "session_duration": min(duration / 600, 1),
-            "command_count": min(len(commands) / 50, 1),
-            "unique_commands": min(len(set(commands)) / 30, 1) if commands else 0,
-            "failed_login_attempts": min(session_data.get("failed_logins", 0) / 20, 1),
-            "file_upload_count": min(len(session_data.get("uploads", [])) / 5, 1),
-            "connection_rate": min(session_data.get("connection_rate", 0) / 100, 1),
-            "payload_size_avg": min(len(payload) / 5000, 1) if payload else 0,
-            "payload_entropy": payload_analysis.get("suspicion_score", 0),
-            "port_scan_count": min(session_data.get("port_scan_count", 0) / 50, 1),
-            "error_rate": min(session_data.get("error_rate", 0) / 0.5, 1),
-            "off_hours": 1 if _now.hour < 6 or _now.hour > 22 else 0,
-        }
-        anomaly_result = anomaly_detector.detect(anomaly_features)
-
-        profile_result = attacker_profiler.profile_from_session(
-            session_data, nlp_result, ai_result
-        )
-
-        # Behavioural clustering runs alongside the rule-based profile rather
-        # than replacing it, and the two are reported separately. The scorecard
-        # is interpretable and works on the first session ever seen; clustering
-        # cannot do either, but it groups sessions that behave alike without
-        # anyone deciding in advance what alike means — which is how a campaign
-        # reusing one toolkit becomes visible across many sessions.
-        from app.ai.clustering import clusterer, extract as extract_behaviour
-
-        cluster_result = clusterer.assign(
-            extract_behaviour(session_data, nlp_result)
-        )
-
-        # Reconcile the flow model's verdict with the rule-based evidence. The
-        # flow model (stage 1, FR-2) classifies the traffic's *shape* and is
-        # domain-shifted on command/web sessions, so on its own it labels almost
-        # everything benign. The rule layer reads the recorded commands, probes,
-        # logins and uploads; when it finds a more advanced stage, that becomes
-        # the session's category. The flow model's own distribution is still
-        # kept verbatim in class_probabilities, and model_source records which
-        # layer the stored category actually came from.
-        flow_category = _coerce_enum(
-            AttackCategory, ai_result.get("category"), AttackCategory.BENIGN
-        )
-        rule_category, rule_confidence, rule_reason = self._rule_based_category(
-            nlp_result, session_data
-        )
-        if _CATEGORY_RANK[rule_category] > _CATEGORY_RANK[flow_category]:
-            final_category = rule_category
-            final_confidence = rule_confidence
-            category_source = "rules"
-        else:
-            final_category = flow_category
-            final_confidence = float(ai_result.get("confidence") or 0.0)
-            category_source = ai_result.get("model_source")
-
-        # Downstream stages (MITRE mapping, severity) read the agreed verdict.
-        ai_result["category"] = final_category.value
-
-        mitre_result = mitre_mapper.map_analysis(nlp_result, ai_result, session_data)
-
-        iocs = self._extract_iocs(attacker_ip, nlp_result, session_data)
-
-        severity = self._determine_severity(ai_result, anomaly_result, nlp_result)
-
-        raw_commands_encrypted = encrypt_data("\n".join(commands)) if commands else None
-        raw_payloads_encrypted = encrypt_data(payload) if payload else None
-
-        # Transcript and credentials are encrypted with the same AES-256-GCM
-        # as the command list. Credentials in particular are live passwords in
-        # circulation against real hosts; storing them readable would make the
-        # honeypot's database more dangerous than the attack it recorded.
-        transcript = session_data.get("transcript") or []
-        transcript_encrypted = (
-            encrypt_data(json.dumps(transcript)) if transcript else None
-        )
-        credentials = session_data.get("credentials") or []
-        credentials_encrypted = (
-            encrypt_data(json.dumps(credentials)) if credentials else None
-        )
-
         engine_uuid = _valid_uuid(session_data.get("session_id"))
 
         db_session = HoneypotSession(
@@ -320,37 +461,37 @@ class AnalysisPipeline:
             ended_at=_now,
             duration_seconds=duration,
             attack_category=final_category,
-            attack_confidence=final_confidence,
+            attack_confidence=classification["confidence"],
             attacker_profile=_coerce_enum(
                 AttackerProfile,
                 profile_result.get("profile"),
                 AttackerProfile.UNKNOWN,
             ),
             anomaly_score=anomaly_result["anomaly_score"],
+            # Never set by an uncalibrated detector (ai/anomaly_detector.py).
             is_anomalous=anomaly_result["is_anomalous"],
             detected_tools=nlp_result.get("tool_names", []),
             detected_intents=nlp_result.get("detected_intents", []),
-            command_summary=summarise_commands(commands, protocol),
+            command_summary=stored["command_summary"],
             command_count=len(commands),
             mitre_tactics=mitre_result.get("tactic_ids", []),
             mitre_techniques=mitre_result.get("techniques", []),
-            model_source=category_source,
+            model_source=classification["model_source"],
             cluster_id=cluster_result.get("cluster"),
             cluster_distance=cluster_result.get("distance"),
             cluster_is_outlier=cluster_result.get("is_outlier"),
-            raw_commands_encrypted=raw_commands_encrypted,
-            raw_payloads_encrypted=raw_payloads_encrypted,
-            transcript_encrypted=transcript_encrypted,
-            credentials_encrypted=credentials_encrypted,
+            raw_commands_encrypted=stored["raw_commands_encrypted"],
+            raw_payloads_encrypted=stored["raw_payloads_encrypted"],
+            transcript_encrypted=stored["transcript_encrypted"],
+            credentials_encrypted=stored["credentials_encrypted"],
             network_events=session_data.get("events") or [],
             keystroke_count=int(session_data.get("keystroke_count") or 0),
-            scanner_operator=scanner_registry.identify(attacker_ip),
-            rule_reason=(rule_reason or None) and rule_reason[:300],
-            transcript_sha256=(
-                hashlib.sha256("\n".join(commands).encode("utf-8", "replace")).hexdigest()
-                if commands else None
-            ),
-            class_probabilities=ai_result.get("probabilities"),
+            # Only when the session also behaved like a scan; the range
+            # alone is recorded in signals.scanner.
+            scanner_operator=result["scanner_operator"],
+            rule_reason=(rules.reason or None) and rules.reason[:300],
+            transcript_sha256=stored["transcript_sha256"],
+            class_probabilities=classification["probabilities"],
             # The packet summary column has been indexed since the first
             # migration and never written.
             network_packets_summary=_summarise_packets(session_data.get("packets")),
@@ -359,63 +500,74 @@ class AnalysisPipeline:
                 for u in (session_data.get("uploads") or [])
                 if isinstance(u, dict)
             ],
+            fingerprints=result["fingerprints"],
+            signals=signals,
         )
         db.add(db_session)
         await db.flush()
 
-        for ioc in iocs:
-            db_ioc = IndicatorOfCompromise(
+        for ioc in result["iocs"]:
+            db.add(IndicatorOfCompromise(
                 session_id=db_session.id,
                 ioc_type=ioc["type"],
                 value=ioc["value"],
                 confidence=ioc.get("confidence", 0.8),
                 tags=ioc.get("tags", []),
-            )
-            db.add(db_ioc)
+            ))
 
-        # Alerting policy comes from the configured thresholds, not from a
-        # constant. An operator who sets a threshold and sees it saved is
-        # entitled to have it affect something.
-        decision = await thresholds.evaluate(
-            db, severity, anomaly_result["anomaly_score"]
-        )
+        if "honeytoken" in signals:
+            related = await self._related_honeytoken_sessions(db, db_session, signals["honeytoken"])
+            if related:
+                signals["honeytoken"]["related_sessions"] = related
 
         alert_outcome = None
-        if decision.should_alert:
-            alert_outcome = await alert_service.raise_session_alert(
-                db,
+        signal_alerts: List[Dict] = []
+        if not refusal:
+            # Alerting policy comes from the configured thresholds, not from a
+            # constant. An operator who sets a threshold and sees it saved is
+            # entitled to have it affect something. The anomaly score only
+            # takes part once the detector is calibrated.
+            policy_anomaly = anomaly_result["anomaly_score"] if anomaly_result["calibrated"] else 0.0
+            decision = await thresholds.evaluate(db, severity, policy_anomaly)
+            context = dict(
                 session=db_session,
-                severity=severity,
-                category=ai_result["category"],
-                confidence=float(ai_result.get("confidence") or 0.0),
+                category=final_category.value,
                 profile=profile_result["profile"],
                 tools=nlp_result.get("tool_names", []),
                 mitre_result=mitre_result,
                 geo=geo,
-                decision=decision,
-                rule_reason=rule_reason,
+                score=result["severity_score"],
             )
+            if decision.should_alert:
+                alert_outcome = await alert_service.raise_session_alert(
+                    db, severity=severity, decision=decision, rule_reason=rules.reason, **context,
+                )
+            signal_alerts = await self._raise_signal_alerts(db, signals, severity, context)
 
-        # Queue stage 2 for the sessions worth a model's time: triage by the
-        # decision model first when one is configured, then the language
-        # model. The worker in the backend service drains both; nothing here
-        # waits on either.
-        enrichment.queue_at_ingest(db_session, nlp_result, session_data)
+            # Queue stage 2 for the sessions worth a model's time: triage by the
+            # decision model first when one is configured, then the language
+            # model. The worker in the backend service drains both; nothing here
+            # waits on either.
+            enrichment.queue_at_ingest(db_session, nlp_result, session_data)
 
+        db_session.signals = dict(signals)
         await db.commit()
 
         analysis_ms = (time.perf_counter() - started) * 1000.0
         if analysis_ms > ANALYSIS_BUDGET_MS:
             logger.warning(
-                "Session analysis took %.1f ms, over the %d ms NFR-2 budget",
+                "Session analysis took %.1f ms (%s), over the %d ms NFR-2 budget",
                 analysis_ms,
+                "cold: models loaded during it" if result["cold"] else "warm",
                 ANALYSIS_BUDGET_MS,
             )
 
         # Persisted, not just logged: NFR-2 is a claim about the system under
         # real traffic, and a number that only ever reached a log line cannot
-        # be aggregated into evidence for it.
+        # be aggregated into evidence for it. Cold runs are marked so they
+        # can be reported apart from the steady state.
         db_session.analysis_ms = round(analysis_ms, 2)
+        db_session.signals = {**signals, "timing": {"cold": result["cold"], "cpu_ms": result["cpu_ms"]}}
         await db.commit()
 
         return {
@@ -425,73 +577,182 @@ class AnalysisPipeline:
             # real traffic rather than estimated from a single run.
             "analysis_ms": round(analysis_ms, 2),
             "analysis_within_budget": analysis_ms <= ANALYSIS_BUDGET_MS,
-            "ai_classification": ai_result,
+            "analysis_cold": result["cold"],
+            "analysis_cpu_ms": result["cpu_ms"],
+            "ai_classification": classification,
             "nlp_analysis": nlp_result,
             "anomaly_detection": anomaly_result,
             "attacker_profile": profile_result,
             "behavioural_cluster": cluster_result,
             "mitre_attack": mitre_result,
             "severity": severity.value,
-            "iocs": iocs,
+            "signals": db_session.signals,
+            "iocs": result["iocs"],
             "alert": alert_outcome,
+            "signal_alerts": signal_alerts,
             "enrichment_status": db_session.enrichment_status,
             "triage_status": db_session.triage_status,
         }
 
+    async def _raise_signal_alerts(
+        self, db: AsyncSession, signals: Dict, severity: AttackSeverity, context: Dict
+    ) -> List[Dict]:
+        """Alerts a signal raises on its own: a canary trigger, a honeytoken.
+
+        Kept apart from the per-source alert (their own group), so neither
+        is folded into a brute-force alert and lost. The alert is always
+        created; whether anyone is notified still follows the thresholds.
+        """
+        outcomes: List[Dict] = []
+        ip = context["session"].attacker_ip
+
+        async def raise_one(group: str, floor: AttackSeverity, title: str, description: str) -> None:
+            level = max(severity, floor, key=lambda s: thresholds.SEVERITY_RANK[s])
+            policy = await thresholds.evaluate(db, level, 0.0)
+            notify = AlertDecision(
+                should_alert=True,
+                email=policy.email and policy.should_alert,
+                webhook=policy.webhook and policy.should_alert,
+                matched=policy.matched,
+            )
+            outcome = await alert_service.raise_session_alert(
+                db, severity=level, decision=notify, group=group,
+                title=title, description=description, **context,
+            )
+            outcomes.append({"signal": group.split(":")[0], **outcome})
+
+        agent = signals.get("ai_agent") or {}
+        if agent.get("canary"):
+            names = ", ".join(agent.get("canaries") or []) or "unnamed"
+            await raise_one(
+                "canary", AttackSeverity.MEDIUM,
+                f"AI agent canary triggered by {ip}",
+                f"The session acted on canary text only a model reading the output would act on "
+                f"({names}). This identifies an AI-driven agent; it says nothing by itself about "
+                f"how far the session got.",
+            )
+        token = signals.get("honeytoken") or {}
+        if token:
+            ids = ", ".join(token.get("token_ids") or []) or "unidentified"
+            await raise_one(
+                f"honeytoken:{ids}"[:100], AttackSeverity.HIGH,
+                f"Honeytoken used by {ip}",
+                f"A planted honeytoken was used ({ids}; kind: "
+                f"{', '.join(token.get('kinds') or []) or 'unspecified'}). Whoever used it had read it first.",
+            )
+        return outcomes
+
+    async def _related_honeytoken_sessions(
+        self, db: AsyncSession, session: HoneypotSession, token: Dict
+    ) -> List[Dict]:
+        """Earlier sessions that touched the same token, as far as stored data shows.
+
+        Two things can be determined from what is stored: another session
+        whose events or signals name the same token id, and one whose plain
+        command summary names the file the token was planted in (when the
+        engine's event says which file that is). A read buried in a long
+        session past the summary's first hundred commands is not found.
+        """
+        found: Dict[int, str] = {}
+        for token_id in (token.get("token_ids") or [])[:5]:
+            pattern = f'%"{escape_like(token_id)}"%'
+            rows = (
+                await db.execute(
+                    select(HoneypotSession.id)
+                    .where(
+                        HoneypotSession.id != session.id,
+                        or_(
+                            cast(HoneypotSession.network_events, String).like(pattern, escape=LIKE_ESCAPE),
+                            cast(HoneypotSession.signals, String).like(pattern, escape=LIKE_ESCAPE),
+                        ),
+                    )
+                    .order_by(HoneypotSession.id.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+            for row_id in rows:
+                found.setdefault(row_id, f"same token {token_id}")
+        for path in (token.get("paths") or [])[:5]:
+            rows = (
+                await db.execute(
+                    select(HoneypotSession.id)
+                    .where(
+                        HoneypotSession.id != session.id,
+                        HoneypotSession.command_summary.ilike(f"%{escape_like(path)}%", escape=LIKE_ESCAPE),
+                    )
+                    .order_by(HoneypotSession.id.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+            for row_id in rows:
+                found.setdefault(row_id, f"command summary names {path}")
+        return [{"session_id": row_id, "why": why} for row_id, why in sorted(found.items())][:20]
+
     def _extract_iocs(self, attacker_ip: str, nlp_result: Dict, session_data: Dict) -> List[Dict]:
         iocs = []
+
+        def add(kind: str, value, confidence: float, tags: List[str]) -> None:
+            fitted, cut = fit_ioc_value(str(value))
+            if fitted:
+                iocs.append({
+                    "type": kind, "value": fitted, "confidence": confidence,
+                    "tags": tags + (["truncated"] if cut else []),
+                })
+
         if attacker_ip:
-            iocs.append({"type": "ip", "value": attacker_ip, "confidence": 0.95, "tags": ["attacker_ip"]})
-
-        for ip in nlp_result.get("extracted_ips", []):
-            if ip != attacker_ip:
-                iocs.append({"type": "ip", "value": ip, "confidence": 0.7, "tags": ["referenced_ip"]})
-
-        for url in nlp_result.get("extracted_urls", []):
-            iocs.append({"type": "url", "value": url, "confidence": 0.8, "tags": ["c2_url", "download_url"]})
-
-        for tool in nlp_result.get("detected_tools", []):
-            tool_name = tool.get("name", tool) if isinstance(tool, dict) else tool
-            iocs.append({"type": "tool", "value": tool_name, "confidence": 0.85, "tags": ["offensive_tool"]})
-
-        for f in session_data.get("uploads", []):
-            if isinstance(f, dict):
-                sha = f.get("sha256", f.get("md5", ""))
-                if sha:
-                    iocs.append({"type": "file_hash", "value": sha, "confidence": 0.9, "tags": ["uploaded_malware"]})
+            add("ip", attacker_ip, 0.95, ["attacker_ip"])
 
         # Retrieval events are the highest-confidence indicators the honeypot
         # produces. An attacker who types a URL might be pasting from a blog;
         # one whose dropper fetched it chose it. The URL, the host and the
         # payload name are each recorded, because a takedown request needs the
         # host and a detection rule needs the filename.
+        contacted = set()
         for event in session_data.get("events") or []:
             if not isinstance(event, dict):
                 continue
-            if event.get("event_type") != "file_download":
-                continue
-            url, host = event.get("url"), event.get("host")
-            tags = ["c2_url", "dropper"] + (["piped_to_shell"] if event.get("piped_to_shell") else [])
-            if url:
-                iocs.append({"type": "url", "value": str(url)[:500], "confidence": 0.95, "tags": tags})
-            if host and host != attacker_ip:
-                ioc_type = "ip" if _looks_like_ip(str(host)) else "domain"
-                iocs.append({
-                    "type": ioc_type,
-                    "value": str(host)[:500],
-                    "confidence": 0.9,
-                    "tags": ["c2_host", "dropper"],
-                })
-            if event.get("filename"):
-                iocs.append({
-                    "type": "filename",
-                    "value": str(event["filename"])[:500],
-                    "confidence": 0.75,
-                    "tags": ["payload_name"],
-                })
+            kind = event.get("event_type")
+            if kind == "file_download":
+                url, host = event.get("url"), event.get("host")
+                tags = ["c2_url", "dropper"] + (["piped_to_shell"] if event.get("piped_to_shell") else [])
+                if url:
+                    add("url", url, 0.95, tags)
+                if host and host != attacker_ip:
+                    contacted.add(str(host))
+                    add("ip" if _looks_like_ip(str(host)) else "domain", host, 0.9, ["c2_host", "dropper"])
+                if event.get("filename"):
+                    add("filename", event["filename"], 0.75, ["payload_name"])
+            elif kind == "direct_tcpip":
+                # Where an SSH client asked the host to connect on its behalf.
+                host = event.get("dest_host")
+                if host and host != attacker_ip:
+                    contacted.add(str(host))
+                    add("ip" if _looks_like_ip(str(host)) else "domain", host, 0.9, ["forward_target"])
+
+        # An address that merely appears in typed text is not the session's
+        # source and was not contacted: its own type, so a blocklist built
+        # from "ip" never picks up something an attacker only mentioned.
+        for ip in nlp_result.get("extracted_ips", []):
+            if ip != attacker_ip and ip not in contacted:
+                add("referenced_ip", ip, 0.7, ["referenced_ip"])
+
+        for url in nlp_result.get("extracted_urls", []):
+            add("url", url, 0.8, ["referenced_url"])
+
+        for tool in nlp_result.get("detected_tools", []):
+            tool_name = tool.get("name", tool) if isinstance(tool, dict) else tool
+            add("tool", tool_name, 0.85, ["offensive_tool"])
+
+        for f in session_data.get("uploads", []) or []:
+            if isinstance(f, dict):
+                sha = f.get("sha256", f.get("md5", ""))
+                if sha:
+                    add("file_hash", sha, 0.9, ["uploaded_malware"])
 
         # De-duplicate: a session that fetches the same stage twice should not
-        # write the indicator twice.
+        # write the indicator twice. The first entry wins, and the event-based
+        # ones come first, so a URL both fetched and typed keeps its stronger
+        # tags.
         seen, unique = set(), []
         for ioc in iocs:
             key = (ioc["type"], ioc["value"])
@@ -501,127 +762,32 @@ class AnalysisPipeline:
         return unique
 
     def _rule_based_category(self, nlp_result: Dict, session_data: Dict):
-        """Derive a category from deterministic evidence in the session.
+        """Category, confidence and reason from the rule evidence.
 
-        Reads the NLP categories/intents (which now include web-exploitation
-        signatures), the failed-login count, uploaded files and the count of
-        attack probes the decoy flagged. Returns the highest kill-chain stage
-        any of them implies, a confidence for that signature match, and a short
-        reason. Benign when nothing matched — the flow model then stands.
+        The definition lives in ``app.ai.verdict`` so the tools can use it
+        without the pipeline; this keeps the shape older callers expect.
         """
-        categories = set(nlp_result.get("categories") or [])
-        intents = set(nlp_result.get("detected_intents") or [])
-        failed_logins = int(session_data.get("failed_logins") or 0)
-        upload_count = len(session_data.get("uploads") or [])
-        probe_count = sum(
-            1
-            for packet in (session_data.get("packets") or [])
-            if isinstance(packet, dict) and packet.get("type") == "attack_detected"
-        )
-
-        category = AttackCategory.BENIGN
-        reasons: List[str] = []
-
-        def bump(to: AttackCategory, why: str):
-            nonlocal category
-            reasons.append(why)
-            if _CATEGORY_RANK[to] > _CATEGORY_RANK[category]:
-                category = to
-
-        if categories & _RECON_SIGNALS or "reconnaissance" in intents:
-            bump(AttackCategory.RECONNAISSANCE, "reconnaissance tooling or behaviour")
-        if probe_count:
-            # The decoy flagged a probe whose kind isn't forwarded in detail; a
-            # recon floor is the honest minimum (NLP catches the specific ones).
-            bump(AttackCategory.RECONNAISSANCE, f"{probe_count} flagged attack probe(s)")
-        diversion = next(
-            (
-                e for e in (session_data.get("events") or [])
-                if isinstance(e, dict) and e.get("event_type") == "http_diversion"
-            ),
-            None,
-        )
-        if diversion:
-            # The client gave itself away earlier, maybe on another connection,
-            # so this session can look like plain browsing on its own.
-            bump(
-                AttackCategory.RECONNAISSANCE,
-                f"diverted to the decoy application ({diversion.get('reason') or 'earlier attack'})",
-            )
-        if categories & _EXPLOIT_SIGNALS or intents & _EXPLOIT_INTENTS:
-            bump(AttackCategory.EXPLOITATION, "exploitation signature or intent")
-        if failed_logins >= _BRUTE_FORCE_THRESHOLD:
-            bump(AttackCategory.EXPLOITATION, f"{failed_logins} failed logins (brute force)")
-        if upload_count:
-            bump(AttackCategory.EXPLOITATION, f"{upload_count} file upload(s)")
-        if categories & _EXFIL_SIGNALS or "data_exfiltration" in intents:
-            bump(AttackCategory.EXFILTRATION, "data-exfiltration behaviour")
-
-        if category is AttackCategory.BENIGN:
-            return category, 0.0, ""
-        # Deliberately not 1.0: strong heuristics over recorded text, not proof.
-        # A little higher when several independent signals agree.
-        confidence = 0.9 if len(reasons) > 1 else 0.75
-        reason = "; ".join(reasons[:4])
-        logger.debug("Rule-based category %s: %s", category.value, reason)
-        return category, confidence, reason
-
-    def _determine_severity(
-        self,
-        ai_result: Dict,
-        anomaly_result: Dict,
-        nlp_result: Dict,
-    ) -> AttackSeverity:
-        category = ai_result.get("category", "benign")
-        confidence = ai_result.get("confidence", 0)
-        anomaly_score = anomaly_result.get("anomaly_score", 0)
-        tools = nlp_result.get("tool_names", [])
-        intents = nlp_result.get("detected_intents", [])
-
-        score = 0
-        if category == "exploitation":
-            score += 4
-        elif category == "exfiltration":
-            score += 5
-        elif category == "reconnaissance":
-            score += 2
-        elif category == "benign":
-            score += 0
-
-        score += confidence * 2
-        score += anomaly_score * 2
-
-        critical_tools = {"metasploit", "mimikatz", "cobalt_strike", "empire"}
-        if any(t in critical_tools for t in tools):
-            score += 3
-
-        if "data_exfiltration" in intents:
-            score += 2
-        if "lateral_movement" in intents:
-            score += 2
-        if "credential_harvesting" in intents:
-            score += 2
-
-        if score >= 8:
-            return AttackSeverity.CRITICAL
-        elif score >= 5:
-            return AttackSeverity.HIGH
-        elif score >= 3:
-            return AttackSeverity.MEDIUM
-        else:
-            return AttackSeverity.LOW
+        rules = verdicts.rule_verdict(nlp_result, session_data)
+        return AttackCategory(rules.category), rules.confidence, rules.reason
 
 
 analysis_pipeline = AnalysisPipeline()
 
 
+#: A refused connection is recorded with source port 0. It is not a session
+#: and is kept out of the counts that describe sessions.
+def _not_refusal():
+    return or_(HoneypotSession.attacker_port.is_(None), HoneypotSession.attacker_port != 0)
+
+
 class DashboardService:
     async def get_stats(self, db: AsyncSession) -> DashboardStats:
-        total_q = select(func.count(HoneypotSession.id))
+        counted = _not_refusal()
+        total_q = select(func.count(HoneypotSession.id)).where(counted)
         total = (await db.execute(total_q)).scalar() or 0
 
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        today_q = select(func.count(HoneypotSession.id)).where(HoneypotSession.started_at >= today_start)
+        today_q = select(func.count(HoneypotSession.id)).where(HoneypotSession.started_at >= today_start, counted)
         sessions_today = (await db.execute(today_q)).scalar() or 0
 
         active_q = select(func.count(HoneypotSession.id)).where(HoneypotSession.status == SessionStatus.ACTIVE)
@@ -636,15 +802,19 @@ class DashboardService:
         active_nodes_q = select(func.count(HoneypotNode.id)).where(HoneypotNode.is_active.is_(True))
         active_nodes = (await db.execute(active_nodes_q)).scalar() or 0
 
-        unique_ips_q = select(func.count(func.distinct(HoneypotSession.attacker_ip)))
+        unique_ips_q = select(func.count(func.distinct(HoneypotSession.attacker_ip))).where(counted)
         unique_ips = (await db.execute(unique_ips_q)).scalar() or 0
 
         unique_countries_q = select(func.count(func.distinct(HoneypotSession.geo_country))).where(
-            HoneypotSession.geo_country.isnot(None)
+            HoneypotSession.geo_country.isnot(None), counted
         )
         unique_countries = (await db.execute(unique_countries_q)).scalar() or 0
 
-        cat_q = select(HoneypotSession.attack_category, func.count(HoneypotSession.id)).group_by(HoneypotSession.attack_category)
+        cat_q = (
+            select(HoneypotSession.attack_category, func.count(HoneypotSession.id))
+            .where(counted)
+            .group_by(HoneypotSession.attack_category)
+        )
         cat_result = await db.execute(cat_q)
         attack_distribution = {cat.value if cat else "unknown": count for cat, count in cat_result.all()}
 
@@ -652,10 +822,16 @@ class DashboardService:
         sev_result = await db.execute(sev_q)
         severity_distribution = {s.value if s else "unknown": count for s, count in sev_result.all()}
 
-        hour_q = select(
-            func.extract('hour', HoneypotSession.started_at).label('hour'),
-            func.count(HoneypotSession.id)
-        ).group_by(func.extract('hour', HoneypotSession.started_at))
+        # Hour of day in UTC, whatever zone the database session is set to:
+        # PostgreSQL extracts from a timestamptz in the connection's zone,
+        # so the buckets moved with a server setting nobody chose. (SQLite,
+        # in the tests, stores UTC and has no zones to apply.)
+        started_utc = HoneypotSession.started_at
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            started_utc = func.timezone("UTC", HoneypotSession.started_at)
+        hour = func.extract("hour", started_utc)
+        hour_q = select(hour.label("hour"), func.count(HoneypotSession.id)).where(counted).group_by(hour)
         hour_result = await db.execute(hour_q)
         sessions_by_hour = {str(int(hour)).zfill(2): count for hour, count in hour_result.all()}
 
@@ -663,7 +839,9 @@ class DashboardService:
             HoneypotSession.attacker_ip,
             HoneypotSession.geo_country,
             func.count(HoneypotSession.id).label("count")
-        ).group_by(HoneypotSession.attacker_ip, HoneypotSession.geo_country).order_by(desc("count")).limit(10)
+        ).where(counted).group_by(
+            HoneypotSession.attacker_ip, HoneypotSession.geo_country
+        ).order_by(desc("count")).limit(10)
         top_ips_result = await db.execute(top_ips_q)
         top_attacker_ips = [{"ip": ip, "country": country, "count": count} for ip, country, count in top_ips_result.all()]
 
@@ -680,6 +858,7 @@ class DashboardService:
             attack_distribution=attack_distribution,
             severity_distribution=severity_distribution,
             sessions_by_hour=sessions_by_hour,
+            timezone="UTC",
             top_attacker_ips=top_attacker_ips,
             top_tools_detected=top_tools_detected,
         )
@@ -753,13 +932,20 @@ class DashboardService:
         return events
 
     def _session_severity(self, session: HoneypotSession) -> str:
-        if session.attack_category == AttackCategory.EXPLOITATION:
-            return "critical" if (session.attack_confidence or 0) > 0.8 else "high"
-        elif session.attack_category == AttackCategory.EXFILTRATION:
-            return "critical"
-        elif session.attack_category == AttackCategory.RECONNAISSANCE:
-            return "medium"
-        return "low"
+        """Severity of a stored session, by the definition used at ingest.
+
+        The feed had its own (exploitation is critical above 0.8 confidence,
+        reconnaissance always medium), which disagreed with the severity the
+        same session's alert carried.
+        """
+        return verdicts.stored_severity(
+            session.attack_category.value if session.attack_category else None,
+            session.attack_confidence,
+            session.model_source,
+            session.detected_tools,
+            session.detected_intents,
+            session.signals,
+        )
 
 
 dashboard_service = DashboardService()

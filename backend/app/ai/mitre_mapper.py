@@ -1,277 +1,383 @@
-from __future__ import annotations
-from typing import Dict, List, Set, Optional
+"""Mapping findings onto MITRE ATT&CK, checked against the catalog.
 
-MITRE_ATTACK_MAP = {
-    "reconnaissance": {
-        "tactic": {"id": "TA0043", "name": "Reconnaissance"},
-        "techniques": {
-            "nmap": {"id": "T1046", "name": "Network Service Discovery"},
-            "nikto": {"id": "T1595", "name": "Active Scanning"},
-            "gobuster": {"id": "T1595.001", "name": "Scanning IP Blocks"},
-            "enum_linux": {"id": "T1082", "name": "System Information Discovery"},
-            "enum_windows": {"id": "T1082", "name": "System Information Discovery"},
-            "port_scan": {"id": "T1046", "name": "Network Service Scanning"},
-        },
-    },
-    "exploitation": {
-        "tactic": {"id": "TA0001", "name": "Initial Access"},
-        "techniques": {
-            "metasploit": {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
-            "sqlmap": {"id": "T1190", "name": "Exploit Public-Facing Application"},
-            "reverse_shell": {"id": "T1059", "name": "Command and Scripting Interpreter"},
-            "ssh_brute": {"id": "T1110.001", "name": "Password Guessing"},
-            "ftp_brute": {"id": "T1110.001", "name": "Password Guessing"},
-            "rdp_exploit": {"id": "T1190", "name": "Exploit Public-Facing Application"},
-        },
-    },
-    "credential_theft": {
-        "tactic": {"id": "TA0006", "name": "Credential Access"},
-        "techniques": {
-            "mimikatz": {"id": "T1003.001", "name": "OS Credential Dumping: LSASS Memory"},
-            "hydra": {"id": "T1110", "name": "Brute Force"},
-            "hashcat": {"id": "T1110", "name": "Brute Force"},
-            "credential_harvesting": {"id": "T1555", "name": "Credentials from Password Stores"},
-        },
-    },
-    "privilege_escalation": {
-        "tactic": {"id": "TA0004", "name": "Privilege Escalation"},
-        "techniques": {
-            "chmod_chown": {"id": "T1222", "name": "File and Directory Permissions Modification"},
-            "sudo_exploit": {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
-            "privilege_escalation": {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
-        },
-    },
-    "lateral_movement": {
-        "tactic": {"id": "TA0008", "name": "Lateral Movement"},
-        "techniques": {
-            "lateral_movement": {"id": "T1021", "name": "Remote Services"},
-            "psexec": {"id": "T1570", "name": "Lateral Tool Transfer"},
-            "ssh_pivot": {"id": "T1021.004", "name": "SSH"},
-            "rdp": {"id": "T1021.001", "name": "Remote Desktop Protocol"},
-        },
-    },
-    "persistence": {
-        "tactic": {"id": "TA0003", "name": "Persistence"},
-        "techniques": {
-            "persistence": {"id": "T1053", "name": "Scheduled Task/Job"},
-            "crontab": {"id": "T1053.003", "name": "Cron"},
-            "systemd": {"id": "T1543.002", "name": "Systemd Service"},
-            "backdoor": {"id": "T1571", "name": "Non-Standard Port"},
-        },
-    },
-    "exfiltration": {
-        "tactic": {"id": "TA0010", "name": "Exfiltration"},
-        "techniques": {
-            "data_exfil": {"id": "T1041", "name": "Exfiltration Over C2 Channel"},
-            "wget_curl": {"id": "T1105", "name": "Ingress Tool Transfer"},
-            "base64": {"id": "T1027", "name": "Obfuscated Files or Information"},
-            "scp_transfer": {"id": "T1048", "name": "Exfiltration Over Alternative Protocol"},
-        },
-    },
-    "command_and_control": {
-        "tactic": {"id": "TA0011", "name": "Command and Control"},
-        "techniques": {
-            "cobalt_strike": {"id": "T1071", "name": "Application Layer Protocol"},
-            "empire": {"id": "T1071.001", "name": "Web Protocols"},
-            "botnet": {"id": "T1095", "name": "Non-Application Layer Protocol"},
-            "netcat": {"id": "T1571", "name": "Non-Standard Port"},
-        },
-    },
-    "defense_evasion": {
-        "tactic": {"id": "TA0005", "name": "Defense Evasion"},
-        "techniques": {
-            "obfuscation": {"id": "T1027", "name": "Obfuscated Files or Information"},
-            "timestomp": {"id": "T1070.006", "name": "Timestomp"},
-            "disable_logging": {"id": "T1070", "name": "Indicator Removal"},
-        },
-    },
-    "impact": {
-        "tactic": {"id": "TA0040", "name": "Impact"},
-        "techniques": {
-            "ransomware": {"id": "T1486", "name": "Data Encrypted for Impact"},
-            "denial_of_service": {"id": "T1498", "name": "Network Denial of Service"},
-            "defacement": {"id": "T1491.001", "name": "Defacement: Internal Defacement"},
-            "data_destruction": {"id": "T1485", "name": "Data Destruction"},
-        },
-    },
+Two things used to be wrong here. Technique ids were accepted on their shape
+alone, so ``T9999`` and ``T1059.999`` were stored; and names and tactics came
+from two hand-typed tables that disagreed with ATT&CK for several techniques
+(T1059 under Initial Access, T1105 under Exfiltration, T1046 and T1082 under
+Reconnaissance) and gave web signatures, brute force and uploads a tactic and
+no technique at all.
+
+Now the only thing written by hand is which technique a *finding* evidences
+(``RULE_TECHNIQUES``): ids, nothing else. Whether an id exists, what it is
+called and which tactics it belongs to come from the catalog
+(``attack_catalog``), for rule findings and for model output alike. An id
+the catalog does not know is not stored as a technique.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from app.ai.attack_catalog import STATUSES, UNVERIFIED, Resolution, catalog
+
+logger = logging.getLogger(__name__)
+
+#: Finding key -> the techniques it evidences, each optionally with the
+#: tactic the finding shows when the technique belongs to several (a cron
+#: entry written by an intruder is Persistence; ATT&CK also lists T1053.003
+#: under Execution and Privilege Escalation). A pinned tactic is only used if
+#: the catalog lists it for that technique.
+#:
+#: Ids are written as commonly known; one that a later ATT&CK release revoked
+#: (T1562.001, T1070.002) is followed to its replacement by the catalog, so
+#: this table does not need editing when the framework renumbers.
+RULE_TECHNIQUES: Dict[str, Tuple[Tuple[str, Optional[str]], ...]] = {
+    # Discovery
+    "system_info": (("T1082", None),),
+    "user_discovery": (("T1033", None),),
+    "account_discovery": (("T1087.001", None),),
+    "group_discovery": (("T1069.001", None),),
+    "network_config": (("T1016", None),),
+    "network_connections": (("T1049", None),),
+    "process_discovery": (("T1057", None),),
+    "service_discovery": (("T1007", None),),
+    "file_discovery": (("T1083", None),),
+    "suid_search": (("T1083", None),),
+    "shell_history_read": (("T1552.003", None),),
+    "credential_search": (("T1552.001", None),),
+    "windows_system_info": (("T1082", None),),
+    "windows_account_discovery": (("T1087.001", None),),
+    "windows_group_discovery": (("T1069.001", None),),
+    "windows_network_config": (("T1016", None),),
+    "port_scan": (("T1046", None),),
+    "network_sniff": (("T1040", "TA0007"),),
+    # Tools run from the decoy against other targets
+    "dir_enum_tool": (("T1595.003", None),),
+    "vuln_scan_tool": (("T1595.002", None),),
+    "sqlmap": (("T1190", None),),
+    "password_attack_tool": (("T1110", None),),
+    # Getting tools in and running them
+    "download": (("T1105", None),),
+    "iot_bot_download": (("T1105", None),),
+    "download_execute": (("T1105", None), ("T1059.004", None)),
+    "decode": (("T1140", None),),
+    "decode_execute": (("T1140", None), ("T1059.004", None)),
+    "pipe_to_shell": (("T1059.004", None),),
+    "run_dropped_file": (("T1059.004", None),),
+    "interpreter_inline": (("T1059", None),),
+    "reverse_shell": (("T1059.004", None),),
+    "make_executable": (("T1222.002", None),),
+    "immutable_flag": (("T1222.002", None),),
+    "ftp_site_exec": (("T1059", None),),
+    "obfuscation": (("T1027.010", None),),
+    # Persistence and privilege
+    "cron_persist": (("T1053.003", "TA0003"),),
+    "service_persist": (("T1543.002", "TA0003"),),
+    "boot_persist": (("T1037.004", "TA0003"),),
+    "shell_profile_persist": (("T1546.004", "TA0003"),),
+    "ssh_key_persist": (("T1098.004", "TA0003"),),
+    "preload_hijack": (("T1574.006", None),),
+    "account_create": (("T1136.001", None),),
+    "account_modify": (("T1098", "TA0003"),),
+    "sudo_exec": (("T1548.003", None),),
+    "switch_user": (("T1548.003", None),),
+    "setuid": (("T1548.001", None),),
+    "privesc_exploit": (("T1068", None),),
+    # Credentials
+    "credential_dump": (("T1003.008", None),),
+    "private_key_read": (("T1552.004", None),),
+    "credential_file_read": (("T1552.001", None),),
+    "mimikatz": (("T1003.001", None),),
+    "password_cracking": (("T1110.002", None),),
+    "brute_force": (("T1110", None),),
+    "password_guessing": (("T1110.001", None),),
+    "password_spraying": (("T1110.003", None),),
+    "honeytoken_use": (("T1078", "TA0001"),),
+    # Moving on
+    "remote_login": (("T1021.004", None),),
+    "remote_desktop": (("T1021.001", None),),
+    "smb_access": (("T1021.002", None),),
+    "remote_exec": (("T1021", None),),
+    "tunnel": (("T1572", None),),
+    "ssh_forward": (("T1572", None),),
+    # Covering tracks and weakening defences
+    "history_evasion": (("T1070.003", None),),
+    "log_clear": (("T1070.002", None),),
+    "timestomp": (("T1070.006", None),),
+    "firewall_disable": (("T1562.004", None),),
+    "defence_disable": (("T1562.001", None),),
+    # Impact
+    "service_stop": (("T1489", None),),
+    "data_destruction": (("T1485", None),),
+    "encrypt_files": (("T1486", None),),
+    "denial_of_service": (("T1498", None),),
+    "defacement": (("T1491", None),),
+    "cryptominer": (("T1496", None),),
+    # Collection and exfiltration
+    "db_dump": (("T1005", None),),
+    "exfil_upload": (("T1048", None),),
+    "exfil_netcat": (("T1048.003", None),),
+    "exfil_copy": (("T1048", None),),
+    # Captured files
+    "upload": (("T1105", None),),
+    # Web requests: an attack on the decoy application itself
+    "web:sql_injection": (("T1190", None),),
+    "web:xss": (("T1190", None),),
+    "web:command_injection": (("T1190", None),),
+    "web:log4shell": (("T1190", None),),
+    "web:lfi_rfi": (("T1190", None),),
+    "web:path_traversal": (("T1190", None),),
+    "web:ssrf": (("T1190", None), ("T1552.005", None)),
+    "web:webshell": (("T1505.003", None),),
+    # Scanners that name themselves in the User-Agent
+    "ua:sqlmap": (("T1190", None),),
+    "ua:metasploit": (("T1190", None),),
+    "ua:hydra": (("T1110", None),),
+    "ua:nikto": (("T1595.002", None),),
+    "ua:nuclei": (("T1595.002", None),),
+    "ua:wpscan": (("T1595.002", None),),
+    "ua:acunetix": (("T1595.002", None),),
+    "ua:nessus": (("T1595.002", None),),
+    "ua:openvas": (("T1595.002", None),),
+    "ua:gobuster": (("T1595.003", None),),
+    "ua:dirbuster": (("T1595.003", None),),
+    "ua:ffuf": (("T1595.003", None),),
+    "ua:wfuzz": (("T1595.003", None),),
+    "ua:masscan": (("T1595.001", None),),
+    "ua:zgrab": (("T1595", None),),
+    "ua:nmap": (("T1595", None),),
+}
+
+#: Tactic shown for a technique that belongs to several, when the finding did
+#: not pin one: the reading most sessions on a decoy support. Only ever one
+#: of the technique's own catalog tactics; anything else is ignored.
+PREFERRED_TACTIC = {
+    "T1053": "TA0003",
+    "T1078": "TA0001",
+    "T1098": "TA0003",
+    "T1543": "TA0003",
+    "T1546": "TA0003",
+    "T1037": "TA0003",
+    "T1133": "TA0001",
 }
 
 TACTIC_COLORS = {
     "TA0043": "#8b5cf6",
+    "TA0042": "#a855f7",
     "TA0001": "#ef4444",
-    "TA0006": "#f59e0b",
-    "TA0004": "#10b981",
-    "TA0008": "#3b82f6",
+    "TA0002": "#f97316",
     "TA0003": "#6366f1",
-    "TA0010": "#ec4899",
-    "TA0011": "#14b8a6",
+    "TA0004": "#10b981",
     "TA0005": "#84cc16",
+    "TA0112": "#65a30d",
+    "TA0006": "#f59e0b",
+    "TA0007": "#06b6d4",
+    "TA0008": "#3b82f6",
+    "TA0009": "#0ea5e9",
+    "TA0011": "#14b8a6",
+    "TA0010": "#ec4899",
     "TA0040": "#dc2626",
 }
+_DEFAULT_COLOR = "#6b7280"
+
+#: Confidence recorded for a technique a rule finding evidences. A fixed
+#: heuristic value, deliberately below 1: the rule read text, it did not
+#: observe an effect.
+RULE_CONFIDENCE = 0.8
 
 
-#: Tactic for techniques the model reports that the rule map above has no
-#: entry for. The model is good at naming techniques; tactics come from here
-#: so the kill-chain view stays consistent across both stages.
-EXTRA_TECHNIQUE_TACTICS = {
-    "T1003": ("TA0006", "OS Credential Dumping"),
-    "T1005": ("TA0009", "Data from Local System"),
-    "T1016": ("TA0007", "System Network Configuration Discovery"),
-    "T1018": ("TA0007", "Remote System Discovery"),
-    "T1021": ("TA0008", "Remote Services"),
-    "T1027": ("TA0005", "Obfuscated Files or Information"),
-    "T1033": ("TA0007", "System Owner/User Discovery"),
-    "T1036": ("TA0005", "Masquerading"),
-    "T1046": ("TA0007", "Network Service Discovery"),
-    "T1053": ("TA0003", "Scheduled Task/Job"),
-    "T1057": ("TA0007", "Process Discovery"),
-    "T1059": ("TA0002", "Command and Scripting Interpreter"),
-    "T1068": ("TA0004", "Exploitation for Privilege Escalation"),
-    "T1070": ("TA0005", "Indicator Removal"),
-    "T1071": ("TA0011", "Application Layer Protocol"),
-    "T1078": ("TA0001", "Valid Accounts"),
-    "T1082": ("TA0007", "System Information Discovery"),
-    "T1083": ("TA0007", "File and Directory Discovery"),
-    "T1098": ("TA0003", "Account Manipulation"),
-    "T1105": ("TA0011", "Ingress Tool Transfer"),
-    "T1110": ("TA0006", "Brute Force"),
-    "T1136": ("TA0003", "Create Account"),
-    "T1140": ("TA0005", "Deobfuscate/Decode Files or Information"),
-    "T1190": ("TA0001", "Exploit Public-Facing Application"),
-    "T1222": ("TA0005", "File and Directory Permissions Modification"),
-    "T1486": ("TA0040", "Data Encrypted for Impact"),
-    "T1489": ("TA0040", "Service Stop"),
-    "T1490": ("TA0040", "Inhibit System Recovery"),
-    "T1496": ("TA0040", "Resource Hijacking"),
-    "T1498": ("TA0040", "Network Denial of Service"),
-    "T1499": ("TA0040", "Endpoint Denial of Service"),
-    "T1505": ("TA0003", "Server Software Component"),
-    "T1543": ("TA0003", "Create or Modify System Process"),
-    "T1548": ("TA0004", "Abuse Elevation Control Mechanism"),
-    "T1552": ("TA0006", "Unsecured Credentials"),
-    "T1555": ("TA0006", "Credentials from Password Stores"),
-    "T1562": ("TA0005", "Impair Defenses"),
-    "T1564": ("TA0005", "Hide Artifacts"),
-    "T1571": ("TA0011", "Non-Standard Port"),
-    "T1572": ("TA0011", "Protocol Tunneling"),
-    "T1573": ("TA0011", "Encrypted Channel"),
-    "T1595": ("TA0043", "Active Scanning"),
-}
+def primary_tactics(resolution: Resolution, pinned: Optional[str] = None) -> List[str]:
+    """The tactic a verified technique is filed under.
+
+    A technique with one tactic has no choice. One with several takes the
+    pinned tactic if the catalog lists it, then the preferred one for its
+    parent, then the first in kill-chain order.
+    """
+    tactics = resolution.tactics
+    if len(tactics) <= 1:
+        return list(tactics)
+    if pinned in tactics:
+        return [pinned]
+    preferred = PREFERRED_TACTIC.get((resolution.id or "").split(".")[0])
+    if preferred in tactics:
+        return [preferred]
+    return tactics[:1]
 
 
-def _rule_map_index() -> Dict[str, tuple]:
-    index: Dict[str, tuple] = {}
-    for tactic_data in MITRE_ATTACK_MAP.values():
-        tactic_id = tactic_data["tactic"]["id"]
-        for technique in tactic_data["techniques"].values():
-            index.setdefault(technique["id"], (tactic_id, technique["name"]))
-    return index
+def validate_technique(
+    technique_id: str,
+    name: str = "",
+    source: str = "",
+    pinned_tactic: Optional[str] = None,
+) -> Tuple[Optional[Dict], Resolution]:
+    """Check one claimed technique. Returns (entry to store or None, resolution).
+
+    The entry's name and tactics are the catalog's. The claimed name is only
+    kept, beside it, when it disagrees — so an analyst can see that a model
+    filed "SQL injection" under an id that means something else.
+    """
+    resolution = catalog.resolve(technique_id, name)
+    if not resolution.verified:
+        return None, resolution
+    entry: Dict = {
+        "id": resolution.id,
+        "name": resolution.name,
+        "tactics": primary_tactics(resolution, pinned_tactic),
+    }
+    if source:
+        entry["source"] = source
+    if resolution.claimed_id != resolution.id:
+        entry["claimed_id"] = resolution.claimed_id
+    if resolution.name_mismatch:
+        entry["claimed_name"] = str(name)[:120]
+    return entry, resolution
 
 
-_TECHNIQUE_INDEX = _rule_map_index()
+def validate_techniques(techniques: Iterable[Dict], source: str = "") -> Dict:
+    """Split claimed techniques into verified entries and the rest.
+
+    Returns ``{"verified": [...], "unverified": [...], "counts": {...}}``.
+    Unverified ones keep the id and name as claimed and are never counted.
+    """
+    verified: List[Dict] = []
+    unverified: List[Dict] = []
+    counts = {status: 0 for status in STATUSES}
+    seen = set()
+    for technique in techniques or []:
+        if not isinstance(technique, dict):
+            continue
+        claimed_id = str(technique.get("id") or "")
+        claimed_name = str(technique.get("name") or "")
+        entry, resolution = validate_technique(
+            claimed_id, claimed_name, source or str(technique.get("source") or "")
+        )
+        counts[resolution.status] += 1
+        if entry is None:
+            unverified.append({
+                "id": resolution.claimed_id[:16],
+                "name": claimed_name[:120],
+                "reason": resolution.status if resolution.status != UNVERIFIED else "not in the ATT&CK catalog",
+            })
+            continue
+        if entry["id"] in seen:
+            continue
+        seen.add(entry["id"])
+        # Fields the pipeline attached to the claim travel with it, and so
+        # does what an earlier validation recorded about the original claim.
+        for key in ("confidence", "support", "unconfirmed", "claimed_id", "claimed_name"):
+            if technique.get(key) is not None:
+                entry.setdefault(key, technique[key])
+        verified.append(entry)
+    return {"verified": verified, "unverified": unverified, "counts": counts}
+
+
+def tactics_of(techniques: Iterable[Dict]) -> List[str]:
+    """Tactic ids covered by stored technique entries, in kill-chain order.
+
+    A technique the decision model could not confirm is listed on the
+    session but does not add a tactic on its own say-so.
+    """
+    found = []
+    for technique in techniques or []:
+        if not isinstance(technique, dict) or technique.get("unconfirmed"):
+            continue
+        tactics = technique.get("tactics")
+        if not isinstance(tactics, list):
+            # A row stored before entries carried their tactics.
+            resolution = catalog.resolve(str(technique.get("id") or ""))
+            tactics = primary_tactics(resolution) if resolution.verified else []
+        found.extend(str(t) for t in tactics)
+    return catalog.sort_tactics(found)
 
 
 class MitreAttckMapper:
     def tactic_for_technique(self, technique_id: str) -> Optional[str]:
-        """Tactic id for a technique or sub-technique id, when known."""
-        tid = (technique_id or "").upper()
-        for key in (tid, tid.split(".")[0]):
-            hit = _TECHNIQUE_INDEX.get(key) or EXTRA_TECHNIQUE_TACTICS.get(key)
-            if hit:
-                return hit[0]
-        return None
+        """The tactic a technique is filed under, from the catalog."""
+        resolution = catalog.resolve(technique_id)
+        if not resolution.verified:
+            return None
+        tactics = primary_tactics(resolution)
+        return tactics[0] if tactics else None
 
     def technique_name(self, technique_id: str) -> Optional[str]:
-        tid = (technique_id or "").upper()
-        hit = _TECHNIQUE_INDEX.get(tid) or EXTRA_TECHNIQUE_TACTICS.get(tid)
-        if hit:
-            return hit[1]
-        parent = _TECHNIQUE_INDEX.get(tid.split(".")[0]) or EXTRA_TECHNIQUE_TACTICS.get(tid.split(".")[0])
-        return parent[1] if parent else None
+        """The catalog's name for an id. None for an id it does not know:
+        an unknown sub-technique no longer borrows its parent's name."""
+        resolution = catalog.resolve(technique_id)
+        return resolution.name if resolution.verified else None
+
+    def map_evidence(self, evidence: Iterable[Dict]) -> Dict:
+        """ATT&CK techniques and tactics for a session's findings."""
+        techniques: List[Dict] = []
+        by_id: Dict[str, Dict] = {}
+        matched: List[str] = []
+
+        for item in evidence or []:
+            key = str(item.get("key") or "")
+            for technique_id, pinned in RULE_TECHNIQUES.get(key, ()):
+                entry, _ = validate_technique(technique_id, source=f"rule:{key}", pinned_tactic=pinned)
+                if entry is None:
+                    # A rule that names an id the catalog lacks is a bug in
+                    # the table above; say so rather than store it.
+                    logger.warning("Rule %s maps to %s, which the ATT&CK catalog does not have", key, technique_id)
+                    continue
+                if key not in matched:
+                    matched.append(key)
+                existing = by_id.get(entry["id"])
+                if existing is None:
+                    entry["confidence"] = RULE_CONFIDENCE
+                    by_id[entry["id"]] = entry
+                    techniques.append(entry)
+                    continue
+                # One entry per technique, every finding that showed it.
+                sources = existing["source"].split(", ")
+                if entry["source"] not in sources:
+                    existing["source"] = ", ".join(sources + [entry["source"]])
+                existing["tactics"] = catalog.sort_tactics(existing["tactics"] + entry["tactics"])
+
+        tactic_ids = tactics_of(techniques)
+        return {
+            "tactics": [
+                {"id": t, "name": catalog.tactic_name(t), "color": TACTIC_COLORS.get(t, _DEFAULT_COLOR)}
+                for t in tactic_ids
+            ],
+            "tactic_ids": tactic_ids,
+            "techniques": techniques,
+            "matched_tools": matched,
+            "coverage_score": round(len(tactic_ids) / max(1, len(catalog.load().tactics)), 3),
+        }
 
     def map_analysis(self, nlp_results: Dict, ai_results: Dict, session_data: Dict) -> Dict:
-        detected_tactics: Set[str] = set()
-        detected_techniques: List[Dict] = []
-        matched_tools: Set[str] = set()
+        """ATT&CK mapping for one session's rule findings.
 
-        tool_names = set(nlp_results.get("tool_names", []))
-        categories = set(nlp_results.get("categories", []))
-        intents = set(nlp_results.get("detected_intents", []))
-        attack_category = ai_results.get("category", "")
+        Kept for callers that hold the three analysis inputs; the findings
+        are the rule layer's own evidence plus what the session itself shows
+        (logins, uploads, events).
+        """
+        from app.ai.verdict import collect_evidence
 
-        for tactic_key, tactic_data in MITRE_ATTACK_MAP.items():
-            tactic_matched = False
-
-            for tool_name in tool_names:
-                if tool_name in tactic_data["techniques"]:
-                    tech = tactic_data["techniques"][tool_name]
-                    technique_entry = {
-                        "id": tech["id"],
-                        "name": tech["name"],
-                        "source": f"tool:{tool_name}",
-                        "confidence": 0.85,
-                    }
-                    if technique_entry not in detected_techniques:
-                        detected_techniques.append(technique_entry)
-                        tactic_matched = True
-                        matched_tools.add(tool_name)
-
-            for cat in categories:
-                if cat == tactic_key:
-                    tactic_matched = True
-
-            for intent in intents:
-                if intent in tactic_data["techniques"]:
-                    tech = tactic_data["techniques"][intent]
-                    technique_entry = {
-                        "id": tech["id"],
-                        "name": tech["name"],
-                        "source": f"intent:{intent}",
-                        "confidence": 0.7,
-                    }
-                    if technique_entry not in detected_techniques:
-                        detected_techniques.append(technique_entry)
-                        tactic_matched = True
-
-            if attack_category == "reconnaissance" and tactic_key == "reconnaissance":
-                tactic_matched = True
-            elif attack_category == "exploitation" and tactic_key == "exploitation":
-                tactic_matched = True
-            elif attack_category == "exfiltration" and tactic_key == "exfiltration":
-                tactic_matched = True
-
-            if tactic_matched:
-                tactic_info = tactic_data["tactic"]
-                detected_tactics.add(tactic_info["id"])
-
-        tactics_list = []
-        for tactic_id in detected_tactics:
-            for tactic_data in MITRE_ATTACK_MAP.values():
-                if tactic_data["tactic"]["id"] == tactic_id:
-                    tactics_list.append({
-                        "id": tactic_id,
-                        "name": tactic_data["tactic"]["name"],
-                        "color": TACTIC_COLORS.get(tactic_id, "#6b7280"),
-                    })
-                    break
-
-        return {
-            "tactics": tactics_list,
-            "tactic_ids": list(detected_tactics),
-            "techniques": merge_duplicate_techniques(detected_techniques),
-            "matched_tools": list(matched_tools),
-            "coverage_score": round(len(detected_tactics) / len(MITRE_ATTACK_MAP), 3),
-        }
+        return self.map_evidence(collect_evidence(nlp_results, session_data))
 
     def get_full_framework(self) -> Dict:
-        return {
-            tactic_data["tactic"]["id"]: {
-                "tactic": tactic_data["tactic"],
-                "color": TACTIC_COLORS.get(tactic_data["tactic"]["id"], "#6b7280"),
-                "techniques": list(tactic_data["techniques"].values()),
+        """Every tactic with the techniques the rule layer can evidence."""
+        framework: Dict[str, Dict] = {}
+        for tactic in catalog.load().tactics:
+            framework[tactic["id"]] = {
+                "tactic": {"id": tactic["id"], "name": tactic["name"]},
+                "color": TACTIC_COLORS.get(tactic["id"], _DEFAULT_COLOR),
+                "techniques": [],
             }
-            for tactic_data in MITRE_ATTACK_MAP.values()
-        }
+        seen = set()
+        for mappings in RULE_TECHNIQUES.values():
+            for technique_id, pinned in mappings:
+                entry, _ = validate_technique(technique_id, pinned_tactic=pinned)
+                if entry is None:
+                    continue
+                for tactic_id in entry["tactics"]:
+                    if (tactic_id, entry["id"]) not in seen:
+                        seen.add((tactic_id, entry["id"]))
+                        framework[tactic_id]["techniques"].append({"id": entry["id"], "name": entry["name"]})
+        return framework
 
 
 def merge_duplicate_techniques(techniques: List[Dict]) -> List[Dict]:

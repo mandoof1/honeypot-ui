@@ -7,11 +7,12 @@
 An AI-assisted honeypot platform with protocol emulation, encrypted session evidence,
 and a workspace for investigating suspicious activity.
 
-**[Quick start](#quick-start) · [Self-hosted deployment](#self-hosted-deployment) · [Evaluation](#evaluation) · [Architecture](#architecture) · [Development](#development)**
+**[Quick start](#quick-start) · [Self-hosted deployment](#self-hosted-deployment) · [What is validated](#what-is-and-is-not-yet-validated) · [Architecture](#architecture) · [Development](#development)**
+
+[![CI](https://github.com/mandoof1/honeypot-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/mandoof1/honeypot-ui/actions/workflows/ci.yml)
+&nbsp;Version 1.0.0 · MIT
 
 </div>
-
-**[Live demo](https://honeypot-ui-psi.vercel.app) · [API docs](https://honeysentinel-api.onrender.com/docs)**
 
 ![HoneySentinel investigation workspace with session filters, export controls, and an evidence panel](docs/images/investigation-desktop.png)
 
@@ -36,25 +37,35 @@ deployment:
    force, web-exploitation patterns, uploads, scanner probes, diversion —
    which carry the verdict where flow features fall short.
 3. **A decision model** (Kev, a Jev-style model served locally through
-   llama.cpp) that triages every session in seconds: attack category,
-   severity and whether a human or a bot drove it. It decides which sessions
-   are worth the slow model, and afterwards checks each ATT&CK technique the
-   slow model named against the transcript.
+   llama.cpp) that triages the sessions the rules queue for the slow model,
+   not every session: attack category, severity and whether a human or a bot
+   drove it, in a median of about 16 s on the stored web sessions measured
+   so far. It decides which of those sessions are worth the slow model, and
+   afterwards checks each ATT&CK technique the slow model named against the
+   transcript.
 4. **A fine-tuned language model** ([Wolfram](https://github.com/mandoof1/wolfram))
    that reads the worthwhile transcripts for intent, objectives, techniques and
    indicators — its model card, weights and GGUF live in that repo.
 
 A website can also sit *behind* the decoys, with attackers quietly diverted to
 a sacrificial copy while real visitors keep reaching the live site. Everything
-is built to be self-hosted with the engine firewalled against outbound traffic.
+is built to be self-hosted, with every container firewalled against opening a
+connection of its own.
+
+**Where it stands.** Version 1.0.0 is the hardening pass before the system's
+first exposure to the internet. It has not been exposed yet: everything it
+has recorded so far is the team's own controlled test traffic, and every
+evaluation figure in this repository comes from a public dataset, synthetic
+transcripts or that test traffic. See
+[what is and is not yet validated](#what-is-and-is-not-yet-validated).
 
 ## What you can do
 
 | Workflow | Capabilities |
 |---|---|
 | **Capture** | SSH, Telnet, FTP, HTTP and HTTPS emulators record interactions, attempted credentials (shell, FTP, web login forms and HTTP Basic auth), files attackers upload, and each connection's flow statistics. Passive mode records without answering, on every protocol. |
-| **Investigate** | Search sessions, filter by protocol and time, inspect transcripts (shell commands, FTP commands and HTTP requests with their bodies), and review ATT&CK mappings. |
-| **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, anomaly detection, command analysis, research-scanner attribution, and optional local-model enrichment: a decision model triages every session in seconds and a fine-tuned LLM analyses the ones worth it. |
+| **Investigate** | Search sessions, filter by protocol and time, inspect and replay transcripts (shell commands, FTP commands and HTTP requests with their bodies), review ATT&CK mappings on a matrix and export them for ATT&CK Navigator, follow trends, and read the audit log. |
+| **Understand** | A Random Forest trained on CIC-IDS2017, signature rules for web attacks, brute force and uploads, command analysis, research-scanner attribution, and optional local-model enrichment: a decision model triages the sessions the rules queue and a fine-tuned LLM analyses the ones worth it. Anomaly scoring and behavioural clustering are wired in but not yet meaningful: the anomaly model is a synthetic bootstrap and the clusters have never been fitted on captured sessions. |
 | **Protect a website** | Put a real web application behind the HTTP/HTTPS decoys. Every request is recorded, card numbers masked, and a client that gives itself away is answered by a decoy copy of the site from then on, while everyone else keeps reaching the live one. |
 | **Reverse-engineer** | Uploaded files are analysed statically — never run — for type, capabilities, embedded indicators, and a malware-family hint. |
 | **Respond** | Triage alerts, manage nodes, review indicators, and control the honeypot through role-restricted actions. |
@@ -97,10 +108,11 @@ Keep those credentials private. To stop the stack while retaining its named volu
 ./stop.sh
 ```
 
-**Exposure matters:** this local stack publishes the emulated services on `127.0.0.1`
-only, and its engine can still open outbound connections. Do not expose it. For a
+**Exposure matters:** this local stack publishes everything (the API, the
+dashboard and the emulated services) on `127.0.0.1` only, loads demo data, and
+its engine can still open outbound connections. Do not expose it. For a
 deployment that faces the internet, use [the self-hosted deployment](#self-hosted-deployment),
-which drops the engine's outbound traffic at the host firewall.
+where the host firewall stops every container from opening a connection.
 
 ## Self-hosted deployment
 
@@ -114,39 +126,74 @@ sudo bash /opt/honeysentinel/deploy/server/install.sh
 
 The installer is idempotent, and sets up:
 
-- **Secrets and transport.** Random secrets in a root-only `.env`, and a TLS
-  certificate that Postgres requires for every connection.
-- **Containment.** The database, API and ingest service sit on internal Docker
-  networks with no route out, and the dashboard proxy is published on loopback only.
-  The decoys' bridge accepts connections, and a systemd unit that runs before Docker
-  drops anything the engine tries to open.
+- **Secrets and transport.** Random secrets in a root-only `.env`, one ingest
+  token per engine, and a TLS certificate that Postgres requires for every
+  connection.
+- **Containment.** Engines can reach one thing, an ingest service that serves
+  only the engine-facing routes; the dashboard API is on no network they can
+  use. A host firewall, loaded before Docker starts and re-checked every five
+  minutes, lets every container answer connections and none open one, to the
+  host or beyond. Every service runs without capabilities on a read-only root.
+- **Verification.** Before it finishes, the installer checks that every
+  container was built from the same git revision, that the networks are the
+  ones the firewall expects, and, by connecting out from inside the engines,
+  that they are contained. It exits non-zero otherwise.
 - **Throughput.** A separate four-worker `ingest` service analyses sessions, so a
   burst does not queue behind the dashboard's API.
-- **Operations.** Nightly database backups, the dashboard served over
-  Tailscale HTTPS, and, when a website sits behind the decoys, a nightly reset of
-  its decoy copy.
-- **Accounts.** An administrator account is created directly. The demo seed is
-  never used, so no synthetic session sits beside captured traffic.
+- **Operations.** Nightly backups (encrypted and copied off the machine when
+  configured), a host heartbeat for an external dead man's switch, the
+  dashboard served over Tailscale HTTPS, and, when a website sits behind the
+  decoys, a nightly reset of its decoy copy.
+- **Accounts.** An administrator account is created directly, its password
+  shown once. The demo seed is never used, so no synthetic session sits beside
+  captured traffic.
 
 Scripts beside it cover the rest of the lifecycle:
 
 | Script | Does |
 |---|---|
+| `honeysentinel-egress.sh` | The firewall: `check` it, `probe` it from inside the engines, show its counters |
 | `train-model.sh` | Fetch and verify CIC-IDS2017, train the classifier with tuning, install it and restart the API |
 | `fetch-decider.sh` | Download and checksum the decision model (Kev-4B, Apache-2.0) into `state/models`, then `install.sh` turns on triage |
 | `controlled-test.sh` | End-to-end check against a throwaway engine named `controlled-test-node`, so test traffic never mixes with real captures |
 | `stress-test.sh` | The NFR-2 / TC13 load test: N concurrent sessions, then the latency measured for each |
-| `backup.sh` | The nightly `pg_dump`, on demand |
+| `backup.sh`, `restore.sh`, `restore-drill.sh` | The nightly backup on demand, a restore, and a rehearsal of one against a scratch database |
+| `host-heartbeat.sh` | The host-level health check behind the dead man's switch |
+| `node_tokens.py` | Issue and revoke the ingest token of a remote sensor |
 | `reset-shop.sh` | The nightly website job, on demand: back up the live copy, regenerate the decoy copy |
+
+Before any port is forwarded to it, follow the
+[exposure runbook](docs/EXPOSURE_RUNBOOK.md). To put a decoy on a separate
+public address instead, use the [sensor kit](deploy/node/README.md).
+
+## What is and is not yet validated
+
+Stated plainly, because a honeypot's numbers are easy to overstate.
+
+| | Status |
+|---|---|
+| **Containment** | The firewall rules are tested with real connections in a model of the deployment's networks (`deploy/server/tests/egress-netns-test.sh`, 44 checks) and the installer probes the real thing on every run. This release's layout has **not yet been installed on the reference server**. |
+| **Capture pipeline** | Exercised end to end by `controlled-test.sh`, with the team's own traffic. **No internet attack has been recorded.** |
+| **Flow classifier** | 0.9967 accuracy on a random per-flow split of CIC-IDS2017. On the deployment it labelled all five controlled attack sessions benign. **Not validated for honeypot traffic.** |
+| **Rules** | Carry the verdict where the flow model does not. Measured only on synthetic transcripts written around the same patterns. |
+| **Decision model** | AUC 0.983 on technique checks, from 24 synthetic transcripts with question wording and threshold tuned on the same set (0.957 before tuning). Triage accuracy is uninformative (labels 23 to 1). **Not validated on captured sessions.** |
+| **Language model** | No accuracy measurement in this repository; see its own [model card](https://github.com/mandoof1/wolfram). |
+| **Anomaly detection, clustering** | A synthetic bootstrap, and never fitted, respectively. **No claim.** |
+| **Latency (NFR-2)** | Verdict within 200 ms of session end up to 10 concurrent sessions on the reference host, with a load generator on the same host. |
+| **Availability, usability, comparison with Cowrie, fingerprint audit, AI-canary and injection robustness** | **Not yet measured.** The protocol for each is fixed in advance in the [evaluation plan](docs/EVALUATION_PLAN.md). |
 
 ## Evaluation
 
-Measured on the reference server (8 cores) on 2026-10-05. Every figure comes
-from a JSON file in [`docs/evaluation/`](docs/evaluation/README.md).
+Measured on the reference server (8 cores) on 2026-10-05 and 2026-10-08.
+Every figure comes from a JSON file in
+[`docs/evaluation/`](docs/evaluation/README.md), which also lists the threats
+to the validity of each. None of it is real attack traffic.
 
 **Stage-1 classifier.** Random Forest on CIC-IDS2017, using 2,391,461 flows after
-de-duplication. Hyperparameters were chosen on a validation split, and the model
-was tested once on a held-out 20% (478,293 flows).
+de-duplication, with a random 80/20 split per flow (478,293 held out).
+Hyperparameters were chosen on a validation split. The test set was scored
+twice, not once: a first model's test results were seen before the class
+weighting was tuned, so the figures below are somewhat optimistic.
 
 | | precision | recall | F1 |
 |---|---|---|---|
@@ -157,7 +204,9 @@ was tested once on a held-out 20% (478,293 flows).
 
 Accuracy is 0.9967 and macro F1 is 0.896. 0.23% of benign flows were flagged
 as attacks, and one prediction takes 9 ms. Exfiltration is the weak class: it
-is Bot and Infiltration traffic, about 2,000 flows in all.
+is Bot and Infiltration traffic, about 2,000 flows in all. These are scores on
+that dataset and that split; on the deployment's controlled test the model
+called every session benign.
 
 **NFR-2 (classification within 200 ms of session end).**
 
@@ -175,19 +224,18 @@ sessions queue for CPU.
 with `python -m app.tools.eval_decider` so the questions scored are the ones the
 pipeline deploys.
 
-- *Technique checks*, on 24 transcripts held out of the language model's
-  fine-tune, every one of the set's 15 techniques asked about each: ROC AUC
-  **0.983**. At the deployed 0.3 threshold it keeps all 86 real techniques and
-  rejects 250 of 274 that the transcript does not support.
+- *Technique checks*, on 24 synthetic transcripts held out of the language
+  model's fine-tune, every one of the set's 15 techniques asked about each
+  (360 questions, 15 per transcript, so not independent): ROC AUC 0.983 after
+  the question wording and the 0.3 threshold were chosen on the same set;
+  0.957 before. At 0.3 it keeps all 86 labelled techniques and rejects 250 of
+  274 that the transcript does not support.
 - *Triage* on the same set names the category correctly 83% of the time
-  against the rules' 96%, in ~8 s a session. It is the weaker categoriser, so
-  it only skips the language model when it *and* the rules agree a session went
-  no further than reconnaissance; on that set it skipped nothing it should have
-  kept. The human-or-bot answer is not yet validated and is labelled so in the
-  UI.
-
-The data is synthetic plus controlled-test traffic; see
-[`docs/evaluation/`](docs/evaluation/README.md) for the raw JSON and method.
+  against the rules' 96%, in ~8 s a session; the labels are 23 exploitation
+  and 1 reconnaissance, so neither figure says much. It only skips the
+  language model when it *and* the rules agree a session went no further than
+  reconnaissance, which happened once. The human-or-bot answer is not
+  validated and is labelled so in the UI.
 
 ## A real website behind the decoys
 
@@ -282,12 +330,14 @@ flowchart LR
 | Analysis | scikit-learn · spaCy · optional local LLM · static payload analysis (pyelftools, pefile) |
 | Engine | asyncio · AsyncSSH · protocol emulators |
 
-The engine runs with dropped capabilities and a read-only root filesystem, and it
-talks to the API only over an internal Docker network. Docker will not publish ports
-for a container whose only network is internal, so the decoy ports sit on a separate
-bridge. In the self-hosted deployment, the host firewall drops every connection the
-engine tries to open from that bridge. The engine's isolation check verifies this by
-actually trying to connect out, rather than inferring it from the routing table.
+The engine runs with dropped capabilities and a read-only root filesystem. In the
+self-hosted deployment it shares a network with an ingest service that serves only the
+engine-facing routes, and with nothing else it can connect to; Docker will not publish
+ports for a container whose only network is internal, so the decoy ports sit on a
+separate bridge, and the host firewall drops every connection any container tries to
+open towards the host or another network. The engine's isolation check verifies this by
+actually trying to connect out, and repeats it while running. The
+[threat model](docs/THREAT_MODEL.md) says what that leaves an attacker.
 
 The engine measures every connection at its socket (`honeypot/capture/flow.py`):
 payload bytes and data packets in each direction, the largest packet each way, and
@@ -303,14 +353,17 @@ This is a capstone platform, **not a validated production detection system**.
   every verdict `model_source: "synthetic"`. The anomaly detector is still a synthetic
   bootstrap.
 - The classifier's scores are measured on CIC-IDS2017 flows. The engine sees what its
-  sockets deliver, not packets on the wire, so how well it transfers to live honeypot
-  traffic is an assumption. No real internet traffic has been captured yet.
+  sockets deliver, not packets on the wire, and on the controlled test it called every
+  attack session benign. No real internet traffic has been captured yet.
 - NFR-2 holds up to about 10 concurrent sessions on the reference host, not under
   arbitrary load (see [Evaluation](#evaluation)).
 - Geolocation needs a MaxMind GeoLite2 or DB-IP City Lite database; the self-hosted
   installer fetches DB-IP's and credits it on the map. Missing data stays unknown.
-- Behavioral clustering needs 50+ captured sessions to fit; LLM enrichment needs a
-  configured endpoint.
+- Behavioral clustering needs 50+ captured sessions to fit and has never been fitted
+  on the deployment; LLM enrichment needs a configured endpoint.
+- A website behind the decoys has every visitor's requests recorded, logins included
+  ([data handling](docs/DATA_HANDLING.md)). Captured sessions are kept for ever unless
+  `SESSION_RETENTION_DAYS` is set.
 - In-memory rate limiting applies per process, so the dashboard API runs as one
   process. The multi-worker ingest service carries no user-facing rate limits.
 - Payload analysis is static and heuristic — it never runs a sample, so it misses
@@ -333,7 +386,7 @@ for evaluation and dataset caveats.
 
 ## Development
 
-Use **Node.js 24** and **Python 3.12** for the checked development environment.
+Use **Node.js 22** and **Python 3.12**, the versions the images and CI use.
 
 ### Frontend
 
@@ -372,45 +425,37 @@ npm run test:e2e                 # Desktop/mobile browser tests of the built app
 Browser tests use synthetic API fixtures; they do not replace testing a deployed stack.
 Route-level lazy loading keeps the map and other page bundles out of the initial download.
 
-**CI configuration:** [docs/ci.yml.example](docs/ci.yml.example) contains the complete
-GitHub Actions workflow. To activate it, copy it to `.github/workflows/ci.yml` using
-GitHub's editor or a token with `workflow` permission. It is a template here because
-the publishing token does not grant that permission; no CI status is implied.
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every push and
+pull request: the engine and backend tests on the hashed lock files, migrations and the
+PostgreSQL-only tests against Postgres 16, the console checks and browser tests, `ruff`,
+`shellcheck`, and `docker compose config` for every compose file, each checked against
+the firewall's address plan. Dependency audits, Dockerfile lint, a secret scan and the
+firewall's connection test run as report-only jobs for now. After changing a
+`requirements.txt`, run `bash scripts/lock-requirements.sh`.
 
 ## Configuration and deployment
 
-Start with [`.env.example`](.env.example). The key settings are:
-
-| Setting | Purpose |
-|---|---|
-| `SECRET_KEY` / `ENCRYPTION_KEY` | Separate signing and encryption secrets. |
-| `HONEYPOT_INGEST_TOKEN` | Matching service credential on API and engine. |
-| `DATABASE_URL` / `DATABASE_URL_SYNC` | Runtime and migration database connections. |
-| `CORS_ORIGINS` | Allowed frontend origins. |
-| `VITE_API_URL` | Frontend API endpoint, including `/api/v1`. |
-| `GEOIP_DB_PATH` | Optional MaxMind GeoLite2 or DB-IP City Lite database path. |
-| `HONEYPOT_PROTOCOLS` | Emulators to run: any of `ssh,ftp,telnet,http,https`. |
-| `HONEYPOT_TELNET_PORT` | Telnet decoy port (default `2323`; forward 23 to it). Same login policy and shell as SSH, which is what Mirai-family bots expect. |
-| `HONEYPOT_OPERATIONAL_MODE` | Starting mode, `active` or `passive`; a mode saved in Settings takes precedence once the engine registers. |
-| `HONEYPOT_HTTP_UPSTREAM` | Optional web application (`http://host:port`) for the HTTP/HTTPS decoys to front. |
-| `HONEYPOT_HTTP_DECOY_UPSTREAM` | Optional decoy copy of it, which diverted clients reach instead. See [A real website behind the decoys](#a-real-website-behind-the-decoys). |
-| `MAX_REQUEST_BODY_BYTES` | Largest request body the API accepts on user-facing routes (default 1 MB; `413` above it). The engine's `-internal` routes are exempt. |
-| `HONEYPOT_HTTP_SESSION_IDLE` | Seconds a web client's requests coalesce into one session across separate connections (default `30`; `0` is one session per connection). |
-| `CHIMERA_URL` | Optional local language-model endpoint (Wolfram) for stage-2 analysis. |
-| `DECIDER_URL` | Optional local decision-model endpoint (Kev, llama.cpp `/v1/systemone`) for triage and technique checks. |
+Every setting, with its default and the component that reads it, is in one place:
+the **[configuration reference](docs/CONFIGURATION.md)**. `.env.example` is the starting
+set for local development; the self-hosted installer writes its own `.env`.
 
 | Guide | Use it for |
 |---|---|
+| [Deployment](DEPLOY.md) | Which way to run it, and troubleshooting. |
 | [Self-hosted deployment](deploy/server/README.md) | The whole system on one machine you control; the reference deployment. |
-| [Deployment](DEPLOY.md) | Hosting the console, API, database, and standalone engine separately. |
+| [Sensor kit](deploy/node/README.md) | One engine on a small public VPS, reporting to the server. |
+| [Exposure runbook](docs/EXPOSURE_RUNBOOK.md) | The checklist before the first port is opened, the first 24 hours, taking it down. |
+| [Threat model](docs/THREAT_MODEL.md) | Trust boundaries, what contains a compromised engine or backend, residual risks. |
+| [Data handling](docs/DATA_HANDLING.md) | What is collected, approvals, retention, release, malware, the kill switch. |
+| [Evaluation](docs/evaluation/README.md) and [plan](docs/EVALUATION_PLAN.md) | What has been measured, with its limits; the protocol for the first real-traffic evaluation. |
+| [Cowrie baseline](deploy/cowrie-baseline/README.md) | Running a stock Cowrie beside the engine, and the comparison protocol. |
 | [Model training](backend/ml/README.md) | Features, training, tuning, and the caveats to state when quoting results. |
-| [Evaluation](docs/evaluation/README.md) | Classifier metrics and NFR-2 load-test results, with the raw JSON. |
-| [Standalone node](deploy/node/) | Running an engine on a separate VM. |
-| [Client integration](CLIENT_INTEGRATION.md) | Connecting components and consuming the API. |
-| [Technical reference](docs/TECHNICAL_REFERENCE.md) | Security controls, API inventory, and analysis internals. |
+| [Client integration](CLIENT_INTEGRATION.md) | Adding nodes and consuming the API. |
+| [Technical reference](docs/TECHNICAL_REFERENCE.md) | Analysis internals, security controls, the API route table. |
+| [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) | Reporting a vulnerability; what changed in 1.0.0. |
 
-The standalone engine needs a host that accepts the required raw TCP ports. A web-only
-hosting service is insufficient for SSH and FTP capture.
+An engine needs a host that accepts raw TCP on its ports. A web-only hosting service is
+insufficient for SSH, Telnet and FTP capture.
 
 ## Troubleshooting
 
@@ -421,7 +466,7 @@ hosting service is insufficient for SSH and FTP capture.
 | Empty map | Confirm sessions have coordinates and GeoIP data is installed. |
 | Export controls missing | Viewer accounts cannot export; use an analyst/admin account. |
 | Only some records exported | Check the truncation notice and narrow the filters. |
-| Engine unreachable | Check container health, the control URL, and matching ingest tokens. |
+| Engine unreachable | Check container health, the control URL, and that backend and engine share `HONEYPOT_CONTROL_TOKEN`. |
 | Lost the authenticator app | Enter one of the recovery codes in the sign-in code field. Each works once. |
 | Mode saved but "engine could not be reached" | The engine adopts the saved mode the next time it registers, at startup. |
 | `model_source: "synthetic"` on verdicts | No trained model is installed; run `deploy/server/train-model.sh`. |

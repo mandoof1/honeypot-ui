@@ -39,6 +39,8 @@ done < "$DATA/SHA256SUMS"
 
 echo "==> Training ${TUNE:+(with tuning)}"
 docker rm -f hs-train >/dev/null 2>&1 || true
+# Root inside this throwaway container only, to copy the checkout and to
+# hand the result to the API's user; it has no network.
 docker run --rm --name hs-train --network none -u 0 \
   -v "$(cd ../../backend && pwd)":/src:ro -v "$DATA":/data:ro \
   -v honeysentinel_models:/models honeysentinel-backend sh -c "
@@ -50,8 +52,10 @@ docker run --rm --name hs-train --network none -u 0 \
     chown 10001:10001 /models/random_forest_model.pkl /models/random_forest_model_metrics.json
   "
 
-echo "==> Restarting the API on the new model"
-docker compose restart backend >/dev/null
+# Both services load the model at start. Restarting only the backend left
+# ingest, which does the classifying, on the old one.
+echo "==> Restarting the API and ingest on the new model"
+docker compose restart backend ingest >/dev/null
 for _ in $(seq 1 60); do
   [[ $(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q backend)") == healthy ]] && break
   sleep 2

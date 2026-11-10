@@ -13,13 +13,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
+from app.core.clientip import client_ip
 from app.core.database import get_db
-from app.core.encryption import decrypt_bytes
+from app.core.encryption import decrypt_bytes, payload_context
 from app.core.security import get_current_user, require_role
 from app.core.sql import LIKE_ESCAPE, escape_like
 from app.models import AuditLog, HoneypotSession, PayloadSample, SessionArtifact
@@ -37,14 +39,24 @@ _SORT = {
 }
 
 
+def _without_content(query):
+    """Leave the stored sample itself out of a query.
+
+    ``content_encrypted`` is the file: up to 10 MiB, about 13 MB once sealed
+    and encoded. Only the download route needs it, but selecting whole rows
+    fetched it for every sample on a list page.
+    """
+    return query.options(defer(PayloadSample.content_encrypted, raiseload=True))
+
+
 @router.get("/")
 async def list_payloads(
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=100_000),
     page_size: int = Query(30, ge=1, le=MAX_PAGE_SIZE),
-    file_kind: Optional[str] = None,
-    family: Optional[str] = None,
+    file_kind: Optional[str] = Query(None, max_length=32),
+    family: Optional[str] = Query(None, max_length=64),
     status: Optional[str] = Query(None, pattern="^(pending|complete|failed|metadata_only)$"),
-    search: Optional[str] = None,
+    search: Optional[str] = Query(None, max_length=200),
     sort: str = Query("last_seen", pattern="^(last_seen|first_seen|size)$"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
@@ -55,7 +67,7 @@ async def list_payloads(
         .where(SessionArtifact.sample_id == PayloadSample.id)
         .scalar_subquery()
     )
-    query = select(PayloadSample, seen_count.label("sessions"))
+    query = _without_content(select(PayloadSample, seen_count.label("sessions")))
     count_query = select(func.count(PayloadSample.id))
 
     filters = []
@@ -132,15 +144,34 @@ async def get_payload(
     current_user: dict = Depends(get_current_user),
 ):
     """One sample: its full analysis and every session it appeared in."""
-    sample = (
-        await db.execute(select(PayloadSample).where(PayloadSample.sha256 == sha256))
-    ).scalar_one_or_none()
-    if sample is None:
+    row = (
+        await db.execute(
+            _without_content(
+                select(
+                    PayloadSample,
+                    PayloadSample.content_encrypted.isnot(None).label("content_available"),
+                )
+            ).where(PayloadSample.sha256 == sha256.lower())
+        )
+    ).first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Sample not found")
+    sample, content_available = row
 
+    # Named columns only. Joining whole session rows brought each session's
+    # encrypted transcript and payload along, two hundred sessions at a time.
     appearances = (
         await db.execute(
-            select(SessionArtifact, HoneypotSession)
+            select(
+                HoneypotSession.id,
+                HoneypotSession.session_uuid,
+                HoneypotSession.attacker_ip,
+                SessionArtifact.filename,
+                SessionArtifact.remote_path,
+                SessionArtifact.source,
+                SessionArtifact.methods,
+                SessionArtifact.captured_at,
+            )
             .join(HoneypotSession, SessionArtifact.session_id == HoneypotSession.id)
             .where(SessionArtifact.sample_id == sample.id)
             .order_by(SessionArtifact.captured_at.desc())
@@ -150,21 +181,21 @@ async def get_payload(
 
     return {
         **_summary(sample, len(appearances)),
-        "content_available": sample.content_encrypted is not None,
+        "content_available": bool(content_available),
         "analysis_error": sample.analysis_error,
         "analysis": sample.analysis,
         "sessions": [
             {
-                "session_id": session.id,
-                "session_uuid": session.session_uuid,
-                "attacker_ip": session.attacker_ip,
-                "filename": artifact.filename,
-                "remote_path": artifact.remote_path,
-                "source": artifact.source,
-                "methods": artifact.methods or [],
-                "captured_at": artifact.captured_at.isoformat() if artifact.captured_at else None,
+                "session_id": appearance.id,
+                "session_uuid": appearance.session_uuid,
+                "attacker_ip": appearance.attacker_ip,
+                "filename": appearance.filename,
+                "remote_path": appearance.remote_path,
+                "source": appearance.source,
+                "methods": appearance.methods or [],
+                "captured_at": appearance.captured_at.isoformat() if appearance.captured_at else None,
             }
-            for artifact, session in appearances
+            for appearance in appearances
         ],
     }
 
@@ -172,20 +203,25 @@ async def get_payload(
 @router.get("/{sha256}/download")
 async def download_payload(
     sha256: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     # Raw malware. Admin only, and the download is audit-logged below.
     current_user: dict = Depends(require_role("admin")),
 ):
-    sample = (
-        await db.execute(select(PayloadSample).where(PayloadSample.sha256 == sha256))
-    ).scalar_one_or_none()
-    if sample is None:
+    sha256 = sha256.lower()
+    row = (
+        await db.execute(
+            select(PayloadSample.id, PayloadSample.size, PayloadSample.content_encrypted)
+            .where(PayloadSample.sha256 == sha256)
+        )
+    ).first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Sample not found")
-    if sample.content_encrypted is None:
+    if row.content_encrypted is None:
         raise HTTPException(status_code=404, detail="No content stored for this sample")
 
     try:
-        content = decrypt_bytes(sample.content_encrypted)
+        content = decrypt_bytes(row.content_encrypted, payload_context(sha256))
     except ValueError:
         raise HTTPException(status_code=500, detail="Sample could not be decrypted")
 
@@ -193,7 +229,9 @@ async def download_payload(
         user_id=current_user["id"],
         action="payload_downloaded",
         resource_type="payload_sample",
-        details={"sha256": sha256, "size": sample.size},
+        resource_id=row.id,
+        details={"sha256": sha256, "size": row.size},
+        ip_address=client_ip(request),
     ))
     await db.commit()
 

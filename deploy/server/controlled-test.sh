@@ -8,8 +8,9 @@
 #   sudo bash controlled-test.sh --purge-only
 #
 # A throwaway engine registers as `controlled-test-node` on the internal
-# engine network, with no published ports, and a scripted client attacks it
-# from another container on that network. The production engine and its
+# engine network, with no published ports and its own ingest token, and a
+# scripted client attacks it from another container over a bridge the two
+# share with nothing else (hs-test). The production engine and its
 # decoy ports are never touched, so nothing self-generated is recorded
 # against them. Every row this produces hangs off the controlled-test-node
 # node, which is how it stays distinguishable in the data (and how --purge
@@ -21,6 +22,7 @@ cd "$(dirname "$0")"
 NODE=controlled-test-node
 IMAGE=honeysentinel-honeypot
 NET=honeysentinel_engine
+TEST_NET=honeysentinel_test
 
 psql() { docker compose exec -T postgres psql -U honeypot -d honeysentinel -v ON_ERROR_STOP=1 "$@"; }
 
@@ -48,7 +50,16 @@ SQL
 
 if [[ "${1:-}" == --purge-only ]]; then purge; exit 0; fi
 
+# shellcheck disable=SC1091
 set -a; . ./.env; set +a
+
+# The attacker and the throwaway engine meet on a bridge of their own. On
+# hs-engine the firewall lets an engine reach the ingest service and nothing
+# else, so a client there could not reach the engine under test.
+docker network inspect "$TEST_NET" >/dev/null 2>&1 \
+  || docker network create --internal --subnet 172.30.75.0/24 \
+       -o com.docker.network.bridge.name=hs-test \
+       --label com.docker.compose.project=honeysentinel-test "$TEST_NET" >/dev/null
 
 docker rm -f hs-test >/dev/null 2>&1 || true
 echo "==> Starting a throwaway engine as $NODE"
@@ -59,8 +70,11 @@ docker run -d --name hs-test --network "$NET" \
   -e HONEYPOT_PROTOCOLS=ssh,http -e HONEYPOT_CONTROL_BIND=127.0.0.1 \
   -e HONEYPOT_CAPTURE_DIR=/app/data/sessions -e HONEYPOT_FILE_CAPTURE_DIR=/app/data/uploads \
   -e HONEYPOT_LOG_DIR=/app/data/logs \
-  -e BACKEND_API_URL=http://ingest:8000/api/v1 -e HONEYPOT_INGEST_TOKEN="$HONEYPOT_INGEST_TOKEN" \
+  -e BACKEND_API_URL=http://ingest:8000/api/v1 \
+  -e HONEYPOT_INGEST_TOKEN="${HONEYPOT_NODE_TOKEN_TEST:?run install.sh first}" \
+  -e HONEYPOT_CONTROL_TOKEN="${HONEYPOT_CONTROL_TOKEN:?run install.sh first}" \
   "$IMAGE" >/dev/null
+docker network connect "$TEST_NET" hs-test
 # On exit the test engine is gone, so mark its node inactive: the liveness
 # check only watches active nodes, and a throwaway engine that stopped
 # heartbeating is not an outage worth an alert.
@@ -71,12 +85,16 @@ retire_node() {
 trap retire_node EXIT
 
 for _ in $(seq 1 30); do
-  docker logs hs-test 2>&1 | grep -q "All honeypot services started" && break
+  # Captured first: `docker logs | grep -q` fails under pipefail when grep
+  # exits at its match while docker is still writing.
+  started=$(docker logs hs-test 2>&1 || true)
+  [[ "$started" == *"All honeypot services started"* ]] && break
   sleep 1
 done
 
 echo "==> Attacking it"
-docker run --rm -i --network "$NET" --dns 127.0.0.1 --cap-drop ALL "$IMAGE" python - <<'PY'
+docker run --rm -i --network "$TEST_NET" --dns 127.0.0.1 --cap-drop ALL \
+  --security-opt no-new-privileges:true "$IMAGE" python - <<'PY'
 import asyncio, urllib.request
 import asyncssh
 

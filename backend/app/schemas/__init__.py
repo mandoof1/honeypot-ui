@@ -114,9 +114,12 @@ class AdminPasswordReset(BaseModel):
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    # Longer than any password this system issues (128), and bounded: the
+    # value is fed to a 600,000-round key derivation.
+    password: str = Field(..., max_length=1024)
     # Optional: only required once the account has enrolled an authenticator.
-    totp_code: Optional[str] = None
+    # Six digits, or a recovery code of the form xxxx-xxxx-xxxx.
+    totp_code: Optional[str] = Field(None, max_length=32)
 
 
 class UserResponse(BaseModel):
@@ -169,22 +172,25 @@ class RegisterResponse(BaseModel):
 
 
 class PasswordChange(BaseModel):
-    current_password: str
+    current_password: str = Field(..., max_length=1024)
     new_password: str = Field(..., min_length=12, max_length=128)
 
 
 class HoneypotNodeCreate(BaseModel):
-    name: str
-    protocol: str
-    ip_address: str
-    port: int
+    # Bounded to the column widths. These fields are also what an engine
+    # posts to register itself; an over-long name used to reach PostgreSQL,
+    # fail there with a 500, and be retried by the engine every minute.
+    name: str = Field(..., min_length=1, max_length=255)
+    protocol: str = Field(..., min_length=1, max_length=50)
+    ip_address: str = Field(..., min_length=1, max_length=45)
+    port: int = Field(..., ge=0, le=65535)
     mode: HoneypotMode = HoneypotMode.ACTIVE
-    location_lat: Optional[float] = None
-    location_lon: Optional[float] = None
+    location_lat: Optional[float] = Field(None, ge=-90, le=90)
+    location_lon: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class HoneypotNodeUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
     mode: Optional[HoneypotMode] = None
     is_active: Optional[bool] = None
 
@@ -215,9 +221,9 @@ class HoneypotNodeResponse(BaseModel):
 
 class NodeHeartbeat(BaseModel):
     node_id: Optional[int] = None
-    name: str
+    name: str = Field(..., min_length=1, max_length=255)
     status: dict = {}
-    version: Optional[str] = None
+    version: Optional[str] = Field(None, max_length=64)
 
 
 class SessionEnrichment(BaseModel):
@@ -292,6 +298,8 @@ class TranscriptEntry(BaseModel):
     output: str = ""
     exit_code: int = 0
     timestamp: Optional[float] = None
+    #: Request headers, present on entries captured by the HTTP decoys.
+    headers: Optional[Dict[str, str]] = None
 
 
 class SessionTranscriptResponse(BaseModel):
@@ -337,6 +345,24 @@ class NetworkEvent(BaseModel):
     reason: Optional[str] = None
     since: Optional[float] = None
     at: Optional[float] = None
+    #: ai_canary_triggered: which bait was acted on, and through which channel
+    #: ("shell", "file" or "http"). honeytoken_used: which planted secret came
+    #: back, and as what ("credential", "api_key" or "path").
+    canary: Optional[str] = None
+    channel: Optional[str] = None
+    token_id: Optional[str] = None
+    kind: Optional[str] = None
+    detail: Optional[str] = None
+    #: direct_tcpip: where an SSH client asked to be forwarded, and from where.
+    dest_host: Optional[str] = None
+    dest_port: Optional[int] = None
+    orig_host: Optional[str] = None
+    orig_port: Optional[int] = None
+    #: connection_refused: how many connections one record stands for.
+    count: Optional[int] = None
+    first_seen: Optional[float] = None
+    #: payload_execution: the interpreter a fetched file was handed to.
+    interpreter: Optional[str] = None
 
 
 class HoneypotSessionResponse(BaseModel):
@@ -392,6 +418,11 @@ class HoneypotSessionResponse(BaseModel):
     #: failed, or skipped (never a candidate: no commands, or a scanner).
     triage_status: str = "not_configured"
     triage: Optional[SessionTriage] = None
+    #: The client's handshake fingerprints, as the engine measured them.
+    fingerprints: Optional[dict] = None
+    #: Flags derived by the analysis (ai_agent, honeytoken, anomaly, verdict,
+    #: severity, disagreement). Null on rows analysed before they existed.
+    signals: Optional[dict] = None
     created_at: datetime
 
     class Config:
@@ -447,7 +478,23 @@ class HoneypotSessionResponse(BaseModel):
         )
 
     @classmethod
-    def from_model(cls, obj):
+    def from_model(
+        cls,
+        obj,
+        has_transcript: Optional[bool] = None,
+        has_credentials: Optional[bool] = None,
+    ):
+        """Build the response from a session row.
+
+        List and detail queries leave the encrypted columns unloaded (see
+        ``session_filters.without_blobs``) and pass the two ``has_`` flags
+        computed by the database. A caller holding a fully loaded row can
+        omit them, and they are read off the row as before.
+        """
+        if has_transcript is None:
+            has_transcript = bool(obj.transcript_encrypted)
+        if has_credentials is None:
+            has_credentials = bool(obj.credentials_encrypted)
         return cls(
             id=obj.id,
             session_uuid=obj.session_uuid,
@@ -491,8 +538,8 @@ class HoneypotSessionResponse(BaseModel):
                 for e in (obj.network_events or [])
                 if isinstance(e, dict) and e.get("event_type")
             ],
-            has_transcript=bool(obj.transcript_encrypted),
-            has_credentials=bool(obj.credentials_encrypted),
+            has_transcript=has_transcript,
+            has_credentials=has_credentials,
             scanner_operator=obj.scanner_operator,
             class_probabilities=obj.class_probabilities,
             analysis_ms=obj.analysis_ms,
@@ -501,6 +548,8 @@ class HoneypotSessionResponse(BaseModel):
             enrichment=cls._enrichment(obj),
             triage_status=cls._triage_status(obj),
             triage=cls._triage(obj),
+            fingerprints=getattr(obj, "fingerprints", None),
+            signals=getattr(obj, "signals", None),
             created_at=obj.created_at,
         )
 
@@ -530,6 +579,8 @@ class AlertResponse(BaseModel):
     mitre_techniques: Optional[List[MitreTechnique]]
     notes: Optional[str] = None
     occurrences: int = 1
+    #: Every session folded into this alert; session_id is the most serious.
+    session_ids: Optional[List[int]] = None
     last_seen_at: Optional[datetime] = None
     acknowledged_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
@@ -586,6 +637,8 @@ class DashboardStats(BaseModel):
     attack_distribution: Dict[str, int]
     severity_distribution: Dict[str, int]
     sessions_by_hour: Dict[str, int]
+    #: The zone the hour-of-day buckets above are counted in.
+    timezone: str = "UTC"
     top_attacker_ips: List[Dict[str, Any]]
     top_tools_detected: List[Dict[str, Any]]
 

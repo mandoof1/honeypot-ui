@@ -1,27 +1,55 @@
 # Complete self-hosted stack on one machine: database, API, dashboard and the
-# honeypot engine.
+# honeypot engines.
 #
-#   sudo bash install.sh        # first time: secrets, TLS, GeoIP, firewall
-#   docker compose up -d --build
+#   sudo bash install.sh        # secrets, TLS, GeoIP, firewall, build, start
 #
-# Network layout. Only two things are reachable from outside a container:
+# Use install.sh rather than `docker compose up` for anything but a restart:
+# it passes the git revision to the build, recreates the two API services
+# together and checks that every container runs the same revision.
 #
-#   decoy  - the emulators' published ports. A normal bridge, because Docker
-#            silently refuses to publish ports for a container that is only
-#            on an internal network. Outbound traffic from it is dropped by
-#            the host firewall (honeysentinel-egress.sh), so the engine can
-#            answer connections but never open one.
-#   edge   - the dashboard, published on loopback only and fronted by
-#            Tailscale Serve.
+# Network layout. Every network is a bridge with a fixed name (hs-*) and a
+# fixed subnet inside 172.30.64.0/19, because the host firewall
+# (honeysentinel-egress.sh) is written against those names and addresses and
+# `honeysentinel-egress.sh check` compares them with what Docker created.
 #
-# Everything else sits on internal networks with no route out: the backend
-# talks to Postgres on `db`, to the engine on `engine`, and to the web proxy on
-# `app`. The backend therefore has no internet access either, which also keeps
-# the payload analyser's subprocess from contacting anything a sample names.
+#   decoy    hs-decoy    the emulators' published ports. A normal bridge,
+#                        because Docker silently refuses to publish ports for
+#                        a container that is only on an internal network.
+#   engine   hs-engine   engines -> ingest:8000, and nothing else.
+#   control  hs-control  backend -> the engines' control API. The backend is
+#                        NOT on `engine`: there the engines could address the
+#                        whole dashboard API. Here the API does not listen on
+#                        its control address at all, and the firewall drops
+#                        any connection an engine opens.
+#   app      hs-app      dashboard proxy -> backend.
+#   db       hs-db       backend, ingest -> Postgres (TLS required).
+#   llm      hs-llm      backend -> the two model servers.
+#   edge     hs-edge     the dashboard, published on loopback only and fronted
+#                        by Tailscale Serve.
+#
+# Only `decoy` and `edge` have a route out, and the firewall drops every
+# connection a container on any hs-* bridge opens towards the host or beyond
+# its bridge, so none of them can reach the internet or the host's own
+# services: they can only answer. That is also what keeps the payload
+# analyser's subprocess from contacting anything a sample names.
 
 name: honeysentinel
 
-# Shared by the `backend` and `ingest` services (same image, same code).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+# No capability, no way to gain one, and nothing writable except what each
+# service lists as a volume or tmpfs.
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  restart: unless-stopped
+  logging: *logging
+
+# Shared by the `backend` and `ingest` services (one image, one build).
+# Every variable is described in docs/CONFIGURATION.md.
 x-backend-env: &backend_env
   ENVIRONMENT: production
   DATABASE_URL: postgresql+asyncpg://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel
@@ -30,7 +58,16 @@ x-backend-env: &backend_env
   DATABASE_URL_SYNC: postgresql+psycopg2://honeypot:${POSTGRES_PASSWORD}@postgres:5432/honeysentinel?sslmode=require
   SECRET_KEY: ${SECRET_KEY:?run install.sh first}
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run install.sh first}
+  # Set only while rotating ENCRYPTION_KEY (python -m app.core.rotate_key).
+  ENCRYPTION_KEY_PREVIOUS: ${ENCRYPTION_KEY_PREVIOUS:-}
+  # One token per engine, bound to its node name: {"node-name": "token", ...}.
+  # A leaked engine token can then only write sessions under that one node.
+  HONEYPOT_NODE_TOKENS: ${HONEYPOT_NODE_TOKENS:?run install.sh first}
+  # The shared token from before per-node tokens. Still generated because the
+  # backend refuses to start without it; no engine is given it any more.
   HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN:?run install.sh first}
+  # Authenticates the backend's calls to the engines' control API.
+  HONEYPOT_CONTROL_TOKEN: ${HONEYPOT_CONTROL_TOKEN:?run install.sh first}
   HONEYPOT_CONTROL_URL: http://honeypot:8000
   # Further engines; mode changes and blocks are sent to every one.
   HONEYPOT_CONTROL_EXTRA_URLS: http://honeypot-web:8000
@@ -38,12 +75,18 @@ x-backend-env: &backend_env
   # Caddy is the only thing that can reach the API, and it sets
   # X-Forwarded-For itself.
   TRUST_PROXY_HEADERS: "true"
+  # Caddy's two networks and nothing else: hs-app, from which it connects to
+  # the API, and hs-edge, whose gateway is the hop Caddy appends for requests
+  # arriving through the published loopback port (Tailscale Serve). Not the
+  # engine, decoy or control subnets: an address listed here is believed
+  # when it names someone else as the client.
+  TRUSTED_PROXIES: 172.30.70.0/24,172.30.72.0/24
   # Never: the seed inserts 150 synthetic sessions. install.sh creates
   # the administrator without them.
   SEED_ON_STARTUP: "false"
   GEOIP_DB_PATH: /app/geoip/city.mmdb
   # The language model (stage 2). Points at the `wolfram` service below
-  # when the `llm` profile is on; empty disables the stage cleanly.
+  # when its profile is on; empty disables the stage cleanly.
   CHIMERA_URL: ${CHIMERA_URL:-}
   CHIMERA_MODEL: ${CHIMERA_MODEL:-wolfram}
   CHIMERA_TIMEOUT: ${CHIMERA_TIMEOUT:-300}
@@ -56,15 +99,20 @@ x-backend-env: &backend_env
   DECIDER_TRIAGE_RULE_SKIPPED: ${DECIDER_TRIAGE_RULE_SKIPPED:-false}
   DECIDER_SUPPORT_THRESHOLD: ${DECIDER_SUPPORT_THRESHOLD:-0.3}
   DECIDER_DROP_UNCONFIRMED: ${DECIDER_DROP_UNCONFIRMED:-false}
-  # Alert handling, retention and lockout; see deploy/server/README.md.
+  # Alert handling, retention and lockout.
   ALERT_DEDUP_WINDOW_MINUTES: ${ALERT_DEDUP_WINDOW_MINUTES:-60}
   ALERT_SUPPRESS_SCANNERS: ${ALERT_SUPPRESS_SCANNERS:-true}
+  # 0 keeps every session for ever. Decide a period before exposure; see
+  # docs/DATA_HANDLING.md.
   SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-0}
   AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
   NODE_OFFLINE_ALERT_SECONDS: ${NODE_OFFLINE_ALERT_SECONDS:-300}
-  # Caddy (app network) and Tailscale Serve (loopback) are the proxies in
-  # front of the API; X-Forwarded-For is walked past these to the client.
-  TRUSTED_PROXIES: 127.0.0.0/8,::1,172.16.0.0/12
+  IOC_FEED_TOKEN: ${IOC_FEED_TOKEN:-}
+  # Addresses that must never appear in the blocklist feed (your own).
+  IOC_FEED_ALLOWLIST: ${IOC_FEED_ALLOWLIST:-}
+  # No container here can open an outbound connection, so these do nothing
+  # on this deployment; see deploy/server/README.md, "Alerts leave by the
+  # host".
   SMTP_HOST: ${SMTP_HOST:-}
   SMTP_PORT: ${SMTP_PORT:-587}
   SMTP_USER: ${SMTP_USER:-}
@@ -74,9 +122,33 @@ x-backend-env: &backend_env
   WEBHOOK_URL: ${WEBHOOK_URL:-}
   WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
 
+# The two model servers: llama.cpp on the CPU, one client (the backend), no
+# way out. The image is pinned to the build running on the reference server;
+# the decision model needs /v1/systemone, which arrived in build b11459.
+x-llama: &llama
+  # ghcr.io/ggml-org/llama.cpp:server
+  image: ghcr.io/ggml-org/llama.cpp@sha256:33868c035b21dc63f7c60b7438774283fd99215bc319114eb03de5df4ce7cd6b
+  # The image's default user is root; the server needs to read one file.
+  user: "65534:65534"
+  environment:
+    HOME: /tmp
+    LLAMA_CACHE: /tmp
+  volumes:
+    - ./state/models:/models:ro
+  networks: [llm]
+  tmpfs:
+    - /tmp:noexec,nosuid,nodev,size=64m
+  pids_limit: 256
+  <<: *hardening
+
 services:
   postgres:
-    image: postgres:16-alpine
+    # postgres:16-alpine
+    image: postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    # The image starts as root only to chown its data directory and then
+    # drops to this user (postgres, uid 70 on Alpine). Starting as that user
+    # needs no capability at all; the volume it creates is already owned by it.
+    user: "70:70"
     environment:
       POSTGRES_USER: honeypot
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run install.sh first}
@@ -97,78 +169,120 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./state/pg-tls:/etc/postgresql/tls:ro
       - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    # Everything Postgres writes outside its data directory: the socket and
+    # lock file, and temporary files.
+    tmpfs:
+      - /var/run/postgresql:uid=70,gid=70,mode=0775
+      - /tmp:noexec,nosuid,nodev,size=256m
+    # Parallel queries allocate here; Docker's default is 64 MB.
+    shm_size: 256m
     networks: [db]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U honeypot -d honeysentinel"]
       interval: 5s
       timeout: 5s
       retries: 20
-    restart: unless-stopped
-    logging: &logging
-      driver: json-file
-      options: { max-size: "20m", max-file: "5" }
+    # Time for a clean shutdown; a SIGKILL means crash recovery on next start.
+    stop_grace_period: 1m
+    mem_limit: 2g
+    pids_limit: 256
+    <<: *hardening
 
   backend:
     build:
       context: ../../backend
+      args:
+        GIT_REVISION: ${GIT_REVISION:-unknown}
     image: honeysentinel-backend
     # One process: the per-address login and API rate limits live in its
     # memory, and several workers would each keep their own count. It is also
     # the only process running the background workers (the LLM queue, the
-    # notification outbox, engine liveness, retention), for the same reason.
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    # notification outbox, engine liveness, retention, scheduled model
+    # fits), for the same reason.
+    #
+    # It listens on its hs-app address only. It is also attached to
+    # hs-control, which the engines share, and must not answer there.
+    command: ["uvicorn", "app.main:app", "--host", "172.30.70.10", "--port", "8000", "--workers", "1"]
     environment:
       <<: *backend_env
+      API_ROLE: full
       BACKGROUND_WORKERS: "true"
     volumes:
       - models:/app/models
       - ./state/geoip:/app/geoip:ro
-    networks: [app, db, engine, llm]
+      # Where the evaluation and export tools write (python -m app.tools.*
+      # --out /app/out/...). The rest of /app is read-only.
+      - ./state/out:/app/out
+    # The payload analyser unpacks samples here; nothing can be run from it.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=512m
+    networks:
+      app:
+        ipv4_address: 172.30.70.10
+      control:
+        ipv4_address: 172.30.71.2
+      db: {}
+      llm: {}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://172.30.70.10:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
     mem_limit: 2g
     pids_limit: 512
-    restart: unless-stopped
-    logging: *logging
+    <<: *hardening
 
-  # The engine's sessions are analysed here rather than by the dashboard's
+  # The engines' sessions are analysed here rather than by the dashboard's
   # API. Analysis is CPU-bound (Random Forest, Isolation Forest, NLP), and in
   # a single process a burst of sessions queued behind one core: the 500-
   # session stress test (TC13) took ~20 s to drain. Several workers spread it
-  # over the cores, and the dashboard stays responsive while they work. Same
-  # image and code; it only receives the engine's service-to-service calls,
-  # which carry no user rate limits, and it is not reachable from the web
-  # proxy. Migrations are left to the backend service.
+  # over the cores, and the dashboard stays responsive while they work.
+  #
+  # Same image as `backend`, deliberately with no build of its own: a second
+  # build section let one service be rebuilt and recreated without the other,
+  # and the two then ran different code for a month. API_ROLE=ingest serves
+  # only the engine-facing *-internal routes, so an engine that reaches this
+  # service finds no login, no session list and no export. Migrations are left
+  # to the backend service.
   ingest:
-    build:
-      context: ../../backend
     image: honeysentinel-backend
+    pull_policy: never
     environment:
       <<: *backend_env
+      API_ROLE: ingest
       RUN_MIGRATIONS_ON_STARTUP: "false"
       BACKGROUND_WORKERS: "false"
+      # Engines connect directly; there is no proxy whose header to believe.
+      TRUST_PROXY_HEADERS: "false"
     command: ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${INGEST_WORKERS:-4}"]
     volumes:
       - models:/app/models
       - ./state/geoip:/app/geoip:ro
-    networks: [db, engine]
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=512m
+    networks:
+      engine:
+        ipv4_address: 172.30.67.20
+      db: {}
     depends_on:
       backend:
         condition: service_healthy
     mem_limit: 3g
     pids_limit: 1024
-    restart: unless-stopped
-    logging: *logging
+    <<: *hardening
 
-  # Stage-2 analysis model: the project's own fine-tune, served by llama.cpp
-  # on the CPU. On an internal network with only the backend as a client, so
-  # transcripts never leave the machine and the model has no way out either.
-  # Optional: enabled with COMPOSE_PROFILES=llm once the GGUF is in
-  # state/models (install.sh does both when it finds the file).
+  # Stage-2 analysis model: the project's own fine-tune. Transcripts never
+  # leave the machine and the model has no way out either. Its own profile:
+  # with one shared profile, having only one of the two model files started
+  # both services and the one without a model crash-looped. install.sh turns
+  # each profile on when it finds (and has verified) that model's file.
   wolfram:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    profiles: ["llm"]
+    <<: *llama
+    profiles: ["wolfram"]
     command:
       - -m
       - /models/${WOLFRAM_MODEL:-wolfram-Q4_K_M.gguf}
@@ -191,9 +305,6 @@ services:
       - -n
       - "600"
       - --no-webui
-    volumes:
-      - ./state/models:/models:ro
-    networks: [llm]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
       interval: 30s
@@ -202,21 +313,15 @@ services:
       retries: 5
     mem_limit: ${WOLFRAM_MEM_LIMIT:-10g}
     cpus: ${WOLFRAM_CPUS:-6}
-    read_only: true
-    tmpfs: [/tmp]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    restart: unless-stopped
 
   # Decision model: Kev-4B, a Jev-style model that answers typed questions
-  # with probabilities instead of text, through llama.cpp's /v1/systemone
-  # (needs a server build from b11459 on). Same isolation as wolfram. The
-  # backend's single worker calls the two models in turn, never together,
+  # with probabilities instead of text, through llama.cpp's /v1/systemone.
+  # The backend's single worker calls the two models in turn, never together,
   # so each gets most of the CPU. --parallel with a unified cache lets every
   # question about a session share one read of its transcript.
   decider:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    profiles: ["llm"]
+    <<: *llama
+    profiles: ["decider"]
     command:
       - -m
       - /models/${DECIDER_MODEL_FILE:-Kev-4B-Q8_0.gguf}
@@ -234,9 +339,6 @@ services:
       - "8"
       - --kv-unified
       - --no-webui
-    volumes:
-      - ./state/models:/models:ro
-    networks: [llm]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
       interval: 30s
@@ -245,12 +347,6 @@ services:
       retries: 5
     mem_limit: ${DECIDER_MEM_LIMIT:-6g}
     cpus: ${DECIDER_CPUS:-6}
-    read_only: true
-    tmpfs: [/tmp]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    restart: unless-stopped
-    logging: *logging
 
   web:
     build:
@@ -258,48 +354,54 @@ services:
       dockerfile: deploy/server/Dockerfile.web
       args:
         VITE_GEOIP_ATTRIBUTION: ${VITE_GEOIP_ATTRIBUTION:-}
+        GIT_REVISION: ${GIT_REVISION:-unknown}
+    image: honeysentinel-web
     ports:
       # Loopback only. Tailscale Serve terminates HTTPS in front of this.
       - "127.0.0.1:${WEB_PORT:-8088}:8080"
-    networks: [edge, app]
+    networks:
+      edge: {}
+      app:
+        ipv4_address: 172.30.70.20
     depends_on:
       backend:
         condition: service_healthy
-    read_only: true
     tmpfs:
       - /tmp:uid=1000,gid=1000
       - /config:uid=1000,gid=1000
       - /data:uid=1000,gid=1000
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
     mem_limit: 256m
-    restart: unless-stopped
-    logging: *logging
+    pids_limit: 128
+    <<: *hardening
 
   # Two engines from one image, so the dashboard lists the website as a node of
   # its own: `honeypot` answers the shell services, `honeypot-web` the HTTP and
   # HTTPS decoys (and the shop behind them, docker-compose.override.yml). They
   # share an identity seed so both describe the same host, as an attacker who
-  # scans the address sees one machine.
-  honeypot: &engine
+  # scans the address sees one machine. Each has its own ingest token.
+  honeypot:
     build:
       context: ../..
       dockerfile: honeypot/Dockerfile
+      args:
+        GIT_REVISION: ${GIT_REVISION:-unknown}
     image: honeysentinel-honeypot
     environment: &engine_env
       HONEYPOT_CONTAINER: "true"
       HONEYPOT_NODE_NAME: ${HONEYPOT_NODE_NAME:-honeysentinel-debian}
       HONEYPOT_IDENTITY_SEED: ${HONEYPOT_IDENTITY_SEED:-}
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
-      # The control API listens only on the internal network, so it is not
-      # reachable through the decoy bridge or any published port.
-      HONEYPOT_CONTROL_BIND: 172.30.67.10
+      # The control API listens only on hs-control (and loopback, for the
+      # health check), so it is not reachable through the decoy bridge, a
+      # published port or the ingest network.
+      HONEYPOT_CONTROL_BIND: 172.30.71.10
       HONEYPOT_CONTROL_PORT: "8000"
+      HONEYPOT_CONTROL_TOKEN: ${HONEYPOT_CONTROL_TOKEN:?run install.sh first}
       HONEYPOT_SSH_PORT: "2222"
       HONEYPOT_FTP_PORT: "2121"
       HONEYPOT_TELNET_PORT: "2323"
@@ -314,6 +416,10 @@ services:
       HONEYPOT_ANTI_FINGERPRINT: "true"
       HONEYPOT_ADAPTIVE_RESPONSE: "true"
       HONEYPOT_ENABLE_ISOLATION: "true"
+      # Seconds between the engine's own isolation checks (it tries to connect
+      # out and to the host); the result travels in every heartbeat.
+      HONEYPOT_ISOLATION_CHECK_INTERVAL: ${HONEYPOT_ISOLATION_CHECK_INTERVAL:-600}
+      HONEYPOT_AI_CANARY: ${HONEYPOT_AI_CANARY:-true}
       HONEYPOT_DOCKER_NETWORK: honeysentinel_engine
       HONEYPOT_FTP_PASV_PORTS: "50000-50009"
       # Passive FTP advertises this address to clients; it must be the
@@ -324,7 +430,8 @@ services:
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
       BACKEND_API_URL: http://ingest:8000/api/v1
-      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_INGEST_TOKEN}
+      # This engine's own token (its entry in HONEYPOT_NODE_TOKENS).
+      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_NODE_TOKEN_SHELL:?run install.sh first}
     ports:
       # Emulated services, deliberately reachable. The router forwards the
       # well-known ports (22, 21, 23) to these; the host's real sshd keeps
@@ -340,21 +447,20 @@ services:
       - "0.0.0.0:2323:2323"
       - "0.0.0.0:50000-50009:50000-50009"
     networks:
-      decoy: {}
+      decoy:
+        ipv4_address: 172.30.66.2
       engine:
         ipv4_address: 172.30.67.10
+      control:
+        ipv4_address: 172.30.71.10
     # Resolve service names through Docker's embedded DNS but forward
     # nothing upstream, so DNS cannot be used as a way out either.
     dns: [127.0.0.1]
     volumes:
       - honeypot_data:/app/data
       - ./state/decoy-tls:/run/decoy-tls:ro
-    # Every listener binds above 1024, so no capability is needed at all.
-    cap_drop: [ALL]
-    read_only: true
     tmpfs:
-      - /tmp:noexec,nosuid,size=100M
-    security_opt: [no-new-privileges:true]
+      - /tmp:noexec,nosuid,nodev,size=100M
     # The control API answers /healthz without the token; see honeypot/Dockerfile.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
@@ -370,54 +476,124 @@ services:
     depends_on:
       ingest:
         condition: service_healthy
-    restart: unless-stopped
-    logging: *logging
+    # Every listener binds above 1024, so no capability is needed at all.
+    <<: *hardening
 
   honeypot-web:
-    <<: *engine
+    # The image `honeypot` builds; never built or pulled on its own.
+    image: honeysentinel-honeypot
+    pull_policy: never
     environment:
       <<: *engine_env
       HONEYPOT_NODE_NAME: ${HONEYPOT_WEB_NODE_NAME:-honeysentinel-web}
-      HONEYPOT_CONTROL_BIND: 172.30.67.11
+      HONEYPOT_CONTROL_BIND: 172.30.71.11
       HONEYPOT_PROTOCOLS: http,https
+      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_NODE_TOKEN_WEB:?run install.sh first}
     ports:
       # The router forwards 80 and 443 to these.
       - "0.0.0.0:8080:8080"
       - "0.0.0.0:8443:8443"
     networks:
-      decoy: {}
+      decoy:
+        ipv4_address: 172.30.66.3
       engine:
         ipv4_address: 172.30.67.11
+      control:
+        ipv4_address: 172.30.71.11
+    dns: [127.0.0.1]
     volumes:
       - honeypot_web_data:/app/data
       - ./state/decoy-tls:/run/decoy-tls:ro
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=100M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    stop_grace_period: 20s
+    mem_limit: 1g
+    pids_limit: 256
+    depends_on:
+      honeypot:
+        condition: service_started
+      ingest:
+        condition: service_healthy
+    <<: *hardening
 
+# Names, subnets and the addresses given to services above are the address
+# plan in honeysentinel-egress.sh; change one and change the other
+# (scripts/check-network-plan.py fails CI when they differ). Addresses handed
+# out dynamically (the throwaway test engines) come from the upper half of
+# each subnet, so they never take a fixed one.
 networks:
   decoy:
     driver: bridge
     driver_opts:
-      # A fixed interface name, so the host egress rules can match it before
-      # the network even exists.
       com.docker.network.bridge.name: hs-decoy
+    enable_ipv6: false
     ipam:
       config:
         - subnet: 172.30.66.0/24
-  edge:
-    driver: bridge
-  app:
-    internal: true
-  db:
-    internal: true
+          ip_range: 172.30.66.128/25
   engine:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-engine
+    enable_ipv6: false
     ipam:
       config:
         - subnet: 172.30.67.0/24
+          ip_range: 172.30.67.128/25
+  app:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-app
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.70.0/24
+          ip_range: 172.30.70.128/25
+  control:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-control
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.71.0/24
+          ip_range: 172.30.71.128/25
+  edge:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: hs-edge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.72.0/24
+  db:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-db
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.73.0/24
   llm:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.name: hs-llm
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.74.0/24
 
 volumes:
   pgdata:
+  # Trained classifier, cluster and anomaly models. Backed up by backup.sh:
+  # without them a restored deployment silently falls back to the synthetic
+  # bootstrap model.
   models:
   honeypot_data:
   honeypot_web_data:

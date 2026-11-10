@@ -1,10 +1,11 @@
 [Unit]
-Description=HoneySentinel: database backup
+Description=HoneySentinel: backup of the database, configuration, models and engine data
 Requires=docker.service
 After=docker.service
-
-OnFailure=honeysentinel-backup-failed.service
+OnFailure=honeysentinel-alert@%p.service
 
 [Service]
 Type=oneshot
+# BACKUP_* settings (encryption, off-host copy) are read from here.
+EnvironmentFile=-/opt/honeysentinel/deploy/server/.env
 ExecStart=/opt/honeysentinel/deploy/server/backup.sh

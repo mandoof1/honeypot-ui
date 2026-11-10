@@ -1,0 +1,9 @@
+[Unit]
+Description=HoneySentinel: record that %i failed as a system alert
+# The OnFailure= hook of the host jobs (backup, shop reset, GeoIP refresh,
+# egress check): OnFailure=honeysentinel-alert@%p.service. One alert per job
+# stays open until someone resolves it; repeats raise its count.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/system-alert.sh "unit_failed:%i" high "Host job %i failed" "The systemd unit %i.service exited with an error. See: journalctl -u %i"

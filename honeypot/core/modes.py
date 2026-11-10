@@ -1,64 +1,175 @@
+"""The emulated shell: one command line in, what the terminal shows out.
+
+SSH and Telnet both hand every line an attacker types to
+:meth:`ModeHandler.handle_interaction`. In passive mode the line is only
+noted. In active mode it is run the way a shell would run it — split into
+statements and pipelines, variables and ``$(…)`` expanded, loops walked,
+each stage's output fed to the next — with every command answered by the
+emulation in ``core/commands.py`` and nothing executed.
+
+A few commands are handled here rather than there because they need the
+session or the event loop: fetches (``wget``, ``curl``, ``tftp``,
+``ftpget``), which are recorded as indicators; anything that runs a file or
+a script, which is recorded as a payload execution; ``cd``; nested shells;
+and ``sleep``, which really waits, within a bound.
+
+The capture interpreter (``capture/shell_writes.py``) reads the same line to
+work out what it writes. The two share their lexer, their expansion rules
+and their ``cd`` (``core/shell_syntax.py``), so the file a redirection
+created is where ``ls`` and ``cat`` will look for it.
+"""
+
+from __future__ import annotations
+
 import asyncio
+import logging
 import posixpath
-import random
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
+from honeypot.capture.shell_writes import (
+    INTERPRETERS,
+    MAX_NESTING,
+    TRANSPARENT_PREFIXES,
+    _Lexer,
+)
+from honeypot.core import canary, dropper, honeytokens
+from honeypot.core.commands import (
+    MAX_OUTPUT_CHARS,
+    CommandEmulator,
+    base_environment,
+    lookup_variable,
+)
+from honeypot.core.commands_files import to_bytes, to_text
 from honeypot.core.config import OperationalMode, config
-from honeypot.capture.shell_writes import _Lexer, interpret
-from honeypot.core import dropper
-from honeypot.core.commands import CommandEmulator
 from honeypot.core.identity import get_identity
-from honeypot.core.shell_state import DroppedFile, resolve_path, shell_states
-from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.core.session import session_manager
+from honeypot.core.shell_state import DroppedFile, ShellState, resolve_path, shell_states
+from honeypot.core.shell_syntax import (
+    ASSIGNMENT,
+    MAX_VARIABLE_CHARS,
+    Expander,
+    ProgramWalker,
+    change_directory,
+    compile_program,
+    strip_markers,
+)
+from honeypot.core.textfilters import RegexBudget
+from honeypot.core.vfs import FsView
 
-#: busybox applets this emulator can answer. Mirai and its forks probe with
-#: ``/bin/busybox <APPLET>`` and read the reply, so the ones that are not a
-#: fetch get busybox's real "applet not found" wording.
-_BUSYBOX_FETCH_APPLETS = {"wget", "ftpget", "tftp"}
-#: Filters that can appear on the right of a pipe and whose output we can
-#: produce from the left side's text.
-_PIPE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "cat",
-                 "sort", "uniq", "cut", "tr", "base64", "md5sum", "sha256sum"}
+logger = logging.getLogger(__name__)
+
+#: Tools whose whole purpose is to bring a file onto the box.
+FETCH_TOOLS = {"wget", "curl", "tftp", "ftpget"}
+_SHELLS = {"sh", "bash", "dash", "ash", "ksh", "zsh"}
+
+#: Longest one ``sleep`` really waits, and the most one command line may
+#: wait in total. Returning instantly from ``sleep 5`` is a tell; honouring
+#: ``sleep 99999`` would let a visitor park the session for nothing.
+MAX_SLEEP_SECONDS = 5.0
+MAX_SLEEP_PER_LINE = 10.0
+
+#: Wrappers that run the rest of their arguments as the command.
+_PREFIXES = TRANSPARENT_PREFIXES | {"doas", "stdbuf", "ionice", "env", "busybox-exec"}
+
+
+@dataclass
+class _Line:
+    """Everything one command line's evaluation needs to carry around."""
+
+    session_id: str
+    shell: ShellState
+    data: dict
+    username: str
+    is_root: bool
+    depth: int
+    emulator: CommandEmulator
+    expander: Optional[Expander] = None
+    printed: int = 0
+    sleep_left: float = MAX_SLEEP_PER_LINE
+    #: The fetch feeding the current pipeline, if any: ``curl … | sh``.
+    fetch: Optional[dropper.Download] = None
+    pipes_to_shell: bool = False
+    pty: bool = True
+    fs: FsView = field(default=None)  # type: ignore[assignment]
+
+
+def session_variables(shell: ShellState, username: str, is_root: bool) -> dict[str, str]:
+    """Every variable a ``$NAME`` could expand to right now, as a snapshot."""
+    identity = get_identity()
+    variables = base_environment(shell, identity, username, is_root)
+    variables.update(shell.env)
+    variables.update(shell.variables)
+    for special in ("$", "#", "0", "UID", "EUID", "HOSTNAME", "PPID"):
+        value = lookup_variable(shell, identity, username, is_root, special)
+        if value is not None:
+            variables[special] = value
+    return variables
+
+
+def substitute_command(shell: ShellState, username: str, is_root: bool, text: str, depth: int = 0) -> str:
+    """The output of ``$(text)``, for commands that only read.
+
+    Synchronous and side-effect free on purpose: both evaluators call it,
+    possibly for the same substitution, so it must give the same answer
+    twice. A substitution that fetches, runs a script or changes directory
+    yields nothing.
+    """
+    if depth >= MAX_NESTING:
+        return ""
+    identity = get_identity()
+    emulator = CommandEmulator(identity, terminal=False)
+    expander = Expander(
+        lambda name: lookup_variable(shell, identity, username, is_root, name),
+        lambda inner: substitute_command(shell, username, is_root, inner, depth + 1),
+    )
+    out: list[str] = []
+    try:
+        statements = _Lexer(text[:4096], mark=True).run()
+    except Exception:
+        return ""
+    for _connector, pipeline in statements[:8]:
+        piped: Optional[bytes] = None
+        result: Optional[str] = ""
+        for stage in pipeline:
+            words = expander.words(list(stage.words))
+            while words and words[0] in TRANSPARENT_PREFIXES:
+                words.pop(0)
+            if not words:
+                continue
+            base = posixpath.basename(words[0])
+            if base in FETCH_TOOLS or base in INTERPRETERS or base in ("cd", "busybox", "sleep", "eval"):
+                result = ""
+                break
+            result, _status = emulator.run(
+                [base if "/" in words[0] and emulator.can_run(base) else words[0]] + words[1:],
+                shell, username, is_root, piped,
+            )
+            piped = to_bytes(result) if result else b""
+        if result:
+            out.append(result)
+    return "".join(out)[:MAX_VARIABLE_CHARS]
+
+
+def capture_context(session_id: str, username: str, is_root: bool) -> dict:
+    """What the capture interpreter needs to agree with this emulator.
+
+    The session's variables (as a snapshot it may change freely), the
+    directories that exist, and the evaluator for ``$(…)``.
+    """
+    shell = shell_states.get(session_id)
+    name = username or ("root" if is_root else "user")
+    return {
+        "env": session_variables(shell, name, is_root),
+        "dirs": FsView(shell, name, is_root),
+        "substitute": lambda text: substitute_command(shell, name, is_root, text),
+    }
 
 
 class ModeHandler:
     def __init__(self):
         self._mode = config.operational_mode
-        self._response_templates: dict[str, dict] = {
-            "active": {
-                "ssh_welcome": "Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)\n\n * Documentation:  https://help.ubuntu.com\n * Management:     https://landscape.canonical.com\n * Support:        https://ubuntu.com/advantage\n\nLast login: {login_time} from {source_ip}\n",
-                "ssh_prompt": "$ ",
-                "ssh_root_prompt": "# ",
-                "command_not_found": "bash: {cmd}: command not found\n",
-                "permission_denied": "bash: {cmd}: Permission denied\n",
-                "file_list": "total {size}\ndrwxr-xr-x  2 root root 4096 {date} .\ndrwxr-xr-x 22 root root 4096 {date} ..\n{files}",
-                "ftp_welcome": "220 (vsFTPd 3.0.5)\n",
-                "ftp_login_ok": "331 Please specify the password.\n",
-                "ftp_login_fail": "530 Login incorrect.\n",
-                "ftp_success": "230 Login successful.\n",
-                "ftp_prompt": "ftp> ",
-                "http_404": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\n<html><head>\n<title>404 Not Found</title>\n</head><body>\n<h1>Not Found</h1>\n<p>The requested URL was not found on this server.</p>\n<hr>\n<address>{server} Server at {host} Port {port}</address>\n</body></html>\n",
-                "http_200": "<!DOCTYPE html>\n<html>\n<head><title>Default Page</title></head>\n<body>\n<h1>It works!</h1>\n<p>This is the default web page for this server.</p>\n<hr>\n<address>{server} Server at {host} Port {port}</address>\n</body>\n</html>\n",
-            },
-            "passive": {
-                "ssh_welcome": "",
-                "ssh_prompt": "",
-                "ssh_root_prompt": "",
-                "command_not_found": "",
-                "permission_denied": "",
-                "file_list": "",
-                "ftp_welcome": "",
-                "ftp_login_ok": "",
-                "ftp_login_fail": "",
-                "ftp_success": "",
-                "ftp_prompt": "",
-                "http_404": "",
-                "http_200": "",
-            },
-        }
 
     @property
     def mode(self) -> OperationalMode:
@@ -85,11 +196,12 @@ class ModeHandler:
             if data:
                 await self._log_passive(session_id, protocol, interaction_type, data)
             return ""
-
-        response = await self._generate_active_response(
-            session_id, protocol, interaction_type, data or {}
-        )
-        return response
+        # Only the shell is answered from here. FTP and the web decoys build
+        # their own responses; the template responders this class used to
+        # carry for them were never called.
+        if protocol != "ssh":
+            return ""
+        return await self._ssh_response(session_id, interaction_type, data if data is not None else {})
 
     async def _log_passive(
         self, session_id: str, protocol: str, interaction_type: str, data: dict
@@ -111,19 +223,7 @@ class ModeHandler:
             },
         )
 
-    async def _generate_active_response(
-        self, session_id: str, protocol: str, interaction_type: str, data: dict
-    ) -> str:
-        templates = self._response_templates["active"]
-
-        if protocol == "ssh":
-            return await self._ssh_response(session_id, interaction_type, data, templates)
-        elif protocol == "ftp":
-            return await self._ftp_response(session_id, interaction_type, data, templates)
-        elif protocol in ("http", "https"):
-            return await self._http_response(session_id, interaction_type, data, templates)
-
-        return ""
+    # -- login banner and prompt -------------------------------------------
 
     def _welcome(self, data: dict) -> str:
         """The MOTD and the "Last login" line, as Ubuntu 20.04 prints them.
@@ -134,329 +234,432 @@ class ModeHandler:
         would show on a first connection and which was a giveaway here.
         """
         identity = get_identity()
-        from honeypot.core.commands import _last_login_line
-
-        banner = (
+        when = datetime.fromtimestamp(identity.last_login_time, tz=timezone.utc)
+        welcome = (
             f"Welcome to Ubuntu {identity.os_version} LTS "
             f"(GNU/Linux {identity.kernel} {identity.arch})\n\n"
             " * Documentation:  https://help.ubuntu.com\n"
             " * Management:     https://landscape.canonical.com\n"
             " * Support:        https://ubuntu.com/advantage\n\n"
+            f"Last login: {when.strftime('%a %b %d %H:%M:%S %Y')} from {identity.last_login_ip}\n"
         )
-        welcome = banner + _last_login_line(identity)
         # Advance the stored last-login so a second connection sees this one.
         source_ip = data.get("source_ip")
         if source_ip:
             identity.note_login(source_ip)
         return welcome
 
-    async def _ssh_response(
-        self, session_id: str, interaction_type: str, data: dict, templates: dict
-    ) -> str:
+    @staticmethod
+    def _who(data: dict) -> tuple[str, bool]:
+        is_root = bool(data.get("is_root"))
+        return data.get("username") or ("root" if is_root else "user"), is_root
+
+    def _prompt(self, session_id: str, data: dict) -> str:
+        identity = get_identity()
+        username, is_root = self._who(data)
+        shell = shell_states.get(session_id)
+        shell.home = "/root" if is_root else identity.home_for(username)
+        return f"{username}@{identity.hostname}:{shell.display_cwd()}{'#' if is_root else '$'} "
+
+    async def _ssh_response(self, session_id: str, interaction_type: str, data: dict) -> str:
         if interaction_type in ("welcome", "auth_success"):
             return self._welcome(data)
-
-        elif interaction_type == "prompt":
-            is_root = data.get("is_root", False)
-            identity = get_identity()
-            shell = shell_states.get(session_id)
-            home = "/root" if is_root else identity.home_for(data.get("username") or "user")
-            shell.home = home
-            cwd = shell.display_cwd(home)
-            prompt_char = "#" if is_root else "$"
-            return f"{data.get('username', 'user')}@{identity.hostname}:{cwd}{prompt_char} "
-
-        elif interaction_type == "command":
+        if interaction_type == "prompt":
+            return self._prompt(session_id, data)
+        if interaction_type == "command":
             # Case preserved: lowercasing corrupts base64 payloads and the
             # case-sensitive paths a dropper checks (``./Mozi.m``).
-            return await self._process_command_line(
-                session_id, data.get("command", ""), data
-            )
-
+            return await self._process_command_line(session_id, data.get("command", ""), data)
         return ""
 
+    # -- one command line --------------------------------------------------
+
     async def _process_command_line(
-        self, session_id: str, raw: str, data: dict
+        self, session_id: str, raw: str, data: dict, depth: int = 0
     ) -> str:
         """Run one command line the attacker typed, as a real shell would.
 
         The line is split into statements on ``;`` ``&&`` ``||`` and into
         pipeline stages on ``|`` by the same quote-aware lexer that captures
         shell writes, so a compound loader line is handled one segment at a
-        time with the previous segment's exit code honoured — rather than the
-        old behaviour, which matched the whole lowercased line against a
-        dictionary and answered ``cd /tmp || cd /var/run; wget …`` as a single
-        unknown command.
+        time with the previous segment's exit code honoured. ``for``,
+        ``while`` and ``if`` are walked rather than run as unknown commands.
         """
         shell = shell_states.get(session_id)
         identity = get_identity()
-        is_root = bool(data.get("is_root"))
-        username = data.get("username") or ("root" if is_root else "user")
+        username, is_root = self._who(data)
         shell.home = "/root" if is_root else identity.home_for(username)
-        shell.remember(raw.strip())
+        shell.username = username
+        if depth == 0:
+            shell.remember(raw.strip())
+            # A planted secret typed back at us, in any command.
+            for hit in honeytokens.scan_text(raw):
+                await session_manager.record_network_event(session_id, "honeytoken_used", hit)
+
+        line = _Line(
+            session_id=session_id, shell=shell, data=data, username=username,
+            is_root=is_root, depth=depth, pty=bool(data.get("pty", True)),
+            emulator=CommandEmulator(identity, RegexBudget(), terminal=bool(data.get("pty", True))),
+        )
+        line.fs = FsView(shell, username, is_root)
+        line.expander = Expander(
+            lambda name: lookup_variable(shell, identity, line.username, line.is_root, name),
+            lambda text: substitute_command(shell, line.username, line.is_root, text, depth + 1),
+            lambda pattern: line.fs.glob(pattern, shell.cwd, shell.home),
+        )
 
         try:
-            statements = _Lexer(raw).run()
+            statements = _Lexer(raw, mark=True).run()
         except Exception:
-            statements = [(";", [type("S", (), {"words": raw.split(), "redirects": [], "heredoc": None})()])]
+            logger.warning("Could not parse a command line; treating it as one command", exc_info=True)
+            statements = []
 
-        emulator = CommandEmulator(identity)
+        def set_variable(name: str, value: str) -> None:
+            self._assign(shell, name, value)
+
+        walker = ProgramWalker(compile_program(statements), line.expander.words, set_variable)
         out_parts: list[str] = []
         last_status = shell.last_status
-        for connector, pipeline in statements:
+        while True:
+            step = walker.next(last_status)
+            if step is None:
+                break
+            connector, pipeline = step
             if connector == "&&" and last_status != 0:
                 continue
             if connector == "||" and last_status == 0:
                 continue
-            text, last_status = await self._run_pipeline(
-                session_id, pipeline, shell, emulator, username, is_root, data
-            )
-            if text:
+            text, last_status = await self._run_pipeline(line, pipeline)
+            shell.last_status = last_status
+            if text and line.printed < MAX_OUTPUT_CHARS:
+                text = text[: MAX_OUTPUT_CHARS - line.printed]
+                line.printed += len(text)
                 out_parts.append(text)
         shell.last_status = last_status
+        data["exit_status"] = last_status
         return "".join(out_parts)
 
-    async def _run_pipeline(
-        self, session_id, pipeline, shell, emulator, username, is_root, data
-    ) -> tuple[str, int]:
+    @staticmethod
+    def _assign(shell: ShellState, name: str, value: str) -> None:
+        if name in shell.variables or len(shell.variables) < 256:
+            shell.variables[name] = value[:MAX_VARIABLE_CHARS]
+        if name in shell.env:
+            shell.env[name] = value[:MAX_VARIABLE_CHARS]
+
+    async def _run_pipeline(self, line: _Line, pipeline) -> tuple[str, int]:
         """Run a single pipeline (stages joined by ``|``)."""
         piped: Optional[bytes] = None
         display = ""
         status = 0
+        line.fetch = None
         # A fetch piped into an interpreter (``curl … | sh``) is the loader
         # handing its payload straight to a shell; the download recorder needs
         # to know even though the ``| sh`` is a later stage.
-        pipes_to_shell = any(
-            posixpath.basename((getattr(s, "words", []) or [""])[0])
-            in ("sh", "bash", "dash", "ash", "ksh", "zsh", "python", "python3", "perl")
+        line.pipes_to_shell = any(
+            posixpath.basename(strip_markers((getattr(s, "words", None) or [""])[0])) in INTERPRETERS
             for s in pipeline[1:]
         )
         for index, stage in enumerate(pipeline):
-            words = list(getattr(stage, "words", []))
-            if not words:
-                continue
             redirects = getattr(stage, "redirects", [])
-            redirected = any(r.op in (">", ">>") and r.fd == 1 for r in redirects)
             is_last = index == len(pipeline) - 1
+            stdin = piped
+            if getattr(stage, "heredoc", None) is not None:
+                stdin = stage.heredoc
+            for redirect in redirects:
+                target = line.expander.text(redirect.target)
+                if redirect.op == "<<<":
+                    stdin = to_bytes(target) + b"\n"
+                elif redirect.op == "<" and redirect.fd == 0:
+                    stdin = line.fs.read(resolve_path(line.shell.cwd, target, line.shell.home))
+                    if stdin is None:
+                        return f"-bash: {strip_markers(target)}: No such file or directory\n", 1
 
-            text, status, piped = await self._run_stage(
-                session_id, words, shell, emulator, username, is_root, data,
-                piped, index, pipes_to_shell,
+            # Only a stage that prints straight to the terminal has one.
+            to_terminal = line.pty and is_last and not any(
+                r.op in (">", ">>") and r.fd == 1 for r in redirects
             )
-            # Output of a non-final stage feeds the next as stdin, not the
-            # terminal. A stage writing to a file prints nothing.
-            if is_last and not redirected:
-                display = "" if text is None else text
-            elif is_last:
-                display = ""
+            text, status = await self._run_stage(line, list(stage.words), stdin, to_terminal)
+
+            discarded = {r.fd for r in redirects if r.op in (">", ">>")}
+            if 2 in discarded and status != 0:
+                # `2>/dev/null` on a command that failed: what it printed was
+                # its complaint, and that is what was thrown away.
+                text = ""
+            if 1 in discarded:
+                # Written to a file (the capture layer has the bytes).
+                text = ""
+            piped = to_bytes(text) if text else b""
+            if is_last:
+                display = text or ""
         return display, status
 
-    async def _run_stage(
-        self, session_id, words, shell, emulator, username, is_root, data,
-        piped, index, pipes_to_shell=False,
-    ) -> tuple[Optional[str], int, Optional[bytes]]:
+    # -- one stage ---------------------------------------------------------
+
+    async def _run_stage(self, line: _Line, raw_words: list[str], stdin: Optional[bytes],
+                         to_terminal: bool) -> tuple[Optional[str], int]:
+        words = line.expander.words(raw_words)
+        assignments = []
+        while words and ASSIGNMENT.match(words[0]):
+            assignments.append(words.pop(0))
+        if not words:
+            # `NAME=value` alone sets a shell variable; before a command it
+            # applies to that command only, which nothing here reads.
+            for assignment in assignments:
+                name, value = ASSIGNMENT.match(assignment).groups()
+                self._assign(line.shell, name, value)
+            return ("" if stdin is None else to_text(stdin)) if not assignments else "", 0
+        # Tilde expansion, for the arguments: `echo ~`, `ls ~/.ssh`.
+        home = line.shell.home
+        words = [words[0]] + [
+            home if word == "~" else (home + word[1:] if word.startswith("~/") else word)
+            for word in words[1:]
+        ]
+        return await self._dispatch(line, words, stdin, to_terminal, line.username, line.is_root)
+
+    async def _dispatch(self, line: _Line, words: list[str], stdin: Optional[bytes],
+                        to_terminal: bool, username: str, is_root: bool,
+                        busybox: bool = False) -> tuple[Optional[str], int]:
+        shell = line.shell
         name = words[0]
         base = posixpath.basename(name)
 
-        # Retrieval tools keep the whole session alive; handled specially so
-        # the C2 URL, filename and intent are recorded as events.
-        if base in ("wget", "curl"):
-            line = " ".join(words)
-            if pipes_to_shell:
-                line += " | sh"
-            text = await self._emulate_download(session_id, line, data)
-            return text, 0, (text.encode() if text else b"")
+        # A path names a file: something the host ships, or something the
+        # attacker put there. Bare names are looked up as commands.
+        if "/" in name or name.startswith("~"):
+            path = resolve_path(shell.cwd, name, shell.home)
+            entry = line.fs.lookup(path)
+            if entry is None:
+                return f"-bash: {name}: No such file or directory\n", 127
+            if entry.kind == "dir":
+                return f"-bash: {name}: Is a directory\n", 126
+            if entry.session:
+                return await self._run_dropped(line, name, path, entry, words[1:])
+            if not entry.executable:
+                return f"-bash: {name}: Permission denied\n", 126
+            words = [base] + words[1:]
+            name = base
+
+        if base in ("sudo", "doas"):
+            rest = [w for w in words[1:]]
+            while rest and rest[0].startswith("-"):
+                # -u USER and friends take a value; the rest are switches.
+                takes_value = rest[0] in ("-u", "-g", "-h", "-p", "-C", "-U")
+                rest = rest[2:] if takes_value else rest[1:]
+            if not rest or words[1:2] and words[1] in ("-l", "-v", "-k", "-K", "-n", "-i", "-s", "-V"):
+                text, status = line.emulator.run(["sudo"] + words[1:], shell, username, is_root, stdin, to_terminal)
+                return text, status
+            # A passwordless sudoer: the command runs as root.
+            return await self._dispatch(line, rest, stdin, to_terminal, "root", True)
+
+        if base in _PREFIXES or base == "timeout":
+            rest = words[1:]
+            if base == "timeout":
+                while rest and rest[0].startswith("-"):
+                    rest = rest[1:]
+                rest = rest[1:]
+            elif base == "env":
+                while rest and (ASSIGNMENT.match(rest[0]) or rest[0].startswith("-")):
+                    rest = rest[1:]
+            elif base in ("nice", "ionice", "stdbuf"):
+                while rest and rest[0].startswith("-"):
+                    rest = rest[2:] if rest[0] in ("-n", "-c") else rest[1:]
+            elif base == "command" and rest and rest[0] in ("-v", "-V"):
+                return line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+            if not rest:
+                return line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+            return await self._dispatch(line, rest, stdin, to_terminal, username, is_root)
+
+        if base in FETCH_TOOLS:
+            return await self._emulate_download(line, [base] + words[1:], busybox)
 
         if base == "busybox":
-            return await self._busybox(session_id, words, shell, emulator, username, is_root, data)
-
-        if base in ("chmod", "chown", "chgrp"):
-            self._apply_chmod(shell, words)
-            return "", 0, b""
+            return await self._busybox(line, words, stdin, to_terminal, username, is_root)
 
         if base == "cd":
-            text, status = self._change_dir(shell, words, data)
-            return text, status, b""
+            target, error = change_directory(
+                words[1:], shell.cwd, shell.home, shell.previous_cwd, line.fs
+            )
+            if target is None:
+                return error, 1
+            shell.previous_cwd, shell.cwd = shell.cwd, target
+            line.data["cwd_after"] = target
+            return (target + "\n" if words[1:2] == ["-"] else ""), 0
 
-        if base in ("sh", "bash", "dash", "ash", "ksh", "zsh") and "-c" in words:
-            # `sh -c '<inner>'`: run the inner line through the same machinery.
+        if base in INTERPRETERS:
+            return await self._interpreter(line, base, words[1:], stdin, username, is_root)
+
+        if base == "eval":
+            if line.depth >= MAX_NESTING:
+                return "", 0
+            text = await self._process_command_line(line.session_id, " ".join(words[1:]), line.data, line.depth + 1)
+            return text, shell.last_status
+
+        if base == "sleep":
+            return await self._sleep(line, words[1:])
+
+        if base in ("exit", "logout"):
+            # At the top level the transport ends the session; reached here
+            # it is inside a compound line or a script, where it ends that.
+            return "", 0
+
+        text, status = line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+        if line.emulator.canary_hit is not None:
+            await session_manager.record_network_event(
+                line.session_id, "ai_canary_triggered", line.emulator.canary_hit
+            )
+            line.emulator.canary_hit = None
+        return text, status
+
+    async def _sleep(self, line: _Line, args: list[str]) -> tuple[str, int]:
+        if not args:
+            return "sleep: missing operand\nTry 'sleep --help' for more information.\n", 1
+        total = 0.0
+        for arg in args:
+            scale = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(arg[-1:], None)
+            number = arg[:-1] if scale else arg
             try:
-                inner = words[words.index("-c") + 1]
-            except (ValueError, IndexError):
-                inner = ""
-            if inner:
-                text = await self._process_command_line(session_id, inner, data)
-                return text, shell.last_status, (text.encode() if text else b"")
-            return "", 0, b""
+                total += float(number[:12]) * (scale or 1)
+            except ValueError:
+                return f"sleep: invalid time interval ‘{arg}’\nTry 'sleep --help' for more information.\n", 1
+        wait = max(0.0, min(total, MAX_SLEEP_SECONDS, line.sleep_left))
+        line.sleep_left -= wait
+        if wait:
+            await asyncio.sleep(wait)
+        return "", 0
 
-        if name.startswith(("./", "/", "../")) or name.startswith("~"):
-            # Running something the attacker put here.
-            text, status = await self._run_dropped(session_id, name, shell, emulator, username, is_root)
-            if text is not None or status != 127:
-                return text, status, (text.encode() if text else b"")
-
-        # A pipe filter consuming the previous stage's output.
-        if index > 0 and base in _PIPE_FILTERS and piped is not None:
-            text = self._apply_filter(base, words[1:], piped)
-            return text, 0, (text.encode() if text else b"")
-
-        text, status = emulator.run(words, shell, username, is_root, piped)
-        return text, status, (text.encode() if text else b"")
-
-    async def _busybox(self, session_id, words, shell, emulator, username, is_root, data):
+    async def _busybox(self, line: _Line, words, stdin, to_terminal, username, is_root):
         if len(words) < 2:
-            return "BusyBox v1.30.1 (Ubuntu 1:1.30.1-7ubuntu3) multi-call binary.\n", 0, b""
+            return (
+                "BusyBox v1.30.1 (Ubuntu 1:1.30.1-4ubuntu6.4) multi-call binary.\n"
+                "BusyBox is copyrighted by many authors between 1998-2015.\n"
+                "Licensed under GPLv2. See source distribution for detailed\n"
+                "copyright notices.\n\n"
+                "Usage: busybox [function [arguments]...]\n"
+                "   or: busybox --list[-full]\n"
+            ), 0
         applet = words[1]
-        low = applet.lower()
-        if low in _BUSYBOX_FETCH_APPLETS and low in ("wget",):
-            text = await self._emulate_download(session_id, " ".join(words[1:]), data)
-            return text, 0, (text.encode() if text else b"")
-        # A known applet: run it as the bare command.
-        if posixpath.basename(low) in [b.lstrip("/usr/bin/") for b in []] or hasattr(emulator, f"_cmd_{low}"):
-            text, status = emulator.run([low] + words[2:], shell, username, is_root, None)
-            return text, status, (text.encode() if text else b"")
+        known = (
+            applet in FETCH_TOOLS or applet in _SHELLS
+            or applet in ("cd", "sleep", "echo", "printf", "test", "[", "true", "false")
+            or line.emulator.can_run(applet)
+        )
+        if "/" not in applet and known:
+            # A known applet: run it as the bare command.
+            return await self._dispatch(line, words[1:], stdin, to_terminal, username, is_root, busybox=True)
         # Mirai probes with an invented applet name and reads the reply; real
         # busybox answers exactly this, which also satisfies the probe.
-        return f"{applet}: applet not found\n", 127, b""
+        return f"{applet}: applet not found\n", 127
 
-    def _apply_chmod(self, shell, words) -> None:
-        for arg in words[1:]:
-            if arg.startswith(("-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "u", "a", "g", "o", "=")):
-                continue
-            path = resolve_path(shell.cwd, arg, shell.home)
-            file = shell.files.get(path)
-            if file is not None:
-                file.executable = True
+    # -- things that run ---------------------------------------------------
 
-    def _change_dir(self, shell, words, data) -> tuple[str, int]:
-        target_arg = words[1] if len(words) > 1 else "~"
-        if target_arg == "-":
-            target = getattr(shell, "prev_cwd", shell.home)
-        else:
-            target = resolve_path(shell.cwd, target_arg, shell.home)
-        # Standard roots an ordinary host has; cd beneath any of them, into
-        # anywhere writable, or into a directory the attacker created, works.
-        # Being too strict here is its own tell — a loader that cds somewhere
-        # ordinary and is told it is missing knows it is on a decoy.
-        roots = (
-            "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
-            "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin",
-            "/srv", "/sys", "/tmp", "/usr", "/var", shell.home,
-        )
-        if (
-            target in roots
-            or target in shell.dirs
-            or target.startswith(tuple(r + "/" for r in roots))
-        ):
-            shell.prev_cwd = shell.cwd
-            shell.cwd = target
-            data["cwd_after"] = target
+    async def _record_execution(self, line: _Line, path: str, source_url: Optional[str],
+                                size: int, interpreter: Optional[str] = None) -> None:
+        details = {"path": path, "source_url": source_url, "bytes": size, "executed": False}
+        if interpreter:
+            details["interpreter"] = interpreter
+        await session_manager.record_network_event(line.session_id, "payload_execution", details)
+
+    async def _run_script(self, line: _Line, content: bytes) -> tuple[str, int]:
+        """Walk a shell script whose text is known, as nested command lines.
+
+        Nothing is executed; this is what lets the ``wget`` inside a script
+        the attacker wrote and then ran be recorded as a download.
+        """
+        if line.depth >= MAX_NESTING:
             return "", 0
-        return f"-bash: cd: {target_arg}: No such file or directory\n", 1
-
-    async def _run_dropped(self, session_id, name, shell, emulator, username, is_root):
-        path = resolve_path(shell.cwd, name, shell.home)
-        file = shell.files.get(path)
-        if file is None:
-            return f"-bash: {name}: No such file or directory\n", 127
-        if name.startswith("./") and not file.executable:
-            return f"-bash: {name}: Permission denied\n", 126
-        await session_manager.record_network_event(
-            session_id,
-            "payload_execution",
-            {"path": path, "source_url": file.source_url, "bytes": file.size, "executed": False},
+        text = await self._process_command_line(
+            line.session_id, to_text(content[:64 * 1024]), line.data, line.depth + 1
         )
+        return text, line.shell.last_status
+
+    @staticmethod
+    def _is_script(content: Optional[bytes]) -> bool:
+        if not content or content.startswith(b"\x7fELF"):
+            return False
+        head = content[:256]
+        if head.startswith(b"#!"):
+            first = head.split(b"\n", 1)[0]
+            return any(shell.encode() in first for shell in _SHELLS)
+        return b"\x00" not in head
+
+    async def _run_dropped(self, line: _Line, name: str, path: str, entry, args: list[str]):
+        """``./x``: run something the attacker put here."""
+        if not entry.executable:
+            return f"-bash: {name}: Permission denied\n", 126
+        await self._record_execution(line, path, entry.source_url, entry.size)
+        content = line.shell.contents.get(path)
+        if content is not None and self._is_script(bytes(content[:256])):
+            return await self._run_script(line, bytes(content))
         # A real loader daemonises and prints nothing; silence keeps the
         # session going and is the accurate answer.
         return "", 0
 
-    def _apply_filter(self, base: str, args: list, piped: bytes) -> str:
-        text = piped.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        if base in ("grep", "egrep", "fgrep"):
-            import re
-            invert = any(a in ("-v", "--invert-match") for a in args)
-            pats = [a for a in args if not a.startswith("-")]
-            pat = pats[0] if pats else ""
-            try:
-                rx = re.compile(pat)
-            except re.error:
-                rx = re.compile(re.escape(pat))
-            kept = [ln for ln in lines if bool(rx.search(ln)) != invert]
-            return "\n".join(kept) + ("\n" if kept else "")
-        if base == "head":
-            n = self._filter_n(args, 10)
-            return "\n".join(lines[:n]) + ("\n" if lines[:n] else "")
-        if base == "tail":
-            n = self._filter_n(args, 10)
-            return "\n".join(lines[-n:]) + ("\n" if lines[-n:] else "")
-        if base == "wc":
-            if args and "-l" in args:
-                return f"{len(lines)}\n"
-            return f" {len(lines)} {len(text.split())} {len(text)}\n"
-        if base == "cat":
-            return text
-        if base == "sort":
-            uniq = "-u" in args
-            s = sorted(lines)
-            if uniq:
-                out = []
-                for ln in s:
-                    if not out or out[-1] != ln:
-                        out.append(ln)
-                s = out
-            return "\n".join(s) + ("\n" if s else "")
-        if base == "uniq":
-            out = []
-            for ln in lines:
-                if not out or out[-1] != ln:
-                    out.append(ln)
-            return "\n".join(out) + ("\n" if out else "")
-        if base == "base64":
-            import base64 as _b64
-            if any(a in ("-d", "--decode") for a in args):
-                try:
-                    return _b64.b64decode(text).decode("utf-8", errors="replace")
-                except Exception:
-                    return ""
-            return _b64.b64encode(piped).decode() + "\n"
-        if base in ("md5sum", "sha256sum"):
-            import hashlib
-            algo = hashlib.md5 if base == "md5sum" else hashlib.sha256
-            return f"{algo(piped).hexdigest()}  -\n"
-        if base == "tr":
-            if len(args) >= 2 and not args[0].startswith("-"):
-                table = str.maketrans(args[0], args[1][: len(args[0])])
-                return text.translate(table)
-            return text
-        if base == "cut":
-            return text
-        return text
+    async def _interpreter(self, line: _Line, base: str, args: list[str], stdin: Optional[bytes],
+                           username: str, is_root: bool) -> tuple[Optional[str], int]:
+        """``sh``, ``bash``, ``python`` … with a script, ``-c``, stdin or nothing."""
+        shell = line.shell
+        is_shell = base in _SHELLS
+        if not is_shell and not line.emulator.can_run(base) and base not in ("python", "php", "ruby"):
+            return line.emulator.run([base] + args, shell, username, is_root, stdin)
+        if base in ("python", "python2", "php", "ruby"):
+            # Not installed on a stock Ubuntu 20.04 server.
+            return f"{base}: command not found\n", 127
 
-    @staticmethod
-    def _filter_n(args: list, default: int) -> int:
-        skip = False
-        for idx, a in enumerate(args):
-            if skip:
-                skip = False
-                continue
-            if a == "-n" and idx + 1 < len(args):
-                try:
-                    return int(args[idx + 1].lstrip("+"))
-                except ValueError:
-                    return default
-            if a.startswith("-n"):
-                try:
-                    return int(a[2:])
-                except ValueError:
-                    return default
-            if a.startswith("-") and a[1:].isdigit():
-                return int(a[1:])
-        return default
+        if "-c" in args or (not is_shell and "-e" in args):
+            flag = "-c" if "-c" in args else "-e"
+            index = args.index(flag)
+            inner = args[index + 1] if index + 1 < len(args) else ""
+            if is_shell and inner and line.depth < MAX_NESTING:
+                # `sh -c '<inner>'`: run the inner line through the same machinery.
+                text = await self._process_command_line(line.session_id, inner, line.data, line.depth + 1)
+                return text, shell.last_status
+            return "", 0
 
+        scripts = [a for a in args if not a.startswith("-")]
+        if scripts:
+            # `sh bins.sh`: the commonest way a fetched loader is started.
+            shown = scripts[0]
+            path = resolve_path(shell.cwd, shown, shell.home)
+            entry = line.fs.lookup(path)
+            if entry is None or entry.kind == "dir":
+                if base == "bash":
+                    reason = "Is a directory" if entry is not None else "No such file or directory"
+                    return f"bash: {shown}: {reason}\n", 126 if entry is not None else 127
+                if is_shell:
+                    return f"{base}: 0: Can't open {shown}\n", 127
+                return f"{base}: can't open file '{shown}': [Errno 2] No such file or directory\n", 2
+            await self._record_execution(line, path, entry.source_url, entry.size, base)
+            content = shell.contents.get(path)
+            if is_shell and content is not None and self._is_script(bytes(content[:256])):
+                return await self._run_script(line, bytes(content))
+            return "", 0
 
-    async def _emulate_download(self, session_id: str, cmd: str, data: dict) -> str:
-        """Answer wget/curl as though the fetch worked.
+        if stdin is not None:
+            if line.fetch is not None:
+                # `curl … | sh`: the payload goes straight to an interpreter
+                # and never touches disk. Nothing was fetched, so there is no
+                # content — but the execution, and where it came from, is
+                # exactly what an analyst needs to see.
+                await self._record_execution(
+                    line, "(stdin)", line.fetch.url, dropper.size_for(line.fetch, get_identity().seed), base
+                )
+                return "", 0
+            if stdin:
+                await self._record_execution(line, "(stdin)", None, len(stdin), base)
+                if is_shell and self._is_script(stdin[:256]):
+                    return await self._run_script(line, stdin)
+            return "", 0
+
+        if is_shell:
+            # A nested interactive shell: the next `exit` leaves it.
+            shell.subshells = min(shell.subshells + 1, 8)
+            return "", 0
+        return line.emulator.run([base] + args, shell, username, is_root, stdin)
+
+    # -- fetches -----------------------------------------------------------
+
+    async def _emulate_download(self, line: _Line, argv: list[str], busybox: bool) -> tuple[str, int]:
+        """Answer wget/curl/tftp/ftpget as though the fetch worked.
 
         No request is made. The URL is parsed, recorded against the session as
         a network event so it reaches the backend as an indicator, and a
@@ -464,231 +667,45 @@ class ModeHandler:
         whole point: the attacker's next commands — chmod, execute, the second
         stage, the kill-competitor loop — only happen if this one does.
         """
-        download = dropper.parse(cmd)
-        if download is None:
+        tool = argv[0]
+        downloads = dropper.parse_argv(argv, piped=line.pipes_to_shell, busybox=busybox)
+        if not downloads:
             # A bare `wget` or a form we cannot read: reply the way the real
             # tool does for a missing argument rather than inventing output.
-            tool = cmd.split()[0]
-            if tool == "wget":
-                return (
-                    "wget: missing URL\n"
-                    "Usage: wget [OPTION]... [URL]...\n\n"
-                    "Try `wget --help' for more options.\n"
-                )
-            return (
-                "curl: try 'curl --help' or 'curl --manual' for more information\n"
-            )
+            return dropper.usage_error(tool, busybox), 1
 
-        size = dropper.size_for(download)
-
-        await session_manager.record_network_event(
-            session_id,
-            "file_download",
-            {
-                "tool": download.tool,
-                "url": download.url,
-                "host": download.host,
-                "port": download.port,
-                "filename": download.filename,
-                "piped_to_shell": download.piped,
-                "bytes": size,
-                # Recorded so an analyst reading the session knows the honeypot
-                # never actually retrieved the payload.
-                "fetched": False,
-            },
-        )
-
-        if download.saves:
-            shell = shell_states.get(session_id)
-            path = resolve_path(shell.cwd, download.target)
-            shell.add_file(
-                path,
-                DroppedFile(
-                    name=download.filename,
-                    size=size,
-                    source_url=download.url,
-                ),
-            )
-
-        return dropper.transcript(download, size)
-
-    async def _ftp_response(
-        self, session_id: str, interaction_type: str, data: dict, templates: dict
-    ) -> str:
-        if interaction_type == "welcome":
-            return templates["ftp_welcome"]
-
-        elif interaction_type == "user":
-            return templates["ftp_login_ok"]
-
-        elif interaction_type == "pass":
-            username = data.get("username", "anonymous")
-            password = data.get("password", "")
-            await session_manager.record_auth_attempt(
-                session_id, username, password, True
-            )
-            return templates["ftp_success"]
-
-        elif interaction_type == "list":
-            result = (
-                "150 Here comes the directory listing.\n"
-                "drwxr-xr-x    2 0        0            4096 Jan 15 10:30 pub\n"
-                "drwxr-xr-x    2 0        0            4096 Jan 15 10:30 incoming\n"
-                "-rw-r--r--    1 0        0             120 Jan 15 10:30 readme.txt\n"
-                "-rw-r--r--    1 0        0            2048 Jan 15 10:30 config.bak\n"
-                "226 Directory send OK.\n"
-            )
-            return result
-
-        elif interaction_type == "get":
-            filename = data.get("filename", "unknown")
-            await session_manager.record_command(
-                session_id, f"RETR {filename}", f"150 Opening BINARY mode data connection for {filename}.\n226 Transfer complete.\n"
-            )
-            return f"150 Opening BINARY mode data connection for {filename}.\n226 Transfer complete.\n"
-
-        elif interaction_type == "put":
-            filename = data.get("filename", "unknown")
-            content = data.get("content", b"")
-            if isinstance(content, str):
-                content = content.encode()
-            await session_manager.record_file_upload(
-                session_id, filename, content, f"/incoming/{filename}"
-            )
-            return f"150 Ok to send data.\n226 Transfer complete.\n"
-
-        elif interaction_type == "cwd":
-            path = data.get("path", "/")
-            return f'250 Directory successfully changed to "{path}".\n'
-
-        elif interaction_type == "pwd":
-            return f'257 "{data.get("path", "/")}" is the current directory\n'
-
-        elif interaction_type == "quit":
-            return "221 Goodbye.\n"
-
-        return "500 Unknown command.\n"
-
-    async def _http_response(
-        self, session_id: str, interaction_type: str, data: dict, templates: dict
-    ) -> str:
-        if interaction_type == "request":
-            method = data.get("method", "GET")
-            path = data.get("path", "/")
-            headers = data.get("headers", {})
-            body = data.get("body", "")
-
+        seed = get_identity().seed
+        shell = line.shell
+        out: list[str] = []
+        status = 0
+        for download in downloads:
+            size = dropper.size_for(download, seed)
             await session_manager.record_network_event(
-                session_id,
-                "http_request",
+                line.session_id,
+                "file_download",
                 {
-                    "method": method,
-                    "path": path,
-                    "headers": dict(headers),
-                    "body_preview": body[:500] if body else "",
+                    "tool": download.tool,
+                    "url": download.url,
+                    "host": download.host,
+                    "port": download.port,
+                    "filename": download.filename,
+                    "piped_to_shell": download.piped,
+                    "bytes": size,
+                    # Recorded so an analyst reading the session knows the honeypot
+                    # never actually retrieved the payload.
+                    "fetched": False,
                 },
             )
-
-            if path == "/" or path == "/index.html":
-                return self._build_http_response(
-                    200, "OK", templates["http_200"].format(
-                        server=fingerprint_engine.get_http_server_header(),
-                        host=headers.get("Host", "localhost"),
-                        port=config.http_port,
-                    )
-                )
-            elif path in ("/admin", "/login", "/wp-admin", "/phpmyadmin"):
-                return self._build_http_response(
-                    200,
-                    "OK",
-                    f"<!DOCTYPE html><html><head><title>Login</title></head><body>"
-                    f"<h1>Authentication Required</h1>"
-                    f'<form method="POST" action="/login">'
-                    f'<input type="text" name="username" placeholder="Username"><br>'
-                    f'<input type="password" name="password" placeholder="Password"><br>'
-                    f'<input type="submit" value="Login">'
-                    f"</form></body></html>\n",
-                )
-            elif path.endswith((".php", ".asp", ".aspx", ".jsp")):
-                return self._build_http_response(
-                    404,
-                    "Not Found",
-                    templates["http_404"].format(
-                        server=fingerprint_engine.get_http_server_header(),
-                        host=headers.get("Host", "localhost"),
-                        port=config.http_port,
-                    ),
-                )
-            else:
-                return self._build_http_response(
-                    404,
-                    "Not Found",
-                    templates["http_404"].format(
-                        server=fingerprint_engine.get_http_server_header(),
-                        host=headers.get("Host", "localhost"),
-                        port=config.http_port,
-                    ),
-                )
-
-        elif interaction_type == "post":
-            path = data.get("path", "/")
-            body = data.get("body", "")
-
-            await session_manager.record_network_event(
-                session_id,
-                "http_post",
-                {
-                    "path": path,
-                    "body": body[:1000] if body else "",
-                    "content_type": data.get("content_type", ""),
-                },
-            )
-
-            if path == "/login":
-                return self._build_http_response(
-                    302,
-                    "Found",
-                    "",
-                    {"Location": "/dashboard"},
-                )
-            elif path == "/upload":
-                return self._build_http_response(
-                    200, "OK", '{"status": "uploaded", "path": "/uploads/file"}\n'
-                )
-
-            return self._build_http_response(
-                404, "Not Found", '{"error": "not found"}\n'
-            )
-
-        return self._build_http_response(400, "Bad Request", "")
-
-    def _build_http_response(
-        self,
-        status_code: int,
-        status_text: str,
-        body: str,
-        extra_headers: Optional[dict] = None,
-    ) -> str:
-        headers = {
-            "Server": fingerprint_engine.get_http_server_header(),
-            "Content-Type": "text/html; charset=UTF-8",
-            "Content-Length": str(len(body.encode())),
-            "Connection": "close",
-        }
-        # Only a PHP stack sends X-Powered-By, and only on a page it served —
-        # never on a 404. nginx and static responses send none.
-        powered_by = fingerprint_engine.get_x_powered_by()
-        if powered_by and status_code < 400:
-            headers["X-Powered-By"] = powered_by
-        if extra_headers:
-            headers.update(extra_headers)
-
-        response = f"HTTP/1.1 {status_code} {status_text}\r\n"
-        for key, value in headers.items():
-            response += f"{key}: {value}\r\n"
-        response += "\r\n"
-        response += body
-        return response
+            line.fetch = download
+            if download.saves:
+                path = resolve_path(shell.cwd, download.target, shell.home)
+                if not line.fs.is_dir(posixpath.dirname(path)):
+                    out.append(f"{download.target}: No such file or directory\n")
+                    status = 1
+                    continue
+                shell.add_file(path, DroppedFile(name=download.filename, size=size, source_url=download.url))
+            out.append(dropper.transcript(download, size, seed))
+        return "".join(out), status
 
 
 mode_handler = ModeHandler()
