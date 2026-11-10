@@ -273,16 +273,23 @@ class FileCommands:
 
     def _cmd_cat(self, args, shell, username, is_root):
         flags, _values, files = self._split_flags(args)
-        inputs, errors = self._inputs("cat", files)
-        if not inputs and not errors:
+        if not files and self.stdin is None:
             return None, 0  # cat with nothing to read waits at the terminal
         out: list[str] = []
+        errors: list[str] = []
         size = 0
-        for _name, text in inputs:
+        for name in files or ["-"]:
             # Stop reading once there is more than will be sent: `cat f f f …`
-            # with thousands of arguments must not build it all first.
-            if size > textfilters.MAX_OUTPUT_CHARS:
+            # with thousands of arguments must not read them all first.
+            if size > textfilters.MAX_OUTPUT_CHARS or len(errors) >= 64:
                 break
+            if name == "-":
+                text, error = self._stdin_text() or "", None
+            else:
+                text, error = self._open("cat", name)
+            if error:
+                errors.append(error)
+                continue
             out.append(text)
             size += len(text)
         text = "".join(out)

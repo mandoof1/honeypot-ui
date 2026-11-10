@@ -272,6 +272,40 @@ async def test_the_planted_login_is_accepted_and_reported(ssh, ingested):
     assert event["token_id"] == "login_pair"
 
 
+# -- one filesystem for the shell and SFTP -------------------------------------
+
+async def test_sftp_and_the_shell_show_the_same_filesystem(ssh, ingested, tmp_path):
+    from honeypot.core import hostfacts
+
+    local = tmp_path / "bot"
+    local.write_bytes(b"\x7fELF-not-really")
+    async with _connect("admin", "admin") as conn:
+        async with conn.start_sftp_client() as sftp:
+            names = set(await sftp.listdir("/etc")) - {".", ".."}
+            shell_names = set((await conn.run("ls -A1 /etc")).stdout.split())
+            assert names == shell_names and "passwd" in names
+
+            # The same bytes cat prints, and the size ls lists.
+            await sftp.get("/etc/passwd", str(tmp_path / "passwd"))
+            expected = hostfacts.passwd(get_identity()).encode()
+            assert (tmp_path / "passwd").read_bytes() == expected
+            assert (await sftp.stat("/etc/passwd")).size == len(expected)
+
+            # Permissions are the user's, as in the shell.
+            with pytest.raises(asyncssh.SFTPPermissionDenied):
+                await sftp.get("/etc/shadow", str(tmp_path / "shadow"))
+            with pytest.raises(asyncssh.SFTPError):
+                await sftp.put(str(local), "/usr/bin/bot")
+
+            # An upload is there when the shell looks.
+            await sftp.put(str(local), "/tmp/bot")
+        listing = (await conn.run("ls -l /tmp/bot && cat /tmp/bot | wc -c")).stdout
+        assert "bot" in listing and listing.strip().endswith("15")
+    payload = await asyncio.wait_for(ingested.get(), timeout=10)
+    # Recorded once, by the transfer; not again when the session closed.
+    assert [(u["remote_path"], u["source"]) for u in payload["uploads"]] == [("/tmp/bot", "sftp")]
+
+
 # -- sessions are not lost -----------------------------------------------------
 
 async def test_a_failure_while_flushing_files_still_ends_the_session(ssh, ingested, monkeypatch):

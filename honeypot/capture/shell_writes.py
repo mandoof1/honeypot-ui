@@ -94,6 +94,9 @@ _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[?$#!@*0-9]")
 #: the event loop.
 _PRINTF_SPEC = re.compile(rb"%[-+ #0]*(?:[1-9][0-9]*)?(?:\.[0-9]+)?([sbcdixXo%])")
 _PRINTF_SPECIAL = re.compile(rb"[%\\]")
+#: Characters that mean nothing to the lexer: not a separator, a quote, an
+#: escape, an expansion or a wildcard.
+_PLAIN_RUN = re.compile(r"[^ \t\r\n;|&<>\\'\"$`*?\[]+")
 
 
 @dataclass
@@ -357,6 +360,15 @@ class _Lexer:
         started = self.pos
         has_glob = False
         while self.pos < len(text):
+            # A run of ordinary characters is taken in one step. Character by
+            # character, a 256 KiB base64 argument was a quarter of a million
+            # trips round this loop, three times per command, on the event
+            # loop.
+            plain = _PLAIN_RUN.match(text, self.pos)
+            if plain:
+                out.append(plain.group(0))
+                self.pos = plain.end()
+                continue
             ch = text[self.pos]
             if ch in " \t\r\n;|&<>":
                 break
@@ -946,9 +958,16 @@ class _Evaluator:
             if not files:
                 return stdin, method or "cat"
             parts = []
+            total = 0
             for f in files:
                 content = stdin if f == "-" else self.read(f)
                 if content is None:
+                    return None, method
+                # `cat f f f …` with thousands of arguments: stop as soon as
+                # the result is past anything that could be captured, rather
+                # than assembling hundreds of megabytes to throw away.
+                total += len(content)
+                if total > MAX_OUTPUT_BYTES:
                     return None, method
                 parts.append(content)
             return b"".join(parts), method or "cat"

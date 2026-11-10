@@ -59,7 +59,7 @@ class HoneypotService:
 
         logger.info(f"Operational Mode: {mode_handler.mode.value}")
         logger.info(f"Anti-fingerprinting: {config.enable_anti_fingerprinting}")
-        logger.info(f"Adaptive Response: {config.adaptive_response}")
+        logger.info(f"Actor profiling (HONEYPOT_ADAPTIVE_RESPONSE): {config.adaptive_response}")
         logger.info(f"Isolation: {config.enable_isolation}")
 
         if config.ingest_token == DEFAULT_INGEST_TOKEN:

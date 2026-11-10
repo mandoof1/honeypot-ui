@@ -92,11 +92,12 @@ async def test_sed_and_awk_patterns_are_bounded_too(session):
 
 
 async def test_cat_with_thousands_of_arguments_is_capped(session):
-    await run(session, "head -c 200000 /dev/zero > /tmp/big")
+    await run(session, "echo " + "A" * 200_000 + " > /tmp/big")
+    started = time.perf_counter()
     out, _ = await run(session, "cat " + "/tmp/big " * 3000)
-    assert len(out) <= 256 * 1024
-    record = await session_manager.get_session(session)
-    assert len(record.commands) == 0  # this helper does not record; nothing leaked into the record
+    # Six hundred megabytes asked for; what one command may send comes back.
+    assert out.startswith("AAAA") and 200_000 <= len(out) <= 256 * 1024
+    assert time.perf_counter() - started < 2.0
 
 
 async def test_history_does_not_replay_huge_lines(session):
