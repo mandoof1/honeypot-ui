@@ -119,6 +119,12 @@ async def get_live_events(
                     HoneypotSession.attack_confidence,
                     HoneypotSession.attacker_profile,
                     HoneypotSession.started_at,
+                    # What the one severity definition reads
+                    # (ai/verdict.stored_severity).
+                    HoneypotSession.model_source,
+                    HoneypotSession.detected_tools,
+                    HoneypotSession.detected_intents,
+                    HoneypotSession.signals,
                     raiseload=True,
                 )
             )

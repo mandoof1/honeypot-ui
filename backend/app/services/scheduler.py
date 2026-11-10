@@ -10,7 +10,10 @@ BACKGROUND_WORKERS is on (the `backend` service; never the multi-worker
   reporting or is running out of disk, and resolves it when it recovers;
 * housekeeping — hourly: retention, orphaned payload samples, expired login
   codes, outbox pruning, and re-queueing payload analyses a restart left
-  pending.
+  pending;
+* models — hourly: fits the cluster model and the anomaly detector on the
+  stored sessions once there are enough, refits them when due, and
+  re-assigns the stored rows after each fit (ai/maintenance.py).
 
 Every loop catches and logs its own exceptions with a traceback; a failing
 tick must never take the API down with it.
@@ -82,6 +85,7 @@ async def start() -> None:
                 _loop("housekeeping", HOUSEKEEPING_INTERVAL, housekeeping_tick, run_immediately=False),
                 name="housekeeping",
             ),
+            asyncio.create_task(_models_loop(), name="models"),
         ]
     )
     logger.info("Background workers started: enrichment, outbox, liveness, housekeeping")
@@ -118,6 +122,50 @@ async def _sleep(seconds: float) -> None:
         await asyncio.wait_for(_stop.wait(), timeout=seconds)
     except asyncio.TimeoutError:
         pass
+
+
+# --------------------------------------------------------------------------
+# Unsupervised models: fit when there is enough data, refit when due
+
+MODELS_INTERVAL = 3600
+#: The first look comes soon after start-up, so a deployment that already
+#: holds enough sessions does not wait an hour for its first fit.
+MODELS_FIRST_DELAY = 120
+
+
+async def _models_loop() -> None:
+    await _sleep(MODELS_FIRST_DELAY)
+    await _loop("models", MODELS_INTERVAL, models_tick)
+
+
+async def models_tick(db: AsyncSession) -> dict:
+    """Fit or refit the cluster model and the anomaly detector if due.
+
+    Both were manual commands only. Clustering reported "not fitted" on any
+    deployment where nobody ran one, and the anomaly detector stayed on its
+    synthetic bootstrap for good. The ingest workers pick a new model file
+    up by its modification time; the stored rows are re-assigned here.
+    """
+    from app.ai import maintenance
+    from app.ai.config import get_analysis_settings
+
+    if not get_analysis_settings().MODEL_REFIT_ENABLED:
+        return {}
+    summary = {}
+    clusters = await maintenance.maintain_clusters(db)
+    if clusters:
+        summary["clusters"] = {k: clusters[k] for k in ("k", "silhouette", "n", "backfilled")}
+    anomaly = await maintenance.maintain_anomaly(db)
+    if anomaly:
+        summary["anomaly"] = {k: anomaly[k] for k in ("n", "contamination", "backfilled")}
+    else:
+        # Until a real fit exists, rows flagged by the bootstrap are cleared.
+        cleared = await maintenance.mark_anomaly_uncalibrated(db)
+        if cleared:
+            summary["anomaly_flags_cleared"] = cleared
+    if summary:
+        logger.info("Models: %s", summary)
+    return summary
 
 
 async def _outbox_tick(db: AsyncSession) -> None:

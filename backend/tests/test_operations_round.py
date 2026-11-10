@@ -127,8 +127,11 @@ class TestAnomalyScale:
 
         result = anomaly_detector.detect({f: 0.95 for f in ANOMALY_FEATURES})
         assert result["anomaly_score"] >= 0.6
-        assert result["is_anomalous"] is True
         assert 0 < result["threshold"] < 1
+        # The detector in the test environment is the synthetic bootstrap:
+        # it scores, but it may not call anything anomalous.
+        assert result["calibrated"] is False
+        assert result["is_anomalous"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +175,30 @@ class TestAlertGrouping:
 
         monkeypatch.setattr(scanner_registry, "identify", lambda ip: "censys")
         node_id, headers = await _node(client, auth_headers)
-        result = await _ingest(client, node_id, ATTACK)
+        # Alert on everything, so that the only thing between a session and
+        # an alert is the scanner suppression.
+        created = await client.post(
+            "/api/v1/settings/thresholds", headers=headers, json={"name": "all", "min_severity": "low"}
+        )
+        assert created.status_code == 201, created.text
+        scan = {**ATTACK, "protocol": "http", "commands": ["GET /  [ua: Mozilla/5.0]"], "failed_logins": 0}
+        result = await _ingest(client, node_id, scan)
         assert result["alert"]["action"] == "suppressed"
+
+    async def test_an_attack_from_a_scanner_range_still_alerts(self, client, auth_headers, monkeypatch):
+        """The range alone used to silence everything from it. A session
+        that brute-forces a login and drops a file is not a scan, whatever
+        address it comes from."""
+        from app.services.scanners import scanner_registry
+
+        monkeypatch.setattr(scanner_registry, "identify", lambda ip: "censys")
+        node_id, headers = await _node(client, auth_headers)
+        result = await _ingest(client, node_id, ATTACK)
+        assert result["alert"]["action"] == "created"
+        detail = (await client.get(f"/api/v1/sessions/{result['session_id']}", headers=headers)).json()
+        assert detail["scanner_operator"] is None
+        assert detail["signals"]["scanner"]["operator"] == "censys"
+        assert detail["signals"]["scanner"]["consistent_with_scanning"] is False
 
     async def test_notifications_go_to_the_outbox(self, client, auth_headers, db_session, monkeypatch):
         from app.core.config import get_settings

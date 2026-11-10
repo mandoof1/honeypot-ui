@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import threading
 import numpy as np
 from typing import Dict, Optional
 from sklearn.ensemble import RandomForestClassifier
@@ -90,16 +91,39 @@ class FeatureExtractor:
 
 
 class AttackClassifier:
+    """The flow classifier. Its verdict is advisory.
+
+    It was trained on CIC-IDS2017 network flows, whose attack classes are
+    DoS floods ("exploitation") and botnet traffic ("exfiltration"), and the
+    features it leans on most describe the decoy's own replies. On the
+    deployment's stored sessions it has never produced a non-benign label.
+    So it does not set a session's category: its class distribution is
+    stored as it is (``class_probabilities``) and reported beside the rule
+    layer's verdict (``verdict.reconcile``).
+    """
+
     def __init__(self):
         self.model: Optional[RandomForestClassifier] = None
         self.label_encoder: Optional[LabelEncoder] = None
         self.feature_extractor = FeatureExtractor()
         self.model_source = "unloaded"
         self._loaded = False
+        self._lock = threading.Lock()
+
+    def preload(self) -> None:
+        """Load (or bootstrap) the model now rather than on the first session."""
+        self._ensure_loaded()
 
     def _ensure_loaded(self):
         if self._loaded:
             return
+        # Analyses run on worker threads; two first calls must not both fit
+        # the bootstrap.
+        with self._lock:
+            if not self._loaded:
+                self._load()
+
+    def _load(self):
         model_path = settings.MODEL_PATH_RF
         if os.path.exists(model_path):
             # pickle executes arbitrary code on load, so only ever read the

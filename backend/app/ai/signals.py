@@ -11,8 +11,28 @@ capped.
 
 from __future__ import annotations
 
+import hashlib
 import statistics
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+#: Longest indicator value stored whole (the column is VARCHAR(500)).
+MAX_INDICATOR_CHARS = 500
+
+
+def fit_indicator_value(value: str) -> Tuple[str, bool]:
+    """An indicator value that fits its column, and whether it was cut.
+
+    A value longer than the column made the insert fail on PostgreSQL, the
+    session with it, and the engine resend that session for ever. A long
+    value keeps its start and gains the SHA-256 of the whole, so two long
+    URLs that share a prefix stay two indicators.
+    """
+    value = str(value)
+    if len(value) <= MAX_INDICATOR_CHARS:
+        return value, False
+    digest = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+    marker = f"...sha256:{digest}"
+    return value[: MAX_INDICATOR_CHARS - len(marker)] + marker, True
 
 # -- fingerprints -----------------------------------------------------------
 

@@ -66,7 +66,12 @@ def _make_lifespan(role: str):
             )
 
         from app.services import scheduler
+        from app.services.analysis import warm_up
         from app.services.investigation_jobs import report_jobs
+
+        # Load the analysis models now, in every role that ingests, so the
+        # first session is not the one that pays for loading them.
+        await warm_up()
 
         if role == "ingest":
             # Several of these run side by side; each would start its own

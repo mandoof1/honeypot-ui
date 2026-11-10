@@ -117,6 +117,9 @@ def _session_to_dict(session) -> dict:
         "duration_seconds": session.duration_seconds,
         "status": session.status.value,
         "uploads": session.uploaded_files or [],
+        # The client's handshake fingerprints and the analysis's derived flags.
+        "fingerprints": getattr(session, "fingerprints", None),
+        "signals": getattr(session, "signals", None),
     }
 
 

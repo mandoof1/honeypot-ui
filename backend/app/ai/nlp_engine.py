@@ -271,6 +271,53 @@ def _command_fragments(request_line: str, body: str) -> List[str]:
     return fragments
 
 
+#: Characters a browser's own requests do not put in a parameter value.
+_UNUSUAL_VALUE_CHARS = frozenset("'\"<>\\`;|{}$")
+_ORDINARY_METHODS = ("GET ", "HEAD ", "OPTIONS ", "POST ")
+_LONG_REQUEST_CHARS = 2048
+
+
+def web_input_is_unusual(text: str) -> bool:
+    """Whether a request carries input worth a model's reading.
+
+    Not a verdict. The signatures are a fixed list, and a request they do
+    not match used to be neither triaged nor read. This marks the requests
+    that are not plain browsing — an unusual method, a body that is not a
+    form or JSON, a parameter value with quoting, markup or shell
+    characters in it, a traversal, or sheer length — so they are queued.
+    """
+    text = text[:NLPEngine.MAX_REQUEST_CHARS]
+    if not text.startswith(_ORDINARY_METHODS) or len(text) > _LONG_REQUEST_CHARS:
+        return True
+    first_line, _, body = text.partition("\n")
+    request_line, _ = split_user_agent(first_line)
+    path = request_line.split(" ", 2)[1] if request_line.count(" ") >= 1 else ""
+    query = path.partition("?")[2]
+
+    values: List[str] = [urllib.parse.unquote(path.partition("?")[0])]
+    if query:
+        form = _form_values(query)
+        if form is None:
+            return True
+        values.extend(form)
+    stripped = body.strip()
+    if stripped:
+        if stripped[0] in "{[":
+            try:
+                _json_strings(json.loads(stripped), values)
+            except ValueError:
+                return True
+        else:
+            form = _form_values(stripped)
+            if form is None:
+                return True
+            values.extend(form)
+    return any(
+        _UNUSUAL_VALUE_CHARS.intersection(value) or "../" in value or "\x00" in value
+        for value in values
+    )
+
+
 def _trim_url(url: str) -> str:
     """Drop punctuation that closed the sentence or bracket around a URL."""
     while url:
