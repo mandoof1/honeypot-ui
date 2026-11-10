@@ -90,6 +90,8 @@ _EXPORT_COLUMNS = (
     HoneypotSession.scanner_operator,
     HoneypotSession.mitre_tactics,
     HoneypotSession.mitre_techniques,
+    HoneypotSession.fingerprints,
+    HoneypotSession.signals,
 )
 
 _CSV_HEADER = [

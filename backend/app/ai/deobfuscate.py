@@ -67,7 +67,7 @@ _HEX_RE = re.compile(r"(?:[0-9a-fA-F]{2}){8,}")
 _ESCAPE_RUN_RE = re.compile(r"(?:\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-3][0-7]{2})[^\s\\]{0,64}){2,256}")
 _ESCAPE_RE = re.compile(r"\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|([0-3][0-7]{2}))")
 #: A word with at least two percent-escapes anywhere in it. Four consecutive
-#: escapes used to be required, which ``cat%20/etc/passwd%00`` never has.
+#: escapes used to be required, which ``cat%20/etc/passwd%3Bid`` never has.
 _URL_RUN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}[^\s%]{0,256}){2,256}")
 #: Literal characters kept in front of the first escape of a word.
 _WORD_PREFIX_CHARS = 256

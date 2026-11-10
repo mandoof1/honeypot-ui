@@ -193,6 +193,7 @@ async def raise_session_alert(
     title = title or alert_title(category, attacker_ip)
     description = description or describe(category, profile, tools, rule_reason, source)
 
+    lost_race = False
     for _ in range(3):
         existing = None
         if window.total_seconds() > 0:
@@ -217,7 +218,7 @@ async def raise_session_alert(
             last_seen_at=now,
             dedup_key=dedup_key,
             session_ids=[session.id],
-            group_key=await _free_group_key(db, dedup_key, window, now, session.id),
+            group_key=await _free_group_key(db, dedup_key, window, now, session.id, past_open=lost_race),
         )
         try:
             # A savepoint, so losing the race undoes only this insert and
@@ -228,6 +229,7 @@ async def raise_session_alert(
         except IntegrityError:
             # Another ingest worker opened the same alert between the lookup
             # and the insert. Look again and fold into theirs.
+            lost_race = True
             continue
 
         queued = queue_notifications(
@@ -243,30 +245,41 @@ async def raise_session_alert(
 
 
 async def _free_group_key(
-    db: AsyncSession, dedup_key: str, window: timedelta, now: datetime, session_id: int
+    db: AsyncSession, dedup_key: str, window: timedelta, now: datetime, session_id: int,
+    past_open: bool = False,
 ) -> str:
     """The unique key a new alert of this group takes.
 
     Workers that reach this at the same moment compute the same key (the
     group and the clock-aligned window it falls in), and the unique index
-    lets one insert win. A key already used by a closed alert — an analyst
+    lets one insert win; the loser looks again and folds into the winner's
+    alert. A key held by an *open* alert is therefore returned as it is: the
+    insert is meant to collide. A key held by a closed alert — an analyst
     resolved it, and the source came back inside the same window — gets the
-    next free suffix, so the new activity opens a new alert.
+    next free suffix, so the new activity opens a new alert. ``past_open``
+    is for the caller that already collided and still found nothing to fold
+    into: it takes a suffix regardless.
     """
     seconds = int(window.total_seconds())
     if seconds <= 0:
         # Grouping is off: every session's alert stands alone.
         return f"{dedup_key}|s:{session_id}"[:200]
     base = f"{dedup_key}|w:{int(now.timestamp()) // seconds}"[:190]
-    taken = set(
+    holders = dict(
         (
-            await db.execute(select(Alert.group_key).where(Alert.group_key.like(base + "%")))
-        ).scalars().all()
+            await db.execute(
+                select(Alert.group_key, Alert.status).where(Alert.group_key.like(base + "%"))
+            )
+        ).all()
     )
-    if base not in taken:
+    if base not in holders:
         return base
+    if not past_open:
+        still_open = sorted(key for key, status in holders.items() if status in OPEN_STATUSES)
+        if still_open:
+            return still_open[-1]
     suffix = 2
-    while f"{base}|r{suffix}" in taken:
+    while f"{base}|r{suffix}" in holders:
         suffix += 1
     return f"{base}|r{suffix}"
 

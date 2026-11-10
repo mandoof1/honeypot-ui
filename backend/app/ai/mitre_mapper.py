@@ -263,10 +263,11 @@ def validate_techniques(techniques: Iterable[Dict], source: str = "") -> Dict:
         if entry["id"] in seen:
             continue
         seen.add(entry["id"])
-        # Fields the pipeline attached to the claim travel with it.
-        for key in ("confidence", "support", "unconfirmed"):
+        # Fields the pipeline attached to the claim travel with it, and so
+        # does what an earlier validation recorded about the original claim.
+        for key in ("confidence", "support", "unconfirmed", "claimed_id", "claimed_name"):
             if technique.get(key) is not None:
-                entry[key] = technique[key]
+                entry.setdefault(key, technique[key])
         verified.append(entry)
     return {"verified": verified, "unverified": unverified, "counts": counts}
 
