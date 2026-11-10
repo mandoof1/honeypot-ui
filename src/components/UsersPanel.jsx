@@ -5,16 +5,22 @@ import { useAuth } from '../context/useAuth'
 import EmptyState from './EmptyState'
 import ErrorBanner from './ErrorBanner'
 import { LoadingRegion } from './Loading'
-import { clean } from '../lib/text'
+import Secret from './Secret'
+import Timestamp from './Timestamp'
+import { cleanLine } from '../lib/text'
 
 /*
  * Accounts.
  *
- * Sign-up verifies the address by email, and this deployment cannot send
- * email, so until now the only way to add an analyst was a curl against the
- * admin endpoint. This is that endpoint with a form in front of it, plus the
- * things an administrator is asked for when someone loses a phone or leaves:
- * reset the authenticator, set a temporary password, switch the account off.
+ * Sign-up verifies the address by email, and a deployment without a mail
+ * provider cannot send one, so the only way to add an analyst was a curl
+ * against the admin endpoint. This is that endpoint with a form in front of
+ * it, plus the things an administrator is asked for when someone loses a
+ * phone or leaves: reset the authenticator, set a temporary password, switch
+ * the account off.
+ *
+ * Temporary passwords are hidden until asked for and can be copied without
+ * being shown, so creating an account in front of a room discloses nothing.
  */
 
 const ROLES = ['viewer', 'analyst', 'admin']
@@ -88,13 +94,13 @@ function CreateForm({ onCreate, onCancel }) {
         </label>
         <label className="flex flex-col gap-1">
           <span className="eyebrow">Temporary password</span>
-          <input type="text" required minLength={MIN_PASSWORD} value={form.password} className="field readout"
+          <input type="password" autoComplete="new-password" required minLength={MIN_PASSWORD} value={form.password} className="field readout"
             onChange={(e) => setForm({ ...form, password: e.target.value })} />
         </label>
       </div>
       <p className="text-[12px] text-paper-3">
-        {ROLE_HINT[form.role]} The password is shown once more after creation; hand it over out of band
-        and ask them to change it from Settings.
+        {ROLE_HINT[form.role]} A password has been generated; it can be revealed or copied once the
+        account exists. Hand it over out of band and ask them to change it from Settings.
       </p>
       {error && <p className="text-[13px]" style={{ color: 'var(--color-s4)' }}>{error}</p>}
       <div className="flex items-center gap-2">
@@ -150,12 +156,12 @@ function UserRow({ user, me, onAction }) {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="min-w-48 flex-1">
           <p className="text-sm font-semibold text-paper">
-            {clean(user.email)}
+            {cleanLine(user.email)}
             {isMe && <span className="ml-2 text-[12px] font-normal text-paper-3">you</span>}
           </p>
           <p className="mt-0.5 text-[12px] text-paper-3">
-            {user.name ? `${clean(user.name)} · ` : ''}
-            {user.last_login ? `last sign-in ${new Date(user.last_login).toLocaleDateString()}` : 'never signed in'}
+            {user.name ? `${cleanLine(user.name)} · ` : ''}
+            {user.last_login ? <>last sign-in <Timestamp value={user.last_login} style="date" /></> : 'never signed in'}
             {user.totp_enabled ? ' · authenticator on' : ''}
           </p>
         </div>
@@ -199,8 +205,11 @@ function UserRow({ user, me, onAction }) {
       </div>
       {reveal && (
         <p className="mt-2 rounded-[3px] border border-line bg-ink-2 px-3 py-2 text-[13px] text-paper">
-          Temporary password for {clean(user.email)}: <span className="readout">{reveal}</span>
-          <span className="block text-[12px] text-paper-3">Shown once. Copy it now.</span>
+          Temporary password for {cleanLine(user.email)}:{' '}
+          <Secret value={reveal} label="temporary password" />
+          <span className="block text-[12px] text-paper-3">
+            Available until you leave this page. Copy it now; it cannot be read again later.
+          </span>
         </p>
       )}
       {error && <p className="mt-2 text-[13px]" style={{ color: 'var(--color-s4)' }}>{error}</p>}
@@ -208,7 +217,7 @@ function UserRow({ user, me, onAction }) {
   )
 }
 
-export default function UsersPanel() {
+export default function UsersPanel({ signupAvailable = false }) {
   const { user: me } = useAuth()
   const [users, setUsers] = useState(null)
   const [error, setError] = useState(null)
@@ -248,7 +257,9 @@ export default function UsersPanel() {
   return (
     <Panel
       title="Accounts"
-      description="Who can sign in to this console. Sign-up needs email, which this deployment cannot send, so administrators create accounts here."
+      description={signupAvailable
+        ? 'Who can sign in to this console. People can also request an account from the sign-in page; it is confirmed by a code sent to their address.'
+        : 'Who can sign in to this console. Self sign-up is off because this deployment has no mail provider to confirm an address with, so administrators create accounts here.'}
       action={
         <button type="button" onClick={() => setCreating((o) => !o)} className="control flex shrink-0 items-center gap-1.5">
           <Plus className="h-3.5 w-3.5" strokeWidth={2} />
@@ -260,9 +271,11 @@ export default function UsersPanel() {
       {creating && <CreateForm onCreate={create} onCancel={() => setCreating(false)} />}
       {created && (
         <div className="border-b border-line bg-ink-2 px-4 py-3 text-[13px] text-paper" role="status">
-          Account created for <span className="readout">{clean(created.email)}</span>. Temporary password:{' '}
-          <span className="readout">{created.password}</span>
-          <span className="block text-[12px] text-paper-3">Shown once. Hand it over out of band; they should change it after signing in.</span>
+          Account created for <span className="readout">{cleanLine(created.email)}</span>. Temporary password:{' '}
+          <Secret value={created.password} label="temporary password" />
+          <span className="block text-[12px] text-paper-3">
+            Available until dismissed. Hand it over out of band; they should change it after signing in.
+          </span>
           <button type="button" className="control mt-2" onClick={() => setCreated(null)}>Dismiss</button>
         </div>
       )}
@@ -277,8 +290,9 @@ export default function UsersPanel() {
   )
 }
 
-/** Every user can change their own password; needed because reset-by-email is unavailable. */
-export function ChangePasswordPanel() {
+/** Every user can change their own password. */
+export function ChangePasswordPanel({ resetByMail = false }) {
+  const { endSession } = useAuth()
   const [form, setForm] = useState({ current: '', next: '', confirm: '' })
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)
@@ -301,6 +315,10 @@ export function ChangePasswordPanel() {
       await api.auth.changePassword(form.current, form.next)
       setForm({ current: '', next: '', confirm: '' })
       setMessage('Password changed.')
+      // The API signs the account out everywhere when its password changes,
+      // this session included. Leave now, with the reason, rather than be
+      // thrown out by the next request with "session expired".
+      endSession('Password changed. Sign in again with the new password.')
     } catch (err) {
       setError(err.message || 'Could not change the password')
     } finally {
@@ -314,7 +332,10 @@ export function ChangePasswordPanel() {
         <div>
           <h2 className="text-base font-semibold text-paper">Change my password</h2>
           <p className="mt-0.5 max-w-xl text-[13px] text-paper-3">
-            Password reset by email is not available here, so keep this one somewhere safe.
+            Changing it signs you out everywhere, here included.{' '}
+            {resetByMail
+              ? 'A forgotten password can be reset from the sign-in page.'
+              : 'This deployment cannot reset a password by e-mail; a forgotten one has to be reset by an administrator.'}
           </p>
         </div>
       </div>

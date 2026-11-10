@@ -2,11 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
+import { useCapabilities } from '../hooks/useCapabilities'
 import { api } from '../services/api'
 import AuthShell, { Field, Notice, SubmitButton } from '../components/AuthShell'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, notice } = useAuth()
+  // The first screen offers only what can be finished here. Sign-up and
+  // password reset need a code sent by e-mail; where no mail can be sent
+  // they are replaced by a line saying who to ask instead.
+  const capabilities = useCapabilities()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [form, setForm] = useState({ email: '', password: '', code: '' })
@@ -101,14 +106,26 @@ export default function Login() {
       title="Sign in"
       subtitle="Captured attacker sessions and threat intelligence for your honeypot nodes."
       footer={
-        <span className="text-paper-3">
-          No account yet?{' '}
-          <Link to="/signup" className="font-medium text-paper-2 hover:text-paper">
-            Request access
-          </Link>
-        </span>
+        capabilities.status === 'loading' ? null : capabilities.signup ? (
+          <span className="text-paper-3">
+            No account yet?{' '}
+            <Link to="/signup" className="font-medium text-paper-2 hover:text-paper">
+              Request access
+            </Link>
+          </span>
+        ) : (
+          <span className="text-paper-3" data-testid="signup-unavailable">
+            No account yet? Ask an administrator to create one.
+          </span>
+        )
       }
     >
+      {notice && (
+        <div className="mb-5" role="status">
+          <Notice tone="info">{notice}</Notice>
+        </div>
+      )}
+
       {unverifiedEmail && (
         <div className="mb-5">
           <Notice tone="warn" title="Verify your email first">
@@ -188,11 +205,19 @@ export default function Login() {
         </SubmitButton>
       </form>
 
-      <p className="mt-4 text-center text-[13px]">
-        <Link to="/forgot-password" className="text-paper-3 hover:text-paper">
-          Forgot your password?
-        </Link>
-      </p>
+      {capabilities.status !== 'loading' && (
+        <p className="mt-4 text-center text-[13px]">
+          {capabilities.password_reset ? (
+            <Link to="/forgot-password" className="text-paper-3 hover:text-paper">
+              Forgot your password?
+            </Link>
+          ) : (
+            <span className="text-paper-3" data-testid="reset-unavailable">
+              Forgot your password? An administrator can set a new one.
+            </span>
+          )}
+        </p>
+      )}
     </AuthShell>
   )
 }

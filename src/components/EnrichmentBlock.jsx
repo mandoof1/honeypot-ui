@@ -89,6 +89,9 @@ export default function EnrichmentBlock({ session, onQueued }) {
   }
 
   const dropped = result?.dropped_techniques || []
+  // Named by the language model but not found in the ATT&CK catalog. They
+  // are listed as claims and never linked or counted.
+  const unverified = Array.isArray(result?.unverified_techniques) ? result.unverified_techniques : []
   const modelName = result?.model ? cleanLine(result.model) : null
 
   return (
@@ -142,6 +145,24 @@ export default function EnrichmentBlock({ session, onQueued }) {
                 Removed {dropped.length === 1 ? 'one technique' : `${dropped.length} techniques`} the transcript
                 does not support: {dropped.map((t) => cleanLine(t.id)).join(', ')}.
               </p>
+            )}
+            {unverified.length > 0 && (
+              <div data-testid="unverified-techniques">
+                <p className="text-[12px] leading-relaxed text-paper-3">
+                  Named by the language model but not in the ATT&amp;CK catalog, so not linked and
+                  not counted:
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {unverified.map((technique, i) => (
+                    <li key={i} className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-paper-2">
+                      <span className="readout">{cleanLine(String(technique.id || ''))}</span>
+                      <span>{clean(String(technique.name || ''))}</span>
+                      <span className="tag" style={{ color: 'var(--color-s2)' }}>unverified</span>
+                      {technique.reason && <span className="text-paper-3">{clean(String(technique.reason))}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             <p className="text-[12px] leading-relaxed text-paper-3">
               {modelName

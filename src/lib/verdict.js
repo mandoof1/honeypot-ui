@@ -14,11 +14,14 @@
  */
 
 const SOURCES = {
+  // Current pipeline: the rule layer always chooses the category. The flow
+  // classifier's reading is advisory and is reported beside it.
   rules: {
     label: 'Signature rules',
     scoreLabel: 'Rule score',
-    note: 'A fixed value the rule layer writes for a signature match. It is not a probability.',
+    note: 'A value the rule layer assigns from the evidence it matched; 0 means it matched none. It is not a probability.',
   },
+  // Sessions analysed by earlier versions, where a classifier could decide.
   cicids2017: {
     label: 'Flow classifier',
     detail: 'trained on the CIC-IDS2017 dataset',
@@ -80,14 +83,13 @@ export function anomalyReading(session) {
   return { state: session?.is_anomalous ? 'flagged' : 'normal', score }
 }
 
-/** Timing-only scores at or above this are worth a "possibly automated" note. */
-export const AI_AGENT_NOTE_THRESHOLD = 0.5
-
 /**
  * The automated-agent signal.
  *
- *   likely    a planted canary instruction was followed: strong evidence
- *   possible  no canary, but the timing score is high: a hint
+ *   likely    a planted canary was acted on: a detection
+ *   possible  no canary; the gaps between commands look like a model's
+ *             think-then-act loop. The engine caps this score well below 1
+ *             and labels it suggestive, and so does the console.
  *   null      nothing worth showing
  */
 export function aiAgentReading(session) {
@@ -96,7 +98,8 @@ export function aiAgentReading(session) {
   const score = typeof signal.score === 'number' && Number.isFinite(signal.score) ? signal.score : null
   const reasons = Array.isArray(signal.reasons) ? signal.reasons.filter((r) => typeof r === 'string' && r) : []
   if (signal.canary === true) return { level: 'likely', score, reasons }
-  if (score !== null && score >= AI_AGENT_NOTE_THRESHOLD) return { level: 'possible', score, reasons }
+  const timingOnly = signal.basis ? signal.basis === 'timing' : true
+  if (timingOnly && score !== null && score > 0) return { level: 'possible', score, reasons }
   return null
 }
 
@@ -108,35 +111,109 @@ export function honeytokenIds(session) {
 }
 
 const EVENT_TEXT = {
-  ai_canary_triggered: 'Followed a planted canary instruction',
-  honeytoken_used: 'Used a planted honeytoken',
+  ai_canary_triggered: 'AI-agent canary triggered',
+  honeytoken_used: 'Honeytoken used',
   connection_refused: 'Connection refused by the engine',
   direct_tcpip: 'Asked the decoy to forward a connection',
 }
 
+function endpoint(host, port) {
+  if (!host) return ''
+  return port ? `${host}:${port}` : String(host)
+}
+
+function eventDetail(event) {
+  if (event.event_type === 'ai_canary_triggered') {
+    return [event.canary, event.channel && `via ${event.channel}`].filter(Boolean).join(' ')
+  }
+  if (event.event_type === 'honeytoken_used') {
+    return [event.kind, event.token_id, event.detail].filter(Boolean).join(' · ')
+  }
+  if (event.event_type === 'direct_tcpip') {
+    const to = endpoint(event.dest_host || event.host, event.dest_port || event.port)
+    const from = endpoint(event.orig_host, event.orig_port)
+    return [to && `to ${to}`, from && `from ${from}`].filter(Boolean).join(', ')
+  }
+  if (event.event_type === 'connection_refused') {
+    const count = typeof event.count === 'number' && event.count > 1 ? `${event.count} connections` : ''
+    return [count, event.reason || event.detail].filter(Boolean).join(' · ')
+  }
+  return ''
+}
+
 /**
  * The engine events worth a line of their own in the detail panel. Reads
- * both `events` and the older `network_events`, and ignores every other type.
+ * `network_events` (and `events`, where an API sends that instead), and
+ * ignores every other type.
  */
 export function notableEvents(session) {
-  const all = [...(session?.events || []), ...(session?.network_events || [])]
+  const all = [...(session?.network_events || []), ...(session?.events || [])]
   const seen = new Set()
   const rows = []
   for (const event of all) {
     if (!event || typeof event !== 'object' || !EVENT_TEXT[event.event_type]) continue
-    const target = event.host ? `${event.host}${event.port ? `:${event.port}` : ''}` : ''
-    const detail = target || event.reason || event.token_id || event.path || ''
-    const key = `${event.event_type}|${detail}|${event.at ?? event.timestamp ?? ''}`
+    const detail = eventDetail(event)
+    const at = [event.at, event.first_seen, event.timestamp].find((value) => typeof value === 'number')
+    const key = `${event.event_type}|${detail}|${at ?? ''}`
     if (seen.has(key)) continue
     seen.add(key)
-    rows.push({
-      type: event.event_type,
-      text: EVENT_TEXT[event.event_type],
-      detail: detail ? String(detail) : '',
-      at: typeof (event.at ?? event.timestamp) === 'number' ? (event.at ?? event.timestamp) : null,
-    })
+    rows.push({ type: event.event_type, text: EVENT_TEXT[event.event_type], detail, at: at ?? null })
   }
   return rows
+}
+
+/**
+ * True for a row that is not a session at all: a connection the engine's
+ * rate limit refused. It has no commands and no port, and counting it among
+ * sessions would misstate what was captured.
+ */
+export function isRefusal(session) {
+  return session?.signals?.refusal === true
+}
+
+/** How many connections a refusal row stands for; null when not recorded. */
+export function refusalCount(session) {
+  const event = (session?.network_events || []).find((item) => item?.event_type === 'connection_refused')
+  return typeof event?.count === 'number' ? event.count : null
+}
+
+/**
+ * The flow classifier's advisory reading. It no longer decides the category;
+ * it is shown so a reader can see when it leans another way.
+ */
+export function flowAdvisory(session) {
+  const flow = session?.signals?.verdict?.flow
+  if (!flow || typeof flow !== 'object' || !flow.category) return null
+  return {
+    category: String(flow.category),
+    score: typeof flow.confidence === 'number' ? flow.confidence : null,
+    modelSource: flow.model_source ? String(flow.model_source) : null,
+    disagrees: flow.disagrees === true,
+  }
+}
+
+const STAGE_NAME = { llm: 'language model', chimera: 'language model', decider: 'decision model', triage: 'decision model' }
+
+/**
+ * Where a model stage read the session differently from the rules. The
+ * stored category stays the rules'; the difference is what a reader needs.
+ */
+export function stageDisagreements(session) {
+  const record = session?.signals?.disagreement
+  if (!record || typeof record !== 'object') return []
+  return Object.entries(record)
+    .filter(([stage, value]) => stage !== 'rules' && value && typeof value === 'object' && value.category)
+    .map(([stage, value]) => ({
+      stage,
+      name: STAGE_NAME[stage] || stage.replace(/_/g, ' '),
+      category: String(value.category),
+      rules: record.rules ? String(record.rules) : null,
+    }))
+}
+
+/** True when the rules read only part of a session too long for their budget. */
+export function rulesTruncated(session) {
+  return session?.signals?.verdict?.rules_truncated === true
 }
 
 const FINGERPRINT_FIELDS = [

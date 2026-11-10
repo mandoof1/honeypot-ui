@@ -22,7 +22,7 @@ import { saveBlob } from '../lib/download'
 import { networkLabel } from '../lib/origin'
 import { cleanLine } from '../lib/text'
 import { fromInputValue, toInputValue } from '../lib/time'
-import { anomalyReading } from '../lib/verdict'
+import { anomalyReading, isRefusal, refusalCount } from '../lib/verdict'
 
 import {
   CATEGORY_COLOR, CATEGORY_LABEL, HANDS_ON_PROFILES,
@@ -66,8 +66,6 @@ const EMPTY_FILTERS = {
   // honeypot saw. It is offered because scanner probes otherwise dominate
   // every count.
   exclude_scanners: '',
-  // Set by the ATT&CK matrix when a technique cell is opened.
-  technique: '',
 }
 
 const EMPTY_ROWS = []
@@ -91,6 +89,9 @@ function SessionRow({ session, selected, onSelect }) {
   const handsOn = HANDS_ON_PROFILES.has(session.attacker_profile)
   const anomaly = anomalyReading(session)
   const address = cleanLine(session.attacker_ip)
+  // A connection the rate limit refused is listed, but as what it is.
+  const refused = isRefusal(session)
+  const refusedCount = refused ? refusalCount(session) : null
 
   // The row button and the profile link are siblings. The link used to sit
   // inside the button, which is invalid markup: assistive technology
@@ -109,7 +110,7 @@ function SessionRow({ session, selected, onSelect }) {
       >
         <span
           className="h-6 w-[3px] shrink-0 rounded-[1px]"
-          style={{ background: color }}
+          style={{ background: refused ? 'var(--color-line-2)' : color }}
           aria-hidden="true"
         />
 
@@ -119,6 +120,15 @@ function SessionRow({ session, selected, onSelect }) {
             <span className="readout shrink-0 text-[12px] uppercase text-paper-3">
               {session.protocol || '—'}
             </span>
+            {refused && (
+              <span
+                className="tag shrink-0"
+                style={{ color: 'var(--color-paper-3)' }}
+                title="Turned away by the engine's connection limit. Nothing was exchanged."
+              >
+                refused connection
+              </span>
+            )}
             {handsOn && (
               <span className="tag shrink-0" style={{ color: 'var(--color-s4)' }}>
                 {PROFILE_LABEL_SHORT[session.attacker_profile]}
@@ -150,7 +160,9 @@ function SessionRow({ session, selected, onSelect }) {
           </span>
           <span className="mt-0.5 flex items-baseline gap-1.5 text-[12px] text-paper-3">
             <span className="truncate">
-              {CATEGORY_LABEL[session.attack_category] || CATEGORY_LABEL.unknown}
+              {refused
+                ? (refusedCount && refusedCount > 1 ? `${refusedCount.toLocaleString()} connections refused` : 'Not a session')
+                : (CATEGORY_LABEL[session.attack_category] || CATEGORY_LABEL.unknown)}
             </span>
             <span aria-hidden="true">·</span>
             <span className="shrink-0">{cleanLine(session.geo?.country) || networkLabel(session.attacker_ip) || '—'}</span>
@@ -376,13 +388,6 @@ export default function SessionLogs() {
     return cleanLine(value)
   }
 
-  // The session list API documents no technique filter. If rows come back
-  // that do not carry the technique, the server ignored the parameter, and
-  // saying "filtered" would be untrue.
-  const techniqueIgnored = Boolean(query.technique) && rows.some(
-    (item) => !(item.mitre_techniques || []).some((technique) => technique.id === query.technique),
-  )
-
   return (
     <div className="mx-auto flex min-h-full max-w-[1600px] lg:h-full flex-col gap-3">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -408,14 +413,6 @@ export default function SessionLogs() {
           Unable to open the linked session: {detailError}. You can still browse the matching sessions.
         </div>
       )}
-      {techniqueIgnored && (
-        <div role="alert" className="panel border-s3/60 p-3 text-sm text-paper-2">
-          <span className="font-semibold text-paper">This list is not narrowed to {cleanLine(query.technique)}.</span>{' '}
-          The API returned sessions without that technique, so it does not filter sessions by technique.
-          Remove the technique filter, or open sessions from an address or indicator instead.
-        </div>
-      )}
-
       <ReportTray jobs={reports.jobs} onCancel={reports.cancel} onDismiss={reports.dismiss} />
 
       <div className="flex flex-wrap items-center justify-between gap-2">

@@ -88,8 +88,9 @@ export function SignalsBlock({ session }) {
         {agent?.level === 'possible' && (
           <p className="text-[13px] leading-relaxed text-paper-2" data-testid="ai-agent-note">
             <span className="font-medium text-paper">Possibly automated.</span>{' '}
-            Its timing resembles an automated agent (score {scoreText(agent.score)}), but no canary
-            was triggered. Timing alone is a hint, not a finding, and the score is not a probability.
+            No canary was triggered. The gaps between commands are in the range the engine
+            associates with an automated agent (timing score {scoreText(agent.score)}). Timing
+            alone is suggestive, not a detection, and the score is not a probability.
           </p>
         )}
         {agent && agent.reasons.length > 0 && (

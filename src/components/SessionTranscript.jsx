@@ -80,6 +80,8 @@ function TranscriptWindow({ entries, truncated }) {
  * a render, under the new session's header.
  */
 export default function SessionTranscript({ session }) {
+  const { hasRole } = useAuth()
+  const canRead = hasRole('analyst')
   const sessionId = session?.id
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState('read')
@@ -104,7 +106,9 @@ export default function SessionTranscript({ session }) {
   const toggle = () => {
     const next = !open
     setOpen(next)
-    if (next && state.status === 'idle') load()
+    // The API refuses a viewer; say so here rather than send a request that
+    // can only come back 403.
+    if (next && canRead && state.status === 'idle') load()
   }
 
   const entries = state.data?.entries || []
@@ -130,6 +134,13 @@ export default function SessionTranscript({ session }) {
 
       {open && (
         <div className="px-4 pb-4">
+          {!canRead && (
+            <p className="py-3 text-[13px] leading-relaxed text-paper-2" data-testid="transcript-forbidden">
+              Reading a transcript needs an analyst or administrator account. Yours is a viewer
+              account, which can see that a transcript exists but not what it contains.
+            </p>
+          )}
+
           {state.status === 'loading' && (
             <p className="flex items-center gap-2 py-3 text-[13px] text-paper-3" aria-live="polite">
               <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />

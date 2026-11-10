@@ -16,6 +16,7 @@ const NAV = [
   { to: '/alerts', label: 'Alerts' },
   { to: '/indicators', label: 'Indicators' },
   { to: '/payloads', label: 'Payloads' },
+  { to: '/attack', label: 'ATT&CK' },
   { to: '/map', label: 'Origins' },
   { to: '/settings', label: 'Settings' },
 ]

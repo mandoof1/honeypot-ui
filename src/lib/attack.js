@@ -76,9 +76,10 @@ export function techniqueUrl(technique) {
 }
 
 /**
- * The matrix response, made safe to draw: tactics in kill-chain order,
- * techniques by count, counts coerced to numbers, and the largest count for
- * the shading scale. Tolerates an empty or partial payload.
+ * The matrix response, made safe to draw: techniques by count, counts
+ * coerced to numbers, and the largest count for the shading scale. The
+ * tactics are kept in the order the API sends them, which is the kill-chain
+ * order of its own ATT&CK catalog. Tolerates an empty or partial payload.
  */
 export function normaliseMatrix(payload) {
   const columns = (payload?.tactics || []).map((tactic) => {
@@ -92,9 +93,9 @@ export function normaliseMatrix(payload) {
         verified: isVerifiedTechnique(technique),
       }))
       .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
-    return { ...described, techniques }
+    const name = tactic?.name ? String(tactic.name) : described.name
+    return { ...described, name, techniques }
   })
-  columns.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
   const max = columns.reduce(
     (peak, column) => column.techniques.reduce((inner, technique) => Math.max(inner, technique.count), peak),
     0,
@@ -105,6 +106,7 @@ export function normaliseMatrix(payload) {
     max,
     techniqueCount,
     sessions: typeof payload?.sessions === 'number' ? payload.sessions : null,
+    version: payload?.attack_version ? String(payload.attack_version) : null,
   }
 }
 

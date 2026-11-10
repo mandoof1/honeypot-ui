@@ -46,7 +46,7 @@ export function useCapabilities() {
           status: 'ready',
           known: true,
           email_delivery: answer?.email_delivery === true,
-          signup: answer?.signup === true,
+          signup: answer?.self_registration === true,
           password_reset: answer?.password_reset === true,
         })
       })

@@ -155,13 +155,14 @@ test('the matrix is sorted, counted and tolerant of a partial payload', () => {
       ] },
     ],
   })
-  assert.deepEqual(matrix.columns.map((c) => c.name), ['Execution', 'Exfiltration'])
-  assert.deepEqual(matrix.columns[0].techniques.map((t) => t.id), ['T1059.004', 'T1059'])
-  assert.equal(matrix.columns[0].techniques[0].verified, false)
+  // The API's own order is kept: it is the kill-chain order of its catalog.
+  assert.deepEqual(matrix.columns.map((c) => c.name), ['Exfiltration', 'Execution'])
+  assert.deepEqual(matrix.columns[1].techniques.map((t) => t.id), ['T1059.004', 'T1059'])
+  assert.equal(matrix.columns[1].techniques[0].verified, false)
   assert.equal(matrix.max, 9)
   assert.equal(matrix.techniqueCount, 3)
   assert.equal(matrix.sessions, 12)
-  assert.deepEqual(normaliseMatrix(null), { columns: [], max: 0, techniqueCount: 0, sessions: null })
+  assert.deepEqual(normaliseMatrix(null), { columns: [], max: 0, techniqueCount: 0, sessions: null, version: null })
   assert.equal(heatStep(0, 9), 0)
   assert.equal(heatStep(1, 9), 1)
   assert.equal(heatStep(9, 9), 4)

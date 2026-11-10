@@ -18,7 +18,11 @@ import { orderTactics, techniqueUrl } from '../lib/attack'
 import { diversionOf } from '../lib/diversion'
 import { networkLabel } from '../lib/origin'
 import { formatSessionDuration } from '../lib/format'
-import { anomalyReading, probabilityText, scoreText, verdictSource } from '../lib/verdict'
+import {
+  anomalyReading, flowAdvisory, isRefusal, probabilityText, refusalCount, rulesTruncated, scoreText,
+  stageDisagreements, verdictSource,
+} from '../lib/verdict'
+import { CATEGORY_LABEL } from '../lib/severity'
 
 /*
  * Session detail.
@@ -80,6 +84,9 @@ function TagRow({ items, color, empty, transform }) {
 function ClassificationBlock({ session }) {
   const source = verdictSource(session)
   const anomaly = anomalyReading(session)
+  const flow = flowAdvisory(session)
+  const disagreements = stageDisagreements(session)
+  const truncated = rulesTruncated(session)
 
   return (
     <Block title="How this was classified" note={source.label} testId="classification-block">
@@ -116,8 +123,7 @@ function ClassificationBlock({ session }) {
 
       {session.model_source === 'rules' && (
         <p className="mt-2 text-[12px] leading-relaxed text-paper-3">
-          The flow classifier read this session as benign; the category comes from signature rules
-          over the recorded commands, logins and uploads.
+          The category is set by signature rules over the recorded commands, logins and uploads.
           {session.rule_reason ? (
             <>
               {' '}Matched: <span className="text-paper-2">{clean(session.rule_reason)}</span>.
@@ -127,6 +133,32 @@ function ClassificationBlock({ session }) {
           )}
         </p>
       )}
+
+      {truncated && (
+        <p className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-s2)' }}>
+          This session is longer than the rules read in full: they saw its start and its end. No
+          finding from them is not a clearance.
+        </p>
+      )}
+
+      {flow && (
+        <p className="mt-2 text-[12px] leading-relaxed text-paper-3" data-testid="flow-advisory">
+          Flow classifier, advisory only:{' '}
+          <span className="text-paper-2">{(CATEGORY_LABEL[flow.category] || cleanLine(flow.category)).toLowerCase()}</span>
+          {flow.score !== null && <> (score <span className="readout">{scoreText(flow.score)}</span>)</>}.
+          {' '}It reads connection statistics and does not decide the category
+          {flow.disagrees ? '; here it reads the session as more serious than the rules do.' : '.'}
+        </p>
+      )}
+
+      {disagreements.map((item) => (
+        <p key={item.stage} className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-s2)' }}>
+          The {item.name} read this session as{' '}
+          {(CATEGORY_LABEL[item.category] || cleanLine(item.category)).toLowerCase()}, not as the
+          rules&rsquo; {(CATEGORY_LABEL[item.rules || session.attack_category] || 'verdict').toLowerCase()}.
+          The stored category stays the rules&rsquo;.
+        </p>
+      ))}
 
       {session.cluster?.fitted && (
         <p className="mt-2 text-[12px] leading-relaxed text-paper-3">
@@ -144,11 +176,11 @@ function ClassificationBlock({ session }) {
         <dl className="mt-2 space-y-2 text-[12px] leading-relaxed text-paper-3">
           <div>
             <dt className="font-medium text-paper-2">Signature rules</dt>
-            <dd>Fixed patterns over the commands, logins and uploads. They decide the category when they match.</dd>
+            <dd>Fixed patterns over the commands, logins and uploads. They decide the category.</dd>
           </div>
           <div>
             <dt className="font-medium text-paper-2">Flow classifier</dt>
-            <dd>A model over connection statistics. It decides the category when no rule matches.</dd>
+            <dd>A model over connection statistics. Its reading is advisory and never changes the category.</dd>
           </div>
           <div>
             <dt className="font-medium text-paper-2">Anomaly detector</dt>
@@ -318,6 +350,51 @@ function ReportControls({ session, onReport, isAdmin }) {
   )
 }
 
+/**
+ * A connection the engine's rate limit turned away. Nothing was exchanged, so
+ * there is no verdict, transcript or fingerprint to show, and drawing the
+ * full panel would dress a refusal up as a session.
+ */
+function RefusedConnection({ session, onClose }) {
+  const count = refusalCount(session)
+  return (
+    <div className="flex h-full flex-col overflow-y-auto" data-testid="refused-connection">
+      <header className="flex items-start justify-between gap-3 px-4 pb-3 pt-4">
+        <div className="min-w-0">
+          <h2 className="readout truncate text-[17px] font-semibold text-paper">
+            <Link to={`/attackers/${encodeURIComponent(session.attacker_ip)}`} className="hover:underline">
+              {cleanLine(session.attacker_ip)}
+            </Link>
+          </h2>
+          <p className="mt-1 text-[13px] font-medium text-paper-2">Refused connection</p>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close details"
+            className="shrink-0 rounded-[3px] p-1 text-paper-3 transition-colors hover:text-paper lg:hidden"
+          >
+            <X className="h-5 w-5" strokeWidth={1.75} />
+          </button>
+        )}
+      </header>
+      <div className="border-t border-line px-4 py-3.5">
+        <p className="text-[13px] leading-relaxed text-paper-2">
+          This is not a session. The engine&rsquo;s connection limit refused
+          {count && count > 1 ? ` ${count.toLocaleString()} connections` : ' a connection'} from this
+          address, so nothing was exchanged and there is nothing to analyse.
+        </p>
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+          <Fact label="Protocol"><span className="uppercase">{session.protocol || '—'}</span></Fact>
+          <Fact label="Connections refused">{count ?? 'not recorded'}</Fact>
+          <Fact label="Recorded" wide><Timestamp value={session.started_at} /></Fact>
+        </dl>
+      </div>
+    </div>
+  )
+}
+
 export default function SessionDetail({ session, onClose, onReport, onChanged }) {
   const { hasRole } = useAuth()
 
@@ -333,6 +410,10 @@ export default function SessionDetail({ session, onClose, onReport, onChanged })
 
   const anomaly = anomalyReading(session)
   const diversion = diversionOf(session)
+
+  if (isRefusal(session)) {
+    return <RefusedConnection session={session} onClose={onClose} />
+  }
 
   return (
     <div className="flex h-full flex-col overflow-y-auto" data-testid="session-detail">

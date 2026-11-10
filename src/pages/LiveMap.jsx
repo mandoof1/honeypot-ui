@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   CircleMarker, MapContainer, Popup, TileLayer, Tooltip, ZoomControl,
 } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { api } from '../services/api'
-import ErrorBanner from '../components/ErrorBanner'
+import { LoadFailure, StaleNotice } from '../components/LoadState'
 import { LoadingRegion } from '../components/Loading'
-import { useVisiblePoll } from '../hooks/useVisiblePoll'
-import { clean } from '../lib/text'
+import Timestamp from '../components/Timestamp'
+import { usePolledResource } from '../hooks/usePolledResource'
+import { cleanLine } from '../lib/text'
 import { SEVERITY_COLOR, SEVERITY_ORDER, CATEGORY_LABEL } from '../lib/severity'
 
 const REFRESH_MS = 10000
@@ -23,28 +24,35 @@ const MARKER = {
 
 const FILTERS = ['all', ...SEVERITY_ORDER]
 
+const EMPTY_EVENTS = []
+
 export default function LiveMap() {
-  const [events, setEvents] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [filter, setFilter] = useState('all')
+  const feed = usePolledResource(
+    async ({ signal }) => {
+      const rows = await api.dashboard.liveEvents(200, { signal })
+      return Array.isArray(rows) ? rows : []
+    },
+    { key: 'origins', intervalMs: REFRESH_MS },
+  )
+  const events = feed.data ?? EMPTY_EVENTS
 
-  const fetchEvents = useCallback(async () => {
-    try {
-      setEvents((await api.dashboard.liveEvents(200)) || [])
-      setError(null)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    const timer = setTimeout(fetchEvents, 0)
-    return () => clearTimeout(timer)
-  }, [fetchEvents])
-  useVisiblePoll(fetchEvents, REFRESH_MS)
+  // The background comes from a public tile server, which the venue's
+  // network may not reach. Tiles that fail are invisible, so without this the
+  // page would be a black rectangle with dots on it and no explanation. The
+  // status only changes on a transition, not once per tile.
+  const tileCounts = useRef({ loaded: 0, failed: 0 })
+  const [tiles, setTiles] = useState('unknown')
+  const tileHandlers = useMemo(() => ({
+    tileload: () => {
+      tileCounts.current.loaded += 1
+      setTiles('ok')
+    },
+    tileerror: () => {
+      tileCounts.current.failed += 1
+      if (tileCounts.current.loaded === 0) setTiles('down')
+    },
+  }), [])
 
   // An event is mappable only when geolocation actually resolved. Sessions
   // without a location are counted separately rather than silently dropped.
@@ -86,13 +94,16 @@ export default function LiveMap() {
 
   return (
     <div className="mx-auto flex h-full max-w-[1600px] flex-col gap-3">
-      {error && <ErrorBanner message={error} onRetry={fetchEvents} />}
+      <h1 className="sr-only">Origins</h1>
+      {feed.stale && <StaleNotice what="The origin map" error={feed.error} loadedAt={feed.loadedAt} onRetry={feed.reload} />}
 
       {/* The map is the page, not a widget inside it. Controls and readings
           float over it rather than pushing it into a box. */}
       <div className="panel relative min-h-0 flex-1 overflow-hidden">
-        {loading ? (
+        {feed.loading ? (
           <LoadingRegion label="Loading origins" className="h-full" />
+        ) : feed.failed ? (
+          <LoadFailure what="session origins" error={feed.error} onRetry={feed.reload} className="flex h-full flex-col items-center justify-center px-4" />
         ) : (
           <>
             <MapContainer
@@ -114,6 +125,7 @@ export default function LiveMap() {
                 url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
                 className="map-tiles-dark"
                 maxZoom={19}
+                eventHandlers={tileHandlers}
                 attribution={
                   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' +
                   // The location database's licence may require credit too
@@ -139,7 +151,7 @@ export default function LiveMap() {
                   >
                     <Tooltip direction="top" offset={[0, -10]}>
                       <span className="readout text-xs font-semibold">
-                        {clean(event.attacker_ip)}
+                        {cleanLine(event.attacker_ip)}
                       </span>
                       <br />
                       <span className="text-xs">
@@ -150,7 +162,7 @@ export default function LiveMap() {
                       <div className="min-w-44 space-y-1">
                         <p className="readout text-xs font-semibold">
                           <Link to={`/attackers/${encodeURIComponent(event.attacker_ip)}`} title="Everything this address has done">
-                            {clean(event.attacker_ip)}
+                            {cleanLine(event.attacker_ip)}
                           </Link>
                         </p>
                         <p className="text-xs">
@@ -165,7 +177,7 @@ export default function LiveMap() {
                           {event.severity} severity
                         </p>
                         <p className="readout text-[12px] opacity-70">
-                          {new Date(event.timestamp).toLocaleString()}
+                          <Timestamp value={event.timestamp} />
                         </p>
                         <p className="text-xs">
                           <Link to={`/sessions?session=${event.session_id}`}>Open session</Link>
@@ -223,6 +235,32 @@ export default function LiveMap() {
                 </div>
               )}
             </div>
+
+            {tiles === 'down' && (
+              <>
+                {/* A plain graticule in place of the map, so the markers
+                    still sit on something that reads as a world. */}
+                <div
+                  className="pointer-events-none absolute inset-0 z-[350]"
+                  aria-hidden="true"
+                  style={{
+                    backgroundImage:
+                      'linear-gradient(var(--color-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-line) 1px, transparent 1px)',
+                    backgroundSize: '64px 64px',
+                    opacity: 0.5,
+                  }}
+                />
+                <p
+                  role="status"
+                  data-testid="tiles-fallback"
+                  className="absolute bottom-3 right-14 z-[500] max-w-sm rounded-[4px] border border-s3/60 bg-ink-1/95 px-3 py-2 text-[12px] leading-relaxed text-paper-2 backdrop-blur"
+                >
+                  <span className="font-medium text-paper">The background map did not load.</span>{' '}
+                  It comes from tile.openstreetmap.org, which this network could not reach. The
+                  markers are still in the right places, and the counts are unaffected.
+                </p>
+              </>
+            )}
 
             {/* With no plottable points the map is a blank ocean; say why so it
                 doesn't read as broken. On a tailnet/LAN honeypot every source

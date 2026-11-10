@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { api } from '../services/api'
+import { useCapabilities } from '../hooks/useCapabilities'
 import AuthShell, {
-  Field, Notice, Outcome, OtpInput, SubmitButton,
+  Field, Notice, Outcome, OtpInput, SubmitButton, Unavailable,
 } from '../components/AuthShell'
 
 const MIN_PASSWORD_LENGTH = 12
@@ -16,6 +17,7 @@ const REGISTER_FIELDS = [
 ]
 
 export default function Signup() {
+  const capabilities = useCapabilities()
   const [step, setStep] = useState('register')
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
   const [otpCode, setOtpCode] = useState('')
@@ -114,9 +116,24 @@ export default function Signup() {
     },
   })
 
+  // Reached by a typed address or an old link. The form would accept the
+  // details and then wait for a code that is never sent.
+  if (capabilities.status === 'loading') {
+    return <AuthShell title="Request access" subtitle="Checking what this deployment offers…" />
+  }
+  if (!capabilities.signup) {
+    return (
+      <Unavailable title="Request access">
+        Creating an account here needs a confirmation code sent by e-mail, and this deployment
+        {capabilities.known ? ' has no mail provider to send one.' : ' did not confirm that it can send one.'}
+        {' '}Ask an administrator to create an account for you.
+      </Unavailable>
+    )
+  }
+
   if (step === 'success') {
     return (
-      <AuthShell>
+      <AuthShell pageTitle="Email verified">
         <Outcome
           title="Email verified"
           action={<Link to="/login" className="control control-primary inline-block">Sign in</Link>}

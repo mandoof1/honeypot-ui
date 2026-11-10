@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Search, RefreshCw, ShieldAlert } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
 import { useDebounced } from '../hooks/useDebounced'
+import { usePolledResource } from '../hooks/usePolledResource'
+import Dialog from '../components/Dialog'
 import EmptyState from '../components/EmptyState'
 import ErrorBanner from '../components/ErrorBanner'
+import { LoadFailure, StaleNotice } from '../components/LoadState'
 import { LoadingRegion } from '../components/Loading'
 import PayloadDetail from '../components/PayloadDetail'
+import { cleanLine } from '../lib/text'
 
 /*
  * Payloads.
@@ -37,6 +41,13 @@ const STATUSES = [
   { id: 'pending', label: 'Pending' },
   { id: 'failed', label: 'Failed' },
   { id: 'metadata_only', label: 'Hash only' },
+]
+
+/* The orders the list API offers. */
+const SORTS = [
+  { id: '', label: 'Last seen' },
+  { id: 'first_seen', label: 'First seen' },
+  { id: 'size', label: 'Largest' },
 ]
 
 const KIND_LABEL = {
@@ -69,14 +80,16 @@ function PayloadRow({ sample, selected, onSelect }) {
       >
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
+            {/* The summary and family are built from the file's own contents,
+                which the attacker chose. */}
             <span className="readout truncate text-[12px] text-paper">
-              {sample.summary || sample.file_type || `${kind} sample`}
+              {cleanLine(sample.summary || sample.file_type) || `${kind} sample`}
             </span>
           </span>
           <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-paper-3">
             <span className="tag" style={{ color: 'var(--color-paper-3)' }}>{kind}</span>
             {sample.family && (
-              <span className="tag" style={{ color: 'var(--color-s3)' }}>{sample.family}</span>
+              <span className="tag" style={{ color: 'var(--color-s3)' }}>{cleanLine(sample.family)}</span>
             )}
             {pending && (
               <span className="tag" style={{ color: 'var(--color-paper-3)' }}>
@@ -104,21 +117,12 @@ function PayloadRow({ sample, selected, onSelect }) {
 
 export default function Payloads() {
   const { hasRole } = useAuth()
-  const [samples, setSamples] = useState([])
-  const [total, setTotal] = useState(0)
-  const [stats, setStats] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [detail, setDetail] = useState(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState(null)
-  const [statsError, setStatsError] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [reload, setReload] = useState(0)
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 1023px)').matches)
 
   const kind = searchParams.get('kind') || ''
   const status = searchParams.get('status') || ''
+  const sort = searchParams.get('sort') || ''
   const search = searchParams.get('q') || ''
   const requested = searchParams.get('sha') || null
   const page = Math.max(1, Math.floor(Number(searchParams.get('page'))) || 1)
@@ -135,74 +139,29 @@ export default function Payloads() {
     }, { replace })
   }, [setSearchParams])
 
-  const queryKey = useMemo(
-    () => JSON.stringify({ kind, status, search: debouncedSearch, page }),
-    [kind, status, debouncedSearch, page],
+  const list = usePolledResource(
+    async ({ signal }) => {
+      const params = { page, page_size: PAGE_SIZE }
+      if (kind) params.file_kind = kind
+      if (status) params.status = status
+      if (sort) params.sort = sort
+      if (debouncedSearch) params.search = debouncedSearch
+      const data = await api.payloads.list(params, { signal })
+      return { samples: data.payloads || [], total: data.total || 0 }
+    },
+    { key: JSON.stringify({ kind, status, sort, search: debouncedSearch, page }) },
   )
+  const samples = list.data?.samples ?? []
+  const total = list.data?.total ?? 0
 
-  useEffect(() => {
-    const controller = new AbortController()
-    const load = async () => {
-      setLoading(true)
-      try {
-        const { kind, status, search, page } = JSON.parse(queryKey)
-        const params = { page, page_size: PAGE_SIZE }
-        if (kind) params.file_kind = kind
-        if (status) params.status = status
-        if (search) params.search = search
-        const data = await api.payloads.list(params, { signal: controller.signal })
-        if (controller.signal.aborted) return
-        setSamples(data.payloads || [])
-        setTotal(data.total || 0)
-        setError(null)
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setError(err.message)
-        setSamples([])
-      } finally {
-        if (!controller.signal.aborted) setLoading(false)
-      }
-    }
-    const timer = setTimeout(load, 0)
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [queryKey, reload])
-
-  useEffect(() => {
-    let cancelled = false
-    api.payloads.stats()
-      .then((data) => { if (!cancelled) { setStats(data); setStatsError(null) } })
-      .catch((err) => { if (!cancelled) { setStats(null); setStatsError(err.message || 'Could not load totals') } })
-    return () => { cancelled = true }
-  }, [reload])
+  const stats = usePolledResource(({ signal }) => api.payloads.stats({ signal }), { key: 'payload-stats' })
 
   // The detail is its own request: a sample carries its full report and the
   // sessions it appeared in, which the list deliberately does not.
-  useEffect(() => {
-    const controller = new AbortController()
-    const load = async () => {
-      if (!requested) {
-        setDetail(null)
-        return
-      }
-      setDetailLoading(true)
-      setDetailError(null)
-      try {
-        const data = await api.payloads.get(requested, { signal: controller.signal })
-        if (!controller.signal.aborted) setDetail(data)
-      } catch (err) {
-        // A bad or stale link used to fall back silently to "Select a
-        // sample", which read as if nothing had been asked for.
-        if (!controller.signal.aborted) {
-          setDetail(null)
-          setDetailError(err.message || 'Could not load this sample')
-        }
-      } finally {
-        if (!controller.signal.aborted) setDetailLoading(false)
-      }
-    }
-    const timer = setTimeout(load, 0)
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [requested])
+  const detail = usePolledResource(
+    ({ signal }) => api.payloads.get(requested, { signal }),
+    { key: `payload:${requested}`, enabled: Boolean(requested) },
+  )
 
   useEffect(() => {
     const mql = window.matchMedia('(max-width: 1023px)')
@@ -212,7 +171,13 @@ export default function Payloads() {
   }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const refresh = () => setReload((v) => v + 1)
+  const refresh = () => {
+    list.reload()
+    stats.reload()
+    if (requested) detail.reload()
+  }
+  const closeDetail = () => setParam({ sha: '' }, true)
+  const filtered = Boolean(kind || status || search)
 
   return (
     <div className="mx-auto flex min-h-full max-w-[1600px] lg:h-full flex-col gap-3">
@@ -224,27 +189,32 @@ export default function Payloads() {
             Files attackers uploaded, reverse-engineered — statically, without ever running them.
           </p>
         </div>
-        <button className="control" onClick={refresh} disabled={loading}>
-          <RefreshCw className="h-3.5 w-3.5" />Refresh
+        <button className="control" onClick={refresh} disabled={list.loading || list.refreshing}>
+          <RefreshCw className={`h-3.5 w-3.5 ${list.refreshing ? 'animate-spin' : ''}`} />Refresh
         </button>
       </header>
 
-      {stats && (
+      {stats.data ? (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <StatTile label="Unique samples" value={stats.total.toLocaleString()} />
-          <StatTile label="Awaiting analysis" value={stats.pending_analysis.toLocaleString()} />
-          <StatTile label="Executables" value={((stats.by_kind.elf || 0) + (stats.by_kind.pe || 0)).toLocaleString()} />
-          <StatTile label="Scripts" value={(stats.by_kind.script || 0).toLocaleString()} />
+          <StatTile label="Unique samples" value={(stats.data.total ?? 0).toLocaleString()} />
+          <StatTile label="Awaiting analysis" value={(stats.data.pending_analysis ?? 0).toLocaleString()} />
+          <StatTile label="Executables" value={((stats.data.by_kind?.elf || 0) + (stats.data.by_kind?.pe || 0)).toLocaleString()} />
+          <StatTile label="Scripts" value={(stats.data.by_kind?.script || 0).toLocaleString()} />
         </div>
-      )}
+      ) : stats.failed ? (
+        <p className="text-[13px] text-paper-3" role="alert">
+          The totals could not be loaded ({stats.error}). The list below is unaffected.
+        </p>
+      ) : null}
 
-      {error && <ErrorBanner message={error} onRetry={refresh} />}
-      {statsError && !error && <ErrorBanner message={statsError} onRetry={refresh} />}
-      {detailError && (
+      {list.stale && <StaleNotice what="The payload list" error={list.error} loadedAt={list.loadedAt} onRetry={list.reload} />}
+      {requested && detail.failed && (
+        // "Try again" used to set the address to the value it already had,
+        // which changes nothing and so reloaded nothing.
         <ErrorBanner
           title="Could not open the linked sample"
-          message={detailError}
-          onRetry={() => setParam({ sha: requested }, true)}
+          message={detail.error}
+          onRetry={detail.reload}
         />
       )}
 
@@ -268,22 +238,37 @@ export default function Payloads() {
           onChange={(e) => setParam({ status: e.target.value, page: '' })}>
           {STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
         </select>
+        <label className="flex items-center gap-1.5">
+          <span className="text-[12px] text-paper-3">Order</span>
+          <select className="control" value={sort} aria-label="Order"
+            onChange={(e) => setParam({ sort: e.target.value, page: '' })}>
+            {SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </label>
         <span className="readout ml-auto text-xs text-paper-3">
-          {loading ? 'Searching…' : `${total.toLocaleString()} sample${total === 1 ? '' : 's'}`}
+          {list.loading
+            ? 'Searching…'
+            : list.failed
+              ? 'Not loaded'
+              : `${total.toLocaleString()} sample${total === 1 ? '' : 's'}`}
         </span>
       </div>
 
       <div className="grid min-h-[24rem] flex-1 gap-3 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,32rem)]">
-        <section className="panel flex min-h-0 flex-col overflow-hidden">
-          {loading ? (
+        <section className="panel flex min-h-0 flex-col overflow-hidden" aria-label="Samples">
+          {list.loading ? (
             <LoadingRegion label="Loading payloads" />
+          ) : list.failed ? (
+            <LoadFailure what="payloads" error={list.error} onRetry={list.reload} />
           ) : samples.length === 0 ? (
             <EmptyState
-              title="No payloads"
-              hint="Files uploaded through SSH, SFTP, SCP, FTP or HTTP are captured and analysed here."
+              title={filtered ? 'No payloads match' : 'No payloads yet'}
+              hint={filtered
+                ? 'Try another type, status or search.'
+                : 'Files uploaded through SSH, SFTP, SCP, FTP or HTTP are captured and analysed here.'}
             />
           ) : (
-            <ul className="min-h-0 flex-1 divide-y divide-line overflow-y-auto">
+            <ul className={`min-h-0 flex-1 divide-y divide-line overflow-y-auto ${list.stale ? 'is-stale' : ''}`}>
               {samples.map((sample) => (
                 <PayloadRow
                   key={sample.sha256}
@@ -294,7 +279,7 @@ export default function Payloads() {
               ))}
             </ul>
           )}
-          {totalPages > 1 && (
+          {totalPages > 1 && !list.loading && !list.failed && (
             <div className="flex items-center justify-between border-t border-line px-3 py-2">
               <button className="control" disabled={page <= 1}
                 onClick={() => setParam({ page: page - 1 })}>Previous</button>
@@ -306,30 +291,30 @@ export default function Payloads() {
         </section>
 
         {!narrow && (
-        <aside className="panel min-h-0 overflow-hidden">
-          {detailLoading && !detail ? (
-            <LoadingRegion label="Loading analysis" />
-          ) : detail ? (
-            <PayloadDetail detail={detail} canDownload={hasRole('admin')} />
-          ) : (
-            <div className="flex h-full items-center justify-center px-6 py-16 text-center">
-              <p className="max-w-[16rem] text-[13px] leading-relaxed text-paper-3">
-                <ShieldAlert className="mx-auto mb-3 h-6 w-6 text-paper-3" strokeWidth={1.5} />
-                Select a sample to see what it is, what it can do, and every session it arrived in.
-              </p>
-            </div>
-          )}
-        </aside>
+          <aside className="panel min-h-0 overflow-hidden" aria-label="Sample analysis">
+            {requested && detail.loading ? (
+              <LoadingRegion label="Loading analysis" />
+            ) : detail.data ? (
+              <PayloadDetail detail={detail.data} canDownload={hasRole('admin')} />
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 py-16 text-center">
+                <p className="max-w-[16rem] text-[13px] leading-relaxed text-paper-3">
+                  <ShieldAlert className="mx-auto mb-3 h-6 w-6 text-paper-3" strokeWidth={1.5} />
+                  Select a sample to see what it is, what it can do, and every session it arrived in.
+                </p>
+              </div>
+            )}
+          </aside>
         )}
       </div>
 
-      {/* Mobile detail: a sheet, since there is no room beside the list. */}
-      {narrow && requested && detail && (
-        <div className="fixed inset-0 z-50 flex items-end bg-ink-0/85 lg:hidden" onClick={() => setParam({ sha: '' }, true)} role="presentation">
-          <div className="panel max-h-[88vh] w-full overflow-y-auto rounded-b-none" onClick={(e) => e.stopPropagation()}>
-            <PayloadDetail detail={detail} canDownload={hasRole('admin')} onClose={() => setParam({ sha: '' }, true)} />
-          </div>
-        </div>
+      {/* Narrow screens: a modal sheet, since there is no room beside the
+          list. A real dialog, so focus stays inside it and Escape closes it;
+          it used to be a plain div over the page. */}
+      {narrow && requested && detail.data && (
+        <Dialog label="Sample analysis" onClose={closeDetail}>
+          <PayloadDetail detail={detail.data} canDownload={hasRole('admin')} onClose={closeDetail} />
+        </Dialog>
       )}
     </div>
   )
