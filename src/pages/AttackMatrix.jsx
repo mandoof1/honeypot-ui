@@ -26,10 +26,10 @@ import { fromInputValue, toInputValue } from '../lib/time'
  * shaded by how many sessions showed them. The count is printed in every
  * cell, so the shading is a second reading, never the only one.
  *
- * The matrix takes the same filters as the session list. The session list
- * itself cannot be filtered by technique, so opening a cell looks through
- * the newest matching sessions for the ones that carry it and says how far
- * it looked.
+ * The matrix takes the same filters as the session list. Opening a cell asks
+ * the session list for the sessions carrying that technique, newest first,
+ * and leaves out the ones where the decision model could not confirm it —
+ * the matrix does not count those either. It says how far it looked.
  */
 
 const REFRESH_MS = 60000
@@ -37,7 +37,7 @@ const FILTER_KEYS = ['protocol', 'exclude_scanners', 'date_from', 'date_to']
 const SCAN_PAGE_SIZE = 100
 const SCAN_MAX_PAGES = 5
 
-/** The sessions that show one technique, found by reading the newest matching sessions. */
+/** The sessions that show one technique, newest first, read a page at a time. */
 function TechniqueSessions({ technique, tactic, filters, onClose }) {
   const [state, setState] = useState({ rows: [], scanned: 0, total: null, done: false, error: null })
 
@@ -50,7 +50,7 @@ function TechniqueSessions({ technique, tactic, filters, onClose }) {
       try {
         for (let page = 1; page <= SCAN_MAX_PAGES; page += 1) {
           const data = await api.sessions.list(
-            { ...filters, page, page_size: SCAN_PAGE_SIZE },
+            { ...filters, technique: technique.id, page, page_size: SCAN_PAGE_SIZE },
             { signal: controller.signal },
           )
           const batch = data.sessions || []

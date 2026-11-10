@@ -145,6 +145,8 @@ test('the ATT&CK matrix shades techniques by count and opens the sessions behind
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('The matrix counts 9 sessions')
   await expect(dialog).toContainText('Found 1 in the newest 2 of 2 matching sessions.')
+  // The session list is asked for this technique, not scanned for it.
+  expect(api.calls.some((c) => c.path === '/sessions/' && c.params.get('technique') === 'T1059.004')).toBe(true)
   await expect(dialog.getByRole('link', { name: /203\.0\.113\.7/ })).toHaveAttribute('href', '/sessions?protocol=ssh&session=1')
   await expect(dialog.getByRole('link', { name: /198\.51\.100\.20/ })).toHaveCount(0)
   await dialog.getByRole('link', { name: /203\.0\.113\.7/ }).click()
