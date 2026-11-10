@@ -189,11 +189,15 @@ def create_app(role: Optional[str] = None) -> FastAPI:
     if role not in ("full", "ingest"):
         raise RuntimeError(f"API_ROLE must be 'full' or 'ingest', not {role!r}")
 
+    # The interactive documentation is part of what a person uses; the ingest
+    # service serves the engine routes and the health check and nothing else.
+    docs = {} if role == "full" else {"docs_url": None, "redoc_url": None, "openapi_url": None}
     application = FastAPI(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
         description="AI-Integrated Honeypot System - HoneySentinel",
         lifespan=_make_lifespan(role),
+        **docs,
     )
     application.state.api_role = role
 

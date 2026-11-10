@@ -1,23 +1,46 @@
 from fastapi import APIRouter
+from fastapi.routing import APIRoute
+
 from app.api import auth, sessions, alerts, dashboard, nodes, export, settings, honeypot, iocs, payloads, audit
 
-router = APIRouter()
-
-router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-router.include_router(sessions.router, prefix="/sessions", tags=["Sessions"])
-router.include_router(alerts.router, prefix="/alerts", tags=["Alerts"])
-router.include_router(iocs.router, prefix="/iocs", tags=["Indicators"])
-router.include_router(payloads.router, prefix="/payloads", tags=["Payloads"])
-router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
-router.include_router(nodes.router, prefix="/nodes", tags=["Honeypot Nodes"])
-router.include_router(export.router, prefix="/export", tags=["Export"])
-router.include_router(settings.router, prefix="/settings", tags=["Settings"])
-router.include_router(honeypot.router, prefix="/honeypot", tags=["Honeypot Engine"])
-router.include_router(audit.router, prefix="/audit-logs", tags=["Audit"])
+#: Every router, where it is mounted, and its tag.
+_MOUNTS = [
+    (auth.router, "/auth", "Authentication"),
+    (sessions.router, "/sessions", "Sessions"),
+    (alerts.router, "/alerts", "Alerts"),
+    (iocs.router, "/iocs", "Indicators"),
+    (payloads.router, "/payloads", "Payloads"),
+    (dashboard.router, "/dashboard", "Dashboard"),
+    (nodes.router, "/nodes", "Honeypot Nodes"),
+    (export.router, "/export", "Export"),
+    (settings.router, "/settings", "Settings"),
+    (honeypot.router, "/honeypot", "Honeypot Engine"),
+    (audit.router, "/audit-logs", "Audit"),
+]
 
 #: Suffix that marks a route as engine-facing: authenticated with an engine
 #: token rather than a user session, and the only kind the ingest role serves.
 INTERNAL_SUFFIX = "-internal"
+
+
+def _engine_routes_only(source: APIRouter) -> APIRouter:
+    """A copy of ``source`` holding just its ``-internal`` routes."""
+    internal = APIRouter()
+    for route in source.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.path.rstrip("/").endswith(INTERNAL_SUFFIX):
+            continue
+        internal.add_api_route(
+            route.path,
+            route.endpoint,
+            methods=sorted(route.methods or []),
+            response_model=route.response_model,
+            status_code=route.status_code,
+            dependencies=list(route.dependencies),
+            name=route.name,
+        )
+    return internal
 
 
 def build_router(role: str = "full") -> APIRouter:
@@ -29,12 +52,14 @@ def build_router(role: str = "full") -> APIRouter:
     a person uses, sign-in included, is simply not there, so a foothold on
     the engine network cannot reach it through that service.
     """
-    if role != "ingest":
-        return router
+    api = APIRouter()
+    for source, prefix, tag in _MOUNTS:
+        if role == "ingest":
+            source = _engine_routes_only(source)
+            if not source.routes:
+                continue
+        api.include_router(source, prefix=prefix, tags=[tag])
+    return api
 
-    internal = APIRouter()
-    for route in router.routes:
-        path = getattr(route, "path", "")
-        if path.rstrip("/").endswith(INTERNAL_SUFFIX):
-            internal.routes.append(route)
-    return internal
+
+router = build_router("full")
