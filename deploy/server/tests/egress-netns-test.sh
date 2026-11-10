@@ -273,12 +273,15 @@ fi
 
 echo "==> check, tampering and watch"
 check() {          # check <want status> <what>
-  local want=$1 what=$2 got=0
-  run_egress check >/dev/null 2>&1 || got=$?
+  local want=$1 what=$2 got=0 said
+  said=$(run_egress check 2>&1) || got=$?
   if [[ $got -eq $want ]]; then
     PASSED=$((PASSED + 1)); printf '  ok    %s\n' "$what"
   else
     FAILED=$((FAILED + 1)); printf '  FAIL  %s (check exited %s, wanted %s)\n' "$what" "$got" "$want"
+    # The reason is the whole point of a failed check; without it a failure
+    # on another kernel or nft release cannot be told apart from a real one.
+    printf '        check said: %s\n' "$said"
   fi
 }
 check 0 "check passes on freshly applied rules"
