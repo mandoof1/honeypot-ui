@@ -42,42 +42,42 @@ node that captured them, so you can filter and compare by node.
 
 ## Adding a node
 
-### 1. Provision a host
+An additional node is a remote sensor: the kit in
+[`deploy/node/`](deploy/node/README.md), which has the full runbook and a
+pre-exposure checklist. (An earlier version of this guide had you copy the
+repository-root `.env.example` and run `docker compose up honeypot` from the
+root; that starts the development stack, with its own backend and database,
+and is not how a node is added.) In outline:
 
-Any small VPS. The host needs Docker and inbound access on the ports you
-intend to expose.
+### 1. On the server: an endpoint and a token
 
-### 2. Configure
-
-```bash
-git clone https://github.com/mandoof1/honeypot-ui.git
-cd honeypot-ui
-cp .env.example .env
-```
-
-```env
-BACKEND_API_URL=https://your-api.example.com/api/v1
-
-# Must be byte-identical to the backend's value.
-HONEYPOT_INGEST_TOKEN=<shared token>
-
-# Distinct per node — this is what the node is called in the dashboard.
-HONEYPOT_NODE_NAME=edge-frankfurt-01
-
-# Only the protocols this node should emulate.
-HONEYPOT_PROTOCOLS=ssh,http
-
-HONEYPOT_OPERATIONAL_MODE=active
-HONEYPOT_ENABLE_ISOLATION=true
-```
-
-`HONEYPOT_NODE_NAME` is the identity key. Two engines sharing a name will
-re-register as the *same* node and their sessions will be merged.
-
-### 3. Start
+Publish the ingest service on a private overlay address
+(`deploy/server/docker-compose.remote-sensors.example.yml`), then issue a
+token for the new node:
 
 ```bash
-docker compose up -d --build honeypot
+sudo python3 deploy/server/node_tokens.py add edge-frankfurt-01   # shown once
+docker compose up -d backend ingest
+```
+
+The token is bound to that node name. The node name is the identity key:
+the backend accepts the token for `edge-frankfurt-01` only (403 for any
+other name), so one sensor's token cannot write another node's sessions.
+
+### 2. On the sensor: configure and prepare
+
+```bash
+sudo git clone https://github.com/mandoof1/honeypot-ui.git /opt/honeysentinel
+cd /opt/honeysentinel/deploy/node
+sudo cp .env.example .env      # node name, token, the server's overlay address
+sudo bash bootstrap.sh         # firewall with one permitted destination; moves sshd
+```
+
+### 3. Start, and test the containment
+
+```bash
+docker compose up -d --build
+sudo bash ../server/honeysentinel-egress.sh probe
 ```
 
 Confirm registration:
@@ -121,9 +121,16 @@ your own tooling — POST to the internal ingest endpoint.
 
 ```http
 POST /api/v1/sessions/ingest-internal?node_id=1
-X-Honeypot-Token: <shared token>
+X-Honeypot-Token: <the token issued for that node>
 Content-Type: application/json
 ```
+
+Issue the collector its own node name and token (`node_tokens.py add`), as
+for a sensor, and send to the ingest service, not the dashboard API: on the
+self-hosted deployment only the ingest service serves this route to anything
+outside the dashboard, and it is reachable on the overlay address only.
+Data from another honeypot is recorded as that node's and should be named so
+that it is never mistaken for this engine's captures.
 
 ```json
 {
@@ -217,7 +224,11 @@ tool name.
 
 ### Real-time webhook
 
-Set `WEBHOOK_URL` and every high/critical alert is POSTed as it is raised:
+Set `WEBHOOK_URL` and every high/critical alert is POSTed as it is raised.
+This needs a backend that can open outbound connections; on the self-hosted
+deployment no container can, so nothing is sent there. Pull the export above
+or the indicator feed (`GET /api/v1/iocs/feed`, with `IOC_FEED_TOKEN`)
+instead.
 
 ```json
 {
@@ -270,10 +281,14 @@ curl -X PATCH https://your-api.example.com/api/v1/auth/users/7/role \
 
 ## Operational checklist
 
-- [ ] `HONEYPOT_INGEST_TOKEN` identical on backend and every engine
-- [ ] Unique `HONEYPOT_NODE_NAME` per node
-- [ ] Control API (port 8000) reachable by the backend but **not** by the internet
-- [ ] Real SSH daemon moved off port 22 before redirecting it
+- [ ] Each node has its own name and its own token (`node_tokens.py add`);
+      no token is shared between nodes
+- [ ] The ingest endpoint is reachable from sensors over the overlay only
+- [ ] Each sensor's firewall allows one destination (`honeysentinel-egress.sh
+      check` and `probe` pass there)
+- [ ] Control API reachable by the backend only (local engines), or by
+      nothing (remote sensors); never by the internet
+- [ ] Real SSH daemon moved off port 22 before the decoy takes it
 - [ ] Node on a network with nothing valuable reachable from it
 - [ ] `ENVIRONMENT=production` and no placeholder secrets
 - [ ] Provider's acceptable-use policy checked
