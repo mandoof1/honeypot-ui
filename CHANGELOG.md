@@ -5,7 +5,7 @@
 The hardening pass before the system's first exposure to the internet. Up to
 this release it has recorded only the team's own controlled test traffic.
 
-Released 2026-11-10.
+Released 2026-11-11.
 
 **What was verified, and what was not.** The engine, backend and console
 test suites, the PostgreSQL-only tests, the migrations from an empty
