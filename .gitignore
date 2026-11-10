@@ -72,3 +72,6 @@ deploy/server/egress.conf
 # Browser test artifacts
 playwright-report/
 test-results/
+
+# Agent worktrees are local working copies, never part of the repository.
+.claude/worktrees/

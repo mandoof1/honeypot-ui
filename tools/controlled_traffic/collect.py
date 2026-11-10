@@ -84,6 +84,11 @@ def main() -> None:
     with (args.out / "sessions.jsonl").open("w", encoding="utf-8") as sessions, \
             (args.out / "labels.jsonl").open("w", encoding="utf-8") as labels:
         for session, window in labelled:
+            # Where this machine kept an uploaded file says nothing about the
+            # session and would not exist anywhere else.
+            for upload in session.get("files_uploaded") or []:
+                if isinstance(upload, dict):
+                    upload.pop("stored_path", None)
             sessions.write(json.dumps(session) + "\n")
             labels.write(json.dumps({
                 "session_id": session["session_id"],

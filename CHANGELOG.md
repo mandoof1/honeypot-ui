@@ -227,6 +227,14 @@ depth were not examined.
   Telnet. No comparison against real daemons has been run yet.
 - `tools/controlled_traffic`: produces labelled, controlled test traffic
   against a throwaway engine on loopback, for `eval_pipeline`.
+- A first controlled check of the pipeline with it is recorded in
+  `docs/evaluation/controlled/`: on about ninety labelled sessions of the
+  team's own test traffic the rule layer stored 62% under their label; the
+  three gaps that exposed (a guessed login, sensitive-path probes, a
+  Shellshock header) were fixed, and a second run with a different seed
+  gave 79%. The rest are mostly scan probes, which one session at a time
+  cannot be told from an empty connection. It also showed that an SSH banner
+  grab leaves no record at all, which is open.
 
 ### Documentation
 

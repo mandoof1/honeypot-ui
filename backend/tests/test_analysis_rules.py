@@ -539,3 +539,11 @@ class TestGapsFoundByControlledTraffic:
         assert "web:shellshock" in keys(result)
         assert category([line], "http").category == "exploitation"
         assert "T1190" in {t["id"] for t in mitre_mapper.map_evidence(result["evidence"])["techniques"]}
+
+    def test_a_command_after_a_semicolon_in_a_parameter_is_injection(self):
+        """Left as reconnaissance in the second controlled run: only the
+        traversal signature saw `;cat /etc/passwd`."""
+        line = "GET /ping?host=127.0.0.1;cat%20/etc/passwd  [ua: python-requests/2.31.0]"
+        assert "web:command_injection" in keys(analyse([line], "http"))
+        assert category([line], "http").category == "exploitation"
+        assert "web:command_injection" not in keys(analyse(["GET /a;b/list  [ua: Mozilla/5.0]"], "http"))

@@ -339,3 +339,13 @@ doi:10.5220/0006639801080116.
 [2] G. Engelen, V. Rimmer and W. Joosen, "Troubleshooting an Intrusion
 Detection Dataset: the CICIDS2017 Case Study," in *2021 IEEE Security and
 Privacy Workshops (SPW)*, 2021, pp. 7–12.
+
+## Controlled pipeline check (November 2026)
+
+The first measurement of the pipeline on labelled sessions is in
+[controlled/](controlled/README.md): two runs of the team's own controlled
+test traffic, about ninety sessions each, labelled by the scenario that
+produced them. The rule layer stored 62% of the sessions of the first run
+under their label; three rule gaps that run exposed were fixed, and on a
+second, freshly generated run it stored 79%. Both figures describe those
+scenarios only. No traffic from real attackers has been evaluated.

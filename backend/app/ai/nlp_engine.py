@@ -52,7 +52,8 @@ WEB_ATTACK_SIGNATURES = {
     "path_traversal": r"(?:\.\./\.\.|\.\.%2f|\.\.\\|/etc/passwd|/etc/shadow|%2fetc%2f|\.\.%252f)",
     "log4shell": r"(?:\$\{jndi:|%24%7bjndi|\$\{\$\{|\$\{(?:lower|upper|env|sys|date):)",
     "command_injection": (
-        r"(?:;\s?(?:id|whoami|uname)\b|\|\s?(?:bash|sh)\b|\$\([^)\n]{1,200}\)|/dev/tcp/|%60|`[^`\n]{1,80}`)"
+        r"(?:;\s?(?:id|whoami|uname|cat|ls|wget|curl|nc|bash|sh)\b|\|\s?(?:bash|sh)\b"
+        r"|\$\([^)\n]{1,200}\)|/dev/tcp/|%60|`[^`\n]{1,80}`)"
     ),
     "lfi_rfi": r"(?:php://(?:filter|input)|data://text|expect://|/proc/self/environ)",
     "webshell": r"(?:<\?php|eval\(\$_(?:get|post|request|server)|system\(\$_|passthru\(|assert\(\$_|\bcmd=|shell_exec\()",
