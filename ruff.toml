@@ -1,0 +1,21 @@
+# Python lint for CI: `ruff check .`
+#
+# Deliberately small. These rules flag code that is wrong whatever the style:
+# syntax errors, undefined names, comparisons that cannot mean what they say,
+# statements outside the block they need. The existing code passes all of
+# them, so the job blocks merges from the first day. Style rules (unused
+# imports, line length, import order) are not enabled: turning them on means
+# a formatting pass over the whole codebase, which is a change of its own.
+
+target-version = "py312"
+extend-exclude = ["node_modules", "dist", "backend/alembic/versions"]
+
+[lint]
+select = [
+    "E9",    # syntax and indentation errors
+    "F63",   # invalid comparisons and assertions (`is` with a literal, assert on a tuple)
+    "F7",    # break/continue/return/yield outside their block
+    "F82",   # undefined names
+]
+# Next to enable: F811 (a name redefined before use). One existing
+# occurrence, in backend/app/seed.py, has to be removed first.
