@@ -8,7 +8,7 @@
 # they stay on tags here. `scripts/pin-images.sh --write` resolves both to
 # digests on a machine that can pull them; run it before a release build.
 
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 # package-lock.json carries an integrity hash for every package; npm ci
