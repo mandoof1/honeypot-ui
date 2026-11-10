@@ -1,0 +1,23 @@
+# Build context for backend/Dockerfile, which copies the whole directory.
+
+# Secrets and local state must never be baked into an image.
+.env
+.env.*
+data/
+models/
+*.pkl
+*.mmdb
+*.gguf
+
+# Not needed at runtime.
+tests/
+requirements-test.txt
+pytest.ini
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+Dockerfile
+.dockerignore

@@ -3,6 +3,11 @@
 # state/models, pinned to one revision and checked against its SHA-256.
 #
 #   bash deploy/server/fetch-decider.sh && bash deploy/server/install.sh
+#   bash deploy/server/fetch-decider.sh --sha256    # print the pinned checksum
+#
+# The checksum is the one Hugging Face records for the file at that revision
+# (its LFS object id), so it is the publisher's, not merely one observed here.
+# install.sh compares the file with it before it enables the decider service.
 #
 # Runs on the host: the containers have no internet access, by design.
 set -euo pipefail
@@ -11,6 +16,11 @@ REPO=ggml-org/Kev-4B-GGUF
 REVISION=d924f2e2c3872da8b8aaf3eb4453b4126deceb79
 FILE=Kev-4B-Q8_0.gguf
 SHA256=7c2ebed90560522c2801389db482ac1dc4c36d828f201f6074c1d60e433948da
+
+if [[ "${1:-}" == --sha256 ]]; then
+  echo "$SHA256"
+  exit 0
+fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 dest="$HERE/state/models/$FILE"

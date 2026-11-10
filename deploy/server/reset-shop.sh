@@ -48,6 +48,7 @@ reset() {  # reset <service> <name>: keep the data, regenerate it, restart
   docker compose stop "$1"
   # Whatever happens below, the shop comes back up. If the generator failed
   # part-way, the shop seeds an empty database itself on start.
+  # shellcheck disable=SC2064  # $1 is meant to expand now: the trap outlives this function's arguments
   trap "docker compose start $1 >/dev/null" EXIT
   docker cp "$(docker compose ps -aq "$1")":/app/data - | keep "$2"
   docker compose run --rm --no-deps -T "$1" node server/seed.js

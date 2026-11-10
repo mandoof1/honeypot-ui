@@ -1,0 +1,40 @@
+# Build context for the images built from the repository root:
+# honeypot/Dockerfile, deploy/server/Dockerfile.web and Dockerfile.frontend.
+# (backend/ has its own.)
+
+# Secrets and local state must never be baked into an image.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+deploy/**/state/
+data/
+models/
+*.gguf
+*.mmdb
+*.pkl
+
+# Version control, CI, and what no image here uses.
+.git/
+.github/
+backend/
+docs/
+tests/
+test-results/
+playwright-report/
+
+# Tests and caches of the code that is copied.
+honeypot/tests/
+honeypot/requirements-test.txt
+honeypot/pytest.ini
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+.venv/
+venv/
+
+# Installed and built inside the image.
+node_modules/
+dist/

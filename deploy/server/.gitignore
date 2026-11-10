@@ -1,4 +1,8 @@
 .env
+# Copies of it. restore.sh used to leave .env.before-restore-<time> here.
+.env.*
 state/
 # Site-specific; see docker-compose.override.example.yml.
 docker-compose.override.yml
+# Site-specific firewall allowances (honeysentinel-egress.sh).
+egress.conf

@@ -41,14 +41,21 @@
 └──────────────────────────────────────────────┘
 ```
 
-The engine reaches the backend only over an **internal** Docker network.
+In the self-hosted deployment an engine shares a network with exactly two
+things: the `ingest` service (the API image started with `API_ROLE=ingest`,
+which serves only the engine-facing `*-internal` routes) and, on a separate
+control network, the backend, which can call the engine but cannot be called
+by it. Each engine has its own ingest token, valid for its node name only.
+
 Docker refuses to publish ports for a container whose only network is
-internal, so the decoy ports sit on a second bridge. On that bridge,
-`deploy/server/honeysentinel-egress.sh` (a systemd unit that runs before
-Docker) lets replies to inbound connections through and drops every connection
-the engine tries to open. A process that escaped an emulator would have no way
-out, and the engine's isolation check verifies this by attempting connections
-outward rather than reading the routing table.
+internal, so the decoy ports sit on a further, ordinary bridge. The host
+firewall (`deploy/server/honeysentinel-egress.sh`, loaded before Docker
+starts and re-checked every five minutes) covers every bridge of the
+deployment: a container may answer connections and may not open one to the
+host or to another network, and inside a bridge only the listed pairs may
+talk. The engine's isolation check verifies this from the inside by
+attempting connections, and repeats it periodically. The
+[threat model](THREAT_MODEL.md) goes through what that leaves an attacker.
 
 ---
 
@@ -62,9 +69,9 @@ Each ingested session runs through, in order:
 | Classification | Random Forest over 12 flow features the engine measures at its sockets, trained on CIC-IDS2017 ([results](evaluation/README.md)) | benign / reconnaissance / exploitation / exfiltration |
 | De-obfuscation | Recursive base64 / hex / escape / URL decoding, depth- and size-bounded | decoded layers, merged into the text everything below matches against |
 | Command NLP | Regex tool + intent signatures, optional spaCy NER | tool names, intents, extracted IPs/URLs |
-| Anomaly detection | Isolation Forest over 11 behavioural features | anomaly score, outlier flag |
+| Anomaly detection | Isolation Forest over 11 behavioural features. **A synthetic bootstrap** until it is fitted on captured sessions | anomaly score, outlier flag |
 | Attacker profiling | Weighted indicator scorecard | automated bot / script kiddie / skilled / APT |
-| Behavioural clustering | Mini-batch k-means over 10 behavioural features | cluster id, centroid distance, outlier flag |
+| Behavioural clustering | Mini-batch k-means over 10 behavioural features. Needs 50 or more captured sessions; **never yet fitted on the deployment** | cluster id, centroid distance, outlier flag |
 | ATT&CK mapping | Tool + intent → technique lookup | tactic IDs and technique objects |
 | Severity | Composite score over the above, then matched against the configured alert thresholds | low / medium / high / critical, and whether to alert |
 
@@ -87,10 +94,11 @@ commands. Logins from web forms and HTTP Basic auth join the captured
 credentials. An FTP `PASS` argument is masked in the transcript, because
 credentials are admin-only and the transcript is not.
 
-The synchronous path takes 16 ms of model time per session (forest 9.6 ms,
-isolation forest 2.8 ms, NLP 3.6 ms). The whole span to a stored verdict is
-about 33 ms at nominal load and stays within 200 ms up to 10 concurrent
-sessions on the reference host; see [evaluation](evaluation/README.md).
+The whole synchronous span, from session end to a stored verdict, was about
+33 ms at nominal load and stayed within 200 ms up to 10 concurrent sessions
+on the reference host, measured with the team's own test traffic; see
+[evaluation](evaluation/README.md). The only per-stage timing with an
+evidence file is the forest's single prediction, 9.1 ms at the median.
 
 **Two stages run asynchronously**, after the response has been returned, for
 the same reason: NFR-2 budgets 200 ms for classification, so anything slower
@@ -100,14 +108,17 @@ depth of analysis, never the capture.
 - **Semantic analysis (Chimera).** If `CHIMERA_URL` points at a local endpoint
   serving the project's fine-tuned model, it reads the stored transcript and
   returns intent, objectives, ATT&CK techniques and indicators, merged onto the
-  session. A 14B model answers in seconds, two orders of magnitude over the
-  budget, which is why it is out of band.
+  session. On the reference server's CPU one answer takes about two
+  minutes, several hundred times the budget, which is why it is out of band
+  and a queue.
 
 - **Triage (decision model).** If `DECIDER_URL` points at a llama.cpp server
   with a decision model (Kev-4B in production) loaded, every session the rules
   would send to the language model is first triaged by it: a distribution over
   the four categories, an expected severity on a 0–3 scale, and automated
-  versus human, read from the commands in one pass of a few seconds. Triage
+  versus human, read from the commands in one pass (a median of about 8 s on
+  shell transcripts and 16 s on long web sessions on the reference server).
+  Sessions the rules do not queue are not triaged by default. Triage
   decides whether the language model reads the session (it can skip one only
   when it is confident the session went no further than reconnaissance and the
   rules agree; with `DECIDER_TRIAGE_RULE_SKIPPED` it also reads the sessions
@@ -153,10 +164,13 @@ between CIC-IDS2017's packet-level records and what the engine's sockets see.
 Read it before quoting any figure.
 
 **Nothing has captured real internet traffic yet.** No honeypot node has
-been exposed to the internet, so:
+been exposed to the internet. Everything recorded so far is the team's own
+controlled test traffic, so:
 
-- the behavioural clusters are unfitted;
-- no session has passed through the semantic stage;
+- the behavioural clusters are unfitted and the anomaly detector is a
+  synthetic bootstrap;
+- the language and decision models have only read synthetic transcripts and
+  the team's own test sessions;
 - no real payload has been captured or analysed.
 
 The classifier's metrics are empirical on its dataset. Everything the API
@@ -222,7 +236,7 @@ and an attacker who explores beyond the emulated commands will notice.
 | Multi-factor auth | TOTP (RFC 6238), enrolled from Settings with a locally drawn QR code; activation requires a valid code, recovery codes are single-use and shown once; sign-in asks for the code when the API answers `X-MFA-Required: totp` |
 | Database transport | TLS required outside development (`DATABASE_SSL` to override) |
 | Encryption at rest | AES-256-GCM, unique nonce per record, over captured commands, payloads, uploaded files and authenticator secrets |
-| Service-to-service | Shared `HONEYPOT_INGEST_TOKEN`, compared in constant time |
+| Service-to-service | One ingest token per engine, bound to its node name (`HONEYPOT_NODE_TOKENS`), and a separate control token for the backend's calls to the engines; compared in constant time. The ingest service mounts only the engine-facing routes (`API_ROLE=ingest`) |
 | Rate limiting | Per-IP via slowapi; 5/min register, 10/min login, 3/min OTP resend |
 | Secrets | The app **refuses to start** in a non-development environment if any secret is still a placeholder |
 | Transport | Security headers on every response; CORS restricted to configured origins |
@@ -234,62 +248,10 @@ and an attacker who explores beyond the emulated commands will notice.
 
 ## Configuration
 
-Every setting lives in `.env`; see `.env.example` for the annotated list. The
-ones that matter most:
-
-| Variable | Purpose |
-|---|---|
-| `ENVIRONMENT` | Anything other than `development` enforces real secrets |
-| `SECRET_KEY` | JWT signing key |
-| `ENCRYPTION_KEY` | Key material for encryption at rest |
-| `HONEYPOT_INGEST_TOKEN` | Shared between backend and engine — **must match** |
-| `CORS_ORIGINS` | Comma-separated allowed browser origins |
-| `TRUST_PROXY_HEADERS` | Enable only behind a trusted reverse proxy |
-| `GEOIP_DB_PATH` | MaxMind GeoLite2 or DB-IP City Lite database |
-| `SEED_ON_STARTUP` | Load the demo dataset into an empty database |
-| `RUN_MIGRATIONS_ON_STARTUP` | Disable to run `alembic upgrade head` as a release step |
-| `CHIMERA_URL` | Local OpenAI-compatible endpoint for semantic stage-2 analysis; unset disables it |
-| `PAYLOAD_ANALYSIS_ENABLED` | Reverse-engineer uploaded files in the detached stage (default on) |
-
-### Operations settings (backend)
-
-| Variable | Default | What it does |
-|---|---|---|
-| `BACKGROUND_WORKERS` | `false` | Run the enrichment worker, notification outbox, engine-liveness check and retention in this process. Exactly one process per deployment (the `backend` service). |
-| `CHIMERA_URL` / `CHIMERA_MODEL` / `CHIMERA_TIMEOUT` | unset / `chimera-14b-v2` / `300` | OpenAI-compatible endpoint for the stage-2 model, its name, and the per-call budget in seconds. Unset disables the stage. |
-| `CHIMERA_MAX_TOKENS` / `CHIMERA_MAX_TRANSCRIPT_CHARS` | `600` / `6000` | Answer length and how much transcript is sent. |
-| `DECIDER_URL` / `DECIDER_MODEL` / `DECIDER_TIMEOUT` | unset / `kev-4b` / `120` | llama.cpp server with a decision model (`/v1/systemone`), its name, and the per-call budget. Unset disables triage. |
-| `DECIDER_MAX_TRANSCRIPT_CHARS` | `3000` | Transcript the decision model reads; longer ones keep their start and end. Cost scales with this, not with the number of questions. |
-| `DECIDER_SKIP_THRESHOLD` / `DECIDER_ESCALATE_THRESHOLD` | `0.85` / `0.6` | Probability of "information gathering at most" needed to skip the language model (rules must agree); probability of an attempted compromise needed to send one the rules skipped. |
-| `DECIDER_TRIAGE_RULE_SKIPPED` | `false` | Also triage the sessions the rules skip (plain browsing, short benign FTP), so triage can escalate one. |
-| `DECIDER_SUPPORT_THRESHOLD` / `DECIDER_DROP_UNCONFIRMED` | `0.3` / `false` | Below this a language-model technique is marked unconfirmed; set the second to remove it instead. |
-| `DECIDER_FALLBACK_SECONDS` | `900` | How long a session waits on an unreachable decision model before the rules route it. |
-| `NODE_STALE_SECONDS` / `NODE_OFFLINE_ALERT_SECONDS` | `180` / `300` | When a node shows as offline, and when a system alert is raised for it. |
-| `NODE_DISK_ALERT_FRACTION` | `0.10` | Free-disk fraction on an engine below which a system alert is raised. |
-| `ALERT_DEDUP_WINDOW_MINUTES` | `60` | Repeats of one address at one category inside this window fold into the open alert. |
-| `ALERT_SUPPRESS_SCANNERS` | `true` | Sessions attributed to a research scanner never alert. |
-| `NOTIFICATION_MAX_ATTEMPTS` | `6` | Email/webhook delivery attempts before an outbox row is marked failed. |
-| `SESSION_RETENTION_DAYS` / `AUDIT_RETENTION_DAYS` / `OUTBOX_RETENTION_DAYS` | `0` / `365` / `30` | Hourly deletion of rows older than this; 0 keeps everything. |
-| `LOGIN_LOCKOUT_THRESHOLD` / `LOGIN_LOCKOUT_MINUTES` | `10` / `15` | Per-account lockout after repeated wrong passwords. |
-| `TRUSTED_PROXIES` | loopback + RFC1918 | Addresses skipped (right to left) when reading `X-Forwarded-For`; the first other address is the client. Only used with `TRUST_PROXY_HEADERS=true`. |
-
-### Telnet decoy
-
-`HONEYPOT_TELNET_PORT` (default `2323`, listed in `HONEYPOT_PROTOCOLS` as `telnet`). Answers option negotiation like telnetd (offers ECHO and SUPPRESS-GO-AHEAD, refuses the rest), runs the SSH decoy's login policy (weak credential or soft accept after three failures, every attempt recorded) and then the same shell dispatcher, so busybox probes, `wget`/`tftp` loaders and shell-written files are captured identically. Sessions carry `protocol: telnet`.
-
-### Engine limits and durability
-
-Set on the honeypot engine's environment. Bad numbers fall back to the default
-with a warning instead of stopping the engine.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `HONEYPOT_SPOOL_MAX_FILES` / `HONEYPOT_SPOOL_MAX_BYTES` | `5000` / 512 MiB | On-disk retry queue for sessions the backend could not take; replayed oldest first, de-duplicated by the engine's session id |
-| `HONEYPOT_HEARTBEAT_INTERVAL` | `60` | Seconds between status heartbeats to the backend |
-| `HONEYPOT_MAX_CONN_PER_IP` / `HONEYPOT_MAX_CONNECTIONS` | `5` / `500` | Concurrent connections per address and in total, enforced at accept |
-| `HONEYPOT_MAX_SESSION_SECONDS` | `1800` | Hard cap on a connection's lifetime |
-| `HONEYPOT_CONN_TIMEOUT` | unset | Idle timeout for all protocols (defaults: SSH 300 s, FTP 120 s, HTTP 60 s) |
-| `HONEYPOT_CAPTURE_RETENTION_DAYS` / `HONEYPOT_UPLOAD_RETENTION_DAYS` | `7` / `30` | Pruning of the engine's local session copies and captured upload bytes |
+Every setting, with its default and the component that reads it, is in the
+[configuration reference](CONFIGURATION.md). It is the only place settings
+are described; this document and the deployment guides name a setting and
+link there.
 
 Generate each secret separately:
 
@@ -302,54 +264,95 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ## API
 
 Interactive documentation at `/docs`. Authentication is `Authorization:
-Bearer <access_token>`.
+Bearer <access_token>`. In the Auth column, *any* is any signed-in user;
+*analyst* and *admin* are minimum roles; *engine token* is an engine's
+ingest token in `X-Honeypot-Token`.
+
+The `ingest` service (`API_ROLE=ingest`) serves only the routes ending in
+`-internal`, and `/health`.
+
+This table is generated from the source by `python3 scripts/list_routes.py`;
+regenerate it rather than editing it. Descriptions are the first line of each
+handler's docstring, or its name where it has none.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/v1/auth/register` | — | Register (viewer role, sends OTP) |
-| POST | `/api/v1/auth/verify-otp` | — | Verify email |
-| POST | `/api/v1/auth/login` | — | Obtain a token pair |
-| POST | `/api/v1/auth/refresh` | — | Exchange a refresh token |
-| POST | `/api/v1/auth/request-password-reset` | — | Request a reset code |
-| POST | `/api/v1/auth/reset-password` | — | Complete a reset |
-| GET | `/api/v1/auth/me` | any | Current user, including whether TOTP is enabled |
-| POST | `/api/v1/auth/mfa/enroll` | any | Issue an authenticator secret and its `otpauth://` URI |
-| POST | `/api/v1/auth/mfa/confirm` | any | Activate it with a valid code; returns recovery codes once |
-| POST | `/api/v1/auth/mfa/disable` | any | Turn it off; needs a current or recovery code |
-| GET | `/api/v1/auth/users` | admin | List users |
-| POST | `/api/v1/auth/users` | admin | Create a user with a role |
-| PATCH | `/api/v1/auth/users/{id}/role` | admin | Change a role |
-| GET | `/api/v1/dashboard/stats` | any | Aggregate statistics |
-| GET | `/api/v1/dashboard/live-events` | any | Recent sessions for the map |
-| GET | `/api/v1/sessions/` | any | List sessions (filter + paginate; `exclude_scanners` hides research scanners) |
-| GET | `/api/v1/sessions/{id}` | any | Session detail |
-| GET | `/api/v1/sessions/{id}/transcript` | any | Commands and what the honeypot appeared to reply |
-| GET | `/api/v1/sessions/{id}/credentials` | admin | Credentials tried — audit-logged on read |
-| POST | `/api/v1/sessions/{id}/export` | analyst | Export one session |
-| POST | `/api/v1/sessions/ingest` | analyst | Manual ingest |
-| POST | `/api/v1/sessions/ingest-internal` | token | Engine ingest |
 | GET | `/api/v1/alerts/` | any | List alerts |
-| GET | `/api/v1/alerts/stats` | any | Alert counts by status/severity |
-| PATCH | `/api/v1/alerts/{id}` | analyst | Triage an alert |
-| GET | `/api/v1/iocs/` | any | Indicators, grouped by value and ranked by how many sessions saw each |
-| GET | `/api/v1/iocs/session/{id}` | any | Indicators from one session |
-| GET | `/api/v1/iocs/feed` | any | Plain-text blocklist, one value per line |
-| GET | `/api/v1/payloads/` | any | Captured samples, unique by hash, filter + paginate |
-| GET | `/api/v1/payloads/stats` | any | Sample counts by kind and family |
-| GET | `/api/v1/payloads/{sha256}` | any | One sample's full analysis and the sessions it appeared in |
-| GET | `/api/v1/payloads/{sha256}/download` | admin | Raw sample bytes — audit-logged |
+| POST | `/api/v1/alerts/bulk` | analyst | Move several alerts to one status in a single request |
+| GET | `/api/v1/alerts/stats` | any | Alert stats |
+| GET | `/api/v1/alerts/{alert_id}` | any | Get alert |
+| PATCH | `/api/v1/alerts/{alert_id}` | analyst | Update alert |
+| GET | `/api/v1/audit-logs` | admin | Audit rows, newest first, with the acting user's email where known |
+| GET | `/api/v1/audit-logs/` | admin | Audit rows, newest first, with the acting user's email where known |
+| GET | `/api/v1/auth/capabilities` | none | What the sign-in pages can offer here. Public, and says nothing secret |
+| POST | `/api/v1/auth/change-password` | any | Change your own password; requires the current one |
+| POST | `/api/v1/auth/login` | none | Sign in. How failures are limited, since the answers are all alike: |
+| POST | `/api/v1/auth/logout` | none | Revoke a refresh token (and its family). Idempotent; no session needed |
+| POST | `/api/v1/auth/logout-all` | any | Sign out of every device: every refresh token revoked, every access token invalidated. The caller must sign in again too |
+| GET | `/api/v1/auth/me` | any | Get me |
+| POST | `/api/v1/auth/mfa/confirm` | any | Turn MFA on, once a working code proves the app is set up |
+| POST | `/api/v1/auth/mfa/disable` | any | Turn MFA off. Requires a current code, not just a session |
+| POST | `/api/v1/auth/mfa/enroll` | any | Begin enrolment: issue a secret and the QR payload for it |
+| POST | `/api/v1/auth/refresh` | none | Exchange a refresh token for a new token pair |
+| POST | `/api/v1/auth/register` | none | Self-service registration |
+| POST | `/api/v1/auth/request-password-reset` | none | Request password reset |
+| POST | `/api/v1/auth/resend-otp` | none | Resend otp |
+| POST | `/api/v1/auth/reset-password` | none | Reset password |
+| GET | `/api/v1/auth/users` | admin | List users |
+| POST | `/api/v1/auth/users` | admin | Admin-only account creation, including role assignment |
+| PATCH | `/api/v1/auth/users/{user_id}` | admin | Deactivate, reactivate or rename an account |
+| POST | `/api/v1/auth/users/{user_id}/reset-mfa` | admin | Remove a user's authenticator so they can sign in and enrol again |
+| POST | `/api/v1/auth/users/{user_id}/reset-password` | admin | Set a temporary password for a user, on a deployment without email |
+| PATCH | `/api/v1/auth/users/{user_id}/role` | admin | Update user role |
+| POST | `/api/v1/auth/verify-otp` | none | Verify otp |
+| GET | `/api/v1/dashboard/live-events` | any | The most recent sessions, as the feed shows them |
+| GET | `/api/v1/dashboard/stats` | any | Get dashboard stats |
+| GET | `/api/v1/dashboard/trends` | any | Sessions per UTC day over the last 7, 30 or 90 days, by category |
+| POST | `/api/v1/export/` | analyst | Export sessions |
+| POST | `/api/v1/export/reports` | analyst | Prepare investigation report |
+| GET | `/api/v1/export/reports/{report_id}` | analyst | Investigation status |
+| GET | `/api/v1/export/reports/{report_id}/download` | analyst | Download investigation report |
+| POST | `/api/v1/honeypot/block-ip` | analyst | Block ip |
+| GET | `/api/v1/honeypot/blocked-ips` | any | Get blocked ips |
+| GET | `/api/v1/honeypot/denied-connections` | any | Get denied connections |
+| PATCH | `/api/v1/honeypot/mode` | admin | Update mode |
+| GET | `/api/v1/honeypot/security-status` | any | Get security status |
+| GET | `/api/v1/honeypot/sessions/active` | any | Get active sessions |
+| GET | `/api/v1/honeypot/status` | any | Report live engine state, or say plainly that it is unreachable |
+| GET | `/api/v1/honeypot/threat-actors` | any | Get threat actors |
+| POST | `/api/v1/honeypot/unblock-ip` | admin | Unblock ip |
+| GET | `/api/v1/iocs/` | any | Indicators grouped by value, with how widely each has been seen |
+| GET | `/api/v1/iocs/feed` | any or feed token | A plain-text list, one indicator per line |
+| GET | `/api/v1/iocs/session/{session_id}` | any | Everything one session produced |
 | GET | `/api/v1/nodes/` | any | List nodes |
-| POST | `/api/v1/nodes/` | admin | Create a node |
-| POST | `/api/v1/nodes/register-internal` | token | Engine self-registration |
-| DELETE | `/api/v1/nodes/{id}` | admin | Delete a node |
-| POST | `/api/v1/export/` | analyst | Bulk export (CSV/JSON/CEF/STIX) |
-| GET | `/api/v1/settings/system` | any | Emulation mode and node summary |
-| PATCH | `/api/v1/settings/system` | admin | Save the mode and push it to the running engine (`engine_applied` says whether it arrived) |
-| GET | `/api/v1/settings/thresholds` | any | Alert thresholds |
-| POST/PATCH/DELETE | `/api/v1/settings/thresholds` | admin | Manage thresholds |
-| GET | `/api/v1/honeypot/status` | any | Live engine status |
-| PATCH | `/api/v1/honeypot/mode` | admin | Switch active/passive |
-| POST | `/api/v1/honeypot/block-ip` | analyst | Block an address |
+| POST | `/api/v1/nodes/` | admin | Create node |
+| POST | `/api/v1/nodes/heartbeat-internal` | engine token | The engine's periodic liveness report |
+| POST | `/api/v1/nodes/register-internal` | engine token | Register (or refresh) the calling honeypot engine as a node |
+| GET | `/api/v1/nodes/{node_id}` | any | Get node |
+| PATCH | `/api/v1/nodes/{node_id}` | admin | Update node |
+| DELETE | `/api/v1/nodes/{node_id}` | admin | Delete node |
+| GET | `/api/v1/payloads/` | any | Captured samples, newest first, with how widely each has been seen |
+| GET | `/api/v1/payloads/stats` | any | Counts by kind and by family, for the overview strip |
+| GET | `/api/v1/payloads/{sha256}` | any | One sample: its full analysis and every session it appeared in |
+| GET | `/api/v1/payloads/{sha256}/download` | admin | Download payload |
+| GET | `/api/v1/sessions/` | any | List sessions |
+| GET | `/api/v1/sessions/attacker/{ip}` | any | Everything recorded about one source address, aggregated |
+| POST | `/api/v1/sessions/ingest` | admin | Ingest session |
+| POST | `/api/v1/sessions/ingest-internal` | engine token | Ingest a session from the honeypot engine (service-to-service) |
+| GET | `/api/v1/sessions/uuid/{session_uuid}` | any | Get session by uuid |
+| GET | `/api/v1/sessions/{session_id}` | any | Get session |
+| GET | `/api/v1/sessions/{session_id}/credentials` | admin | Username/password pairs tried against the honeypot |
+| POST | `/api/v1/sessions/{session_id}/enrich` | analyst | Queue (or re-queue) a session for the language model, ahead of the backlog |
+| POST | `/api/v1/sessions/{session_id}/export` | analyst | Export session |
+| GET | `/api/v1/sessions/{session_id}/transcript` | analyst | The commands the attacker ran and what the honeypot appeared to reply |
+| GET | `/api/v1/settings/system` | any | Get system config |
+| PATCH | `/api/v1/settings/system` | admin | Update system config |
+| GET | `/api/v1/settings/thresholds` | any | List thresholds |
+| POST | `/api/v1/settings/thresholds` | admin | Create threshold |
+| PATCH | `/api/v1/settings/thresholds/{threshold_id}` | admin | Update threshold |
+| DELETE | `/api/v1/settings/thresholds/{threshold_id}` | admin | Delete threshold |
+
+74 routes.
 
 ---
 
@@ -366,18 +369,23 @@ backend/          FastAPI application
   ml/             classifier training, tuning + evaluation, cluster fitting
   tests/          pytest suite
 honeypot/         standalone capture engine (minimal dependencies)
-  emulators/      SSH (real transport), FTP, HTTP/HTTPS
+  emulators/      SSH (real transport), Telnet, FTP, HTTP/HTTPS
   capture/        shell-write interpreter, SFTP/SCP endpoint, HTTP upload parsing,
                   socket-level flow meter
   core/           config, session manager, response modes, control API, TLS
-  security/       rate limiting, egress filtering, isolation verification
+  security/       rate limiting, diversion to a decoy site, isolation verification
+                  (it checks containment; the host firewall enforces it)
   adaptive/       banner rotation, actor profiling
 src/              React dashboard
 deploy/server/    the whole stack on one machine: install, egress firewall, backups,
-                  training, controlled and load tests
-deploy/node/      standalone engine deployment for a remote VM
-docs/evaluation/  classifier metrics and NFR-2 load-test results
-scripts/          GeoLite2 fetch
+                  host heartbeat, training, controlled and load tests
+deploy/node/      hardened sensor kit: one engine on a public VPS
+deploy/cowrie-baseline/  a stock Cowrie beside the engine, for comparison
+deploy/legacy/    the old Render and Vercel files, unmaintained
+docs/             threat model, data handling, exposure runbook, evaluation
+                  plan, configuration reference
+docs/evaluation/  measurements so far, with the raw JSON
+scripts/          lock files, image pinning, address-plan check, route table
 ```
 
 ---
@@ -390,8 +398,8 @@ scripts/          GeoLite2 fetch
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2 (async), Pydantic v2 |
 | AI/ML | scikit-learn, spaCy, optional local LLM over an OpenAI-compatible endpoint |
 | Database | PostgreSQL 16, Alembic migrations |
-| Auth | JWT (python-jose), PBKDF2-HMAC-SHA256, slowapi |
-| Engine | asyncio — `asyncssh` for the SSH transport, `httpx`, `cryptography` |
+| Auth | JWT (PyJWT), PBKDF2-HMAC-SHA256, slowapi |
+| Engine | asyncio — `asyncssh` for the SSH transport, `httpx`, `cryptography`, `regex` |
 
 ---
 
