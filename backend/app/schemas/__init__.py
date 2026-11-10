@@ -239,6 +239,10 @@ class SessionEnrichment(BaseModel):
     #: the techniques it removed (only with DECIDER_DROP_UNCONFIRMED).
     checked_by: Optional[str] = None
     dropped_techniques: List[MitreTechnique] = []
+    #: Techniques the model named that are not in the ATT&CK catalog. Shown as
+    #: unverified, never counted and never linked. Free-form on purpose: the
+    #: model may have given a name with no usable id.
+    unverified_techniques: List[Dict[str, Any]] = []
 
     class Config:
         from_attributes = True

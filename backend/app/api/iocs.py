@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import Request, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import String, cast, desc, func, select
+from sqlalchemy import String, cast, desc, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -107,6 +107,8 @@ async def list_iocs(
         )
     ).all()
 
+    tags = await _tags_for(db, [(r.ioc_type, r.value) for r in rows])
+
     return {
         "indicators": [
             {
@@ -116,6 +118,10 @@ async def list_iocs(
                 "confidence": r.confidence,
                 "first_seen": r.first_seen,
                 "last_seen": r.last_seen,
+                # Every tag any occurrence carries. An `ip` row tagged
+                # `attacker_ip` is a source address; one tagged only `c2_host`
+                # is a machine a dropper reached for, and has no profile page.
+                "tags": tags.get((r.ioc_type, r.value), []),
             }
             for r in rows
         ],
@@ -123,6 +129,31 @@ async def list_iocs(
         "page": page,
         "page_size": page_size,
     }
+
+
+async def _tags_for(db: AsyncSession, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], list[str]]:
+    """The union of tags over every stored occurrence of each (type, value).
+
+    One query for the page rather than a JSON aggregate in SQL, which
+    PostgreSQL and SQLite spell differently. A page is at most MAX_PAGE_SIZE
+    pairs.
+    """
+    if not pairs:
+        return {}
+    found = await db.execute(
+        select(
+            IndicatorOfCompromise.ioc_type,
+            IndicatorOfCompromise.value,
+            IndicatorOfCompromise.tags,
+        ).where(
+            tuple_(IndicatorOfCompromise.ioc_type, IndicatorOfCompromise.value).in_(pairs)
+        )
+    )
+    merged: dict[tuple[str, str], set[str]] = {}
+    for ioc_type, value, row_tags in found:
+        if isinstance(row_tags, list):
+            merged.setdefault((ioc_type, value), set()).update(str(t) for t in row_tags)
+    return {key: sorted(values) for key, values in merged.items()}
 
 
 @router.get("/session/{session_id}", response_model=list[IndicatorOfCompromiseResponse])
