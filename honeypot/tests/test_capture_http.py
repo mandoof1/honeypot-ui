@@ -147,3 +147,46 @@ async def test_put_is_captured_over_the_wire(http_honeypot):
     payload = await asyncio.wait_for(ingested.get(), timeout=10)
     assert base64.b64decode(payload["uploads"][0]["content_b64"]) == jsp
     assert payload["uploads"][0]["source"] == "http_put"
+
+
+class TestHostileHeaders:
+    """The header split was quadratic: 70-280 ms for each of these values,
+    on the event loop, up to thirty-three times per request."""
+
+    @pytest.mark.parametrize("value", [
+        "form-data" + ";" * 8000,
+        "form-data" + ';"' * 4000,
+        "a" + ";" * 8000 + '"',
+        "x" + ';""' * 2700,
+        'a;' + '"' * 8000,
+    ])
+    def test_splitting_a_hostile_header_is_fast(self, value):
+        import time
+
+        from honeypot.capture.http_uploads import _header_params
+
+        started = time.perf_counter()
+        for _ in range(33):
+            _header_params(value)
+        assert time.perf_counter() - started < 0.5
+
+    def test_quoted_semicolons_and_escapes_still_split_correctly(self):
+        from honeypot.capture.http_uploads import _header_params
+
+        assert _header_params('form-data; name="f"; filename="a;b.php"') == (
+            "form-data", {"name": "f", "filename": "a;b.php"}
+        )
+        assert _header_params('form-data; name="q\\";x"; filename=c')[1] == {"name": 'q";x', "filename": "c"}
+
+    def test_a_body_of_delimiters_is_bounded(self):
+        import time
+
+        body = b"--B\r\n" * 400_000 + b"--B--\r\n"
+        started = time.perf_counter()
+        assert parse_multipart("multipart/form-data; boundary=B", body) == []
+        assert time.perf_counter() - started < 0.5
+
+    def test_part_data_survives_byte_for_byte_with_lf_only_headers(self):
+        body = b"--B\nContent-Disposition: form-data; name=f; filename=x\n\n" + BINARY + b"\n--B--\n"
+        [(headers, data)] = parse_multipart("multipart/form-data; boundary=B", body)
+        assert data == BINARY and "content-disposition" in headers

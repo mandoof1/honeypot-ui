@@ -65,7 +65,9 @@ async def test_http_request_reaches_the_transcript_with_agent_and_body(ingested,
     [entry] = payload["transcript"]
     assert entry["command"].startswith("POST /search  [ua: sqlmap/1.8.2]")
     assert "UNION SELECT" in entry["command"]
-    assert entry["output"].startswith("HTTP/1.1 200")
+    # Nothing is installed at /search, and the decoy no longer pretends a
+    # POST to a path that does not exist succeeded.
+    assert entry["output"].startswith("HTTP/1.1 404")
     assert payload["commands"] == [entry["command"]]
 
 

@@ -80,17 +80,25 @@ async def test_stor_captures_the_exact_bytes(ftp_honeypot):
     assert echoed == PAYLOAD
 
 
-async def test_active_mode_is_refused(ftp_honeypot):
+async def test_active_mode_transfers_nothing(ftp_honeypot):
+    """PORT is acknowledged as the real servers acknowledge it, and the
+    transfer then fails: the engine never connects out (see
+    test_ftp_realism.py for the bounce case)."""
     def session():
         client = _client()
         try:
-            client.sendcmd("PORT 127,0,0,1,95,150")
-        except ftplib.error_perm as exc:
-            return str(exc)
+            accepted = client.sendcmd("PORT 127,0,0,1,95,150")
+            try:
+                client.sendcmd("STOR x")
+            except ftplib.Error as exc:
+                return accepted, str(exc)
+            return accepted, ""
         finally:
             client.close()
 
-    assert (await asyncio.to_thread(session)).startswith("500")
+    accepted, transfer = await asyncio.to_thread(session)
+    assert accepted.startswith("200")
+    assert transfer.startswith("425")
 
 
 async def test_transfer_without_pasv_is_refused(ftp_honeypot):

@@ -195,8 +195,17 @@ class HoneypotConfig:
         "HONEYPOT_ANTI_FINGERPRINT", "true"
     ).lower() == "true"
     banner_rotation_interval: int = _int_env("HONEYPOT_BANNER_ROTATION", 3600)
-    response_delay_min: float = _float_env("HONEYPOT_RESPONSE_DELAY_MIN", 0.05)
-    response_delay_max: float = _float_env("HONEYPOT_RESPONSE_DELAY_MAX", 0.5)
+    #: Random delay before each HTTP and FTP reply, in seconds. A few
+    #: milliseconds, the scale of a server doing real work; the old 50-500 ms
+    #: capped throughput and was slower than any server it imitated.
+    response_delay_min: float = _float_env("HONEYPOT_RESPONSE_DELAY_MIN", 0.001)
+    response_delay_max: float = _float_env("HONEYPOT_RESPONSE_DELAY_MAX", 0.006)
+    #: Also put the web canary comment (HONEYPOT_AI_CANARY) into HTML pages
+    #: relayed from HONEYPOT_HTTP_UPSTREAM. Off: only the decoy's own pages
+    #: carry it, and the application's responses pass through untouched.
+    http_ai_canary_upstream: bool = os.getenv(
+        "HONEYPOT_HTTP_AI_CANARY_UPSTREAM", "false"
+    ).lower() == "true"
 
     enable_isolation: bool = os.getenv(
         "HONEYPOT_ENABLE_ISOLATION", "true"
