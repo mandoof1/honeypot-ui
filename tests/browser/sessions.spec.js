@@ -436,8 +436,9 @@ test('an analyst has no credential option and their reports never ask for origin
   await expect(page.getByLabel(/Include original credentials/)).toHaveCount(0)
   await page.getByRole('button', { name: 'PDF report', exact: true }).click()
   await expect(page.getByTestId('report-job')).toContainText('PDF report on 1 matching session')
-  const request = api.calls.find((c) => c.method === 'POST' && c.path === '/export/reports')
-  expect(request.params.get('include_sensitive')).toBe('false')
+  // The job is listed as soon as it is asked for; wait for the request itself.
+  await expect.poll(() => api.calls.find((c) => c.method === 'POST' && c.path === '/export/reports')
+    ?.params.get('include_sensitive')).toBe('false')
   await page.getByRole('button', { name: 'Stop waiting' }).click()
   await expect(page.getByTestId('report-job')).toHaveAttribute('data-status', 'cancelled')
 })

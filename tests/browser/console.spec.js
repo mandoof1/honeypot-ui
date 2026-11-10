@@ -242,14 +242,14 @@ test('alerts can carry notes, be bulk-acknowledged, and system alerts have no se
   await sessionRow.getByRole('button', { name: 'Add note' }).click()
   await sessionRow.getByLabel('Notes for alert 10').fill('Checked: dropper URL is dead.')
   await sessionRow.getByRole('button', { name: 'Save note' }).click()
-  const patch = api.calls.find((c) => c.method === 'PATCH' && c.path.endsWith('/alerts/10'))
-  expect(patch.body).toEqual({ notes: 'Checked: dropper URL is dead.' })
+  await expect.poll(() => api.calls.find((c) => c.method === 'PATCH' && c.path.endsWith('/alerts/10'))?.body)
+    .toEqual({ notes: 'Checked: dropper URL is dead.' })
 
   await page.getByRole('button', { name: 'Select open on this page' }).click()
   await expect(page.getByText('2 selected')).toBeVisible()
   await page.getByRole('button', { name: 'Acknowledge selected' }).click()
-  const bulk = api.calls.find((c) => c.method === 'POST' && c.path.endsWith('/alerts/bulk'))
-  expect(bulk.body).toEqual({ ids: [10, 11], status: 'acknowledged' })
+  await expect.poll(() => api.calls.find((c) => c.method === 'POST' && c.path.endsWith('/alerts/bulk'))?.body)
+    .toEqual({ ids: [10, 11], status: 'acknowledged' })
 
   await page.getByLabel('Kind').selectOption('system')
   await expect.poll(() => api.calls.filter((c) => c.path.endsWith('/alerts/') && c.search.includes('kind=system')).length).toBeGreaterThan(0)

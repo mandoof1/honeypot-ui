@@ -153,6 +153,7 @@ function Legend({ max }) {
         {steps.map((step) => <span key={step} className={`heat-${step} h-3 w-6`} />)}
       </span>
       <span className="readout">{max.toLocaleString()}</span>
+      <span className="ml-auto">Later tactics are to the right; scroll sideways.</span>
     </div>
   )
 }
@@ -288,6 +289,9 @@ export default function AttackMatrix() {
             className={`panel overflow-x-auto ${resource.stale ? 'is-stale' : ''}`}
             aria-label="ATT&CK matrix"
             data-testid="attack-matrix"
+            // Wider than most screens: focusable, so it scrolls from the
+            // keyboard as well as with a pointer.
+            tabIndex={0}
           >
             <ol className="flex min-w-max divide-x divide-line">
               {matrix.columns.map((column) => (

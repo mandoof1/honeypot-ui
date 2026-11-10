@@ -125,12 +125,13 @@ test('the ATT&CK matrix shades techniques by count and opens the sessions behind
   })
   await page.goto('/attack?protocol=ssh')
   await expect(page.getByRole('heading', { name: 'ATT&CK matrix', level: 1 })).toBeVisible()
-  expect(api.calls.find((c) => c.path === '/attack/matrix').params.get('protocol')).toBe('ssh')
 
   // Columns in the API's kill-chain order.
   await expect(page.getByTestId('matrix-tactic').getByRole('heading')).toHaveText(
     ['Reconnaissance', 'Execution', 'Command and Control', 'Exfiltration'],
   )
+  // The filter in the address is the filter the matrix was asked for.
+  expect(api.calls.find((c) => c.path === '/attack/matrix').params.get('protocol')).toBe('ssh')
   await expect(page.getByTestId('matrix-scope')).toContainText('12 sessions in scope · 3 techniques observed · ATT&CK 17.1')
   await expect(page.getByTestId('matrix-scope').getByRole('link')).toHaveAttribute('href', '/sessions?protocol=ssh')
 
@@ -361,6 +362,7 @@ test('alerts page from the address bar, link every session, and keep a selection
   })
   await page.goto('/alerts?severity=high')
   await expect(page.getByLabel('Severity')).toHaveValue('high')
+  await expect(page.getByRole('article')).toHaveCount(25)
   expect(api.calls.find((c) => c.path === '/alerts/').params.get('severity')).toBe('high')
 
   // The first alert was raised by three sessions; each is linked.
@@ -380,7 +382,7 @@ test('alerts page from the address bar, link every session, and keep a selection
   await page.getByRole('button', { name: 'Select open on this page' }).click()
   await expect(page.getByText('1 selected')).toBeVisible()
   await page.getByRole('button', { name: 'Resolve selected' }).click()
-  expect(api.calls.find((c) => c.path === '/alerts/bulk').body).toEqual({ ids: [26], status: 'resolved' })
+  await expect.poll(() => api.calls.find((c) => c.path === '/alerts/bulk')?.body).toEqual({ ids: [26], status: 'resolved' })
   await expect(page).not.toHaveURL(/page=2/)
   await expect(page.getByRole('article')).toHaveCount(25)
   await expect(page.getByText('No alerts match')).toHaveCount(0)
