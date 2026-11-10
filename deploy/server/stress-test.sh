@@ -42,9 +42,19 @@ done
 NODE=controlled-test-node
 IMAGE=honeysentinel-honeypot
 NET=honeysentinel_engine
+TEST_NET=honeysentinel_test
 psql() { docker compose exec -T postgres psql -U honeypot -d honeysentinel -v ON_ERROR_STOP=1 "$@"; }
 
+# shellcheck disable=SC1091
 set -a; . ./.env; set +a
+
+# The attacker and the throwaway engine meet on a bridge of their own. On
+# hs-engine the firewall lets an engine reach the ingest service and nothing
+# else, so a client there could not reach the engine under test.
+docker network inspect "$TEST_NET" >/dev/null 2>&1 \
+  || docker network create --internal --subnet 172.30.75.0/24 \
+       -o com.docker.network.bridge.name=hs-test \
+       --label com.docker.compose.project=honeysentinel-test "$TEST_NET" >/dev/null
 
 existing=$(psql -Atc "select count(*) from honeypot_sessions s join honeypot_nodes n on n.id = s.node_id where n.name = '$NODE'")
 if [[ "$existing" != 0 ]]; then
@@ -62,8 +72,11 @@ docker run -d --name hs-stress --network "$NET" \
   -e HONEYPOT_MAX_CONN_PER_IP=100000 -e HONEYPOT_MAX_CONNECTIONS=100000 -e HONEYPOT_RATE_LIMIT=1000000 \
   -e HONEYPOT_CAPTURE_DIR=/app/data/sessions -e HONEYPOT_FILE_CAPTURE_DIR=/app/data/uploads \
   -e HONEYPOT_LOG_DIR=/app/data/logs \
-  -e BACKEND_API_URL=http://ingest:8000/api/v1 -e HONEYPOT_INGEST_TOKEN="$HONEYPOT_INGEST_TOKEN" \
+  -e BACKEND_API_URL=http://ingest:8000/api/v1 \
+  -e HONEYPOT_INGEST_TOKEN="${HONEYPOT_NODE_TOKEN_TEST:?run install.sh first}" \
+  -e HONEYPOT_CONTROL_TOKEN="${HONEYPOT_CONTROL_TOKEN:?run install.sh first}" \
   "$IMAGE" >/dev/null 2>&1
+docker network connect "$TEST_NET" hs-stress
 trap 'docker rm -f hs-stress >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 30); do
   docker logs hs-stress 2>&1 | grep -q "All honeypot services started" && break
@@ -72,7 +85,7 @@ done
 
 echo "==> Opening $SESSIONS sessions, $CONCURRENCY at a time"
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-docker run --rm -i --network "$NET" --dns 127.0.0.1 --cap-drop ALL \
+docker run --rm -i --network "$TEST_NET" --dns 127.0.0.1 --cap-drop ALL \
   -e SESSIONS="$SESSIONS" -e CONCURRENCY="$CONCURRENCY" "$IMAGE" python - <<'PY'
 import asyncio, os, time
 import asyncssh
@@ -168,11 +181,14 @@ select json_build_object(
 ) from s;
 SQL
 model=$(docker compose exec -T backend python -c "from app.ai.classifier import classifier; classifier._ensure_loaded(); print(classifier.model_source)" 2>/dev/null | tail -1)
-python3 - "$report" "$model" <<'PY'
+revision=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$(docker compose ps -q ingest)" 2>/dev/null || echo unknown)
+python3 - "$report" "$model" "$revision" <<'PY'
 import json, sys
-path, model = sys.argv[1], sys.argv[2]
+path, model, revision = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(path))
 data["model_source"] = model
+# Which code produced the figures: the revision the API image was built from.
+data["git_revision"] = revision
 json.dump(data, open(path, "w"), indent=2)
 print(json.dumps(data, indent=2))
 PY

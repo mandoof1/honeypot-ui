@@ -1,217 +1,99 @@
-# Deployment Guide
+# Deployment guide
 
-> **Running everything on one machine you control?** Use
-> [`deploy/server/`](deploy/server/README.md) instead: one script sets up the
-> database, API, dashboard and engine together, behind Tailscale.
+Which way to run HoneySentinel, and where each is documented. Settings are
+described once, in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-Three pieces deploy independently:
+> **Before you expose anything.** A honeypot is deliberately attractive to
+> attackers and records personal data (source addresses, the credentials
+> people type). Run it only on infrastructure whose owner has agreed in
+> writing, and only after the checklists in
+> [docs/EXPOSURE_RUNBOOK.md](docs/EXPOSURE_RUNBOOK.md) and the decisions in
+> [docs/DATA_HANDLING.md](docs/DATA_HANDLING.md).
 
-| Component | Where | Why |
+| You want | Use | Exposed to the internet? |
 |---|---|---|
-| Backend API | Render (or any PaaS) | Ordinary HTTP service |
-| Frontend | Vercel (or any static host) | Static build output |
-| Honeypot engine | A VPS you control | Needs raw TCP ports, not just HTTP |
+| To try it, or to develop | The development stack: `./start.sh` | **Never.** Everything is on 127.0.0.1 and the engine is not contained. |
+| The system, running for real | [`deploy/server/`](deploy/server/README.md): everything on one Linux machine | The decoy ports only, forwarded by the network's firewall; the dashboard stays on the tailnet |
+| A decoy on a separate public address | [`deploy/node/`](deploy/node/README.md): one engine on a small VPS, reporting to the server over a private overlay | The VPS, which holds nothing but the engine |
+| A stock Cowrie for comparison | [`deploy/cowrie-baseline/`](deploy/cowrie-baseline/README.md), beside the server's engines | Its SSH port, for the comparison period |
 
-> **Before you start.** A honeypot is deliberately attractive to attackers.
-> Only run it on infrastructure you own or are authorised to use, keep it off
-> any network you care about, and confirm your provider's acceptable-use
-> policy allows it. Most do; some explicitly do not.
-
----
-
-## 1. Backend + database on Render
-
-The repository ships a `render.yaml` blueprint that provisions both the API
-and its PostgreSQL database.
-
-1. Push the repository to GitHub.
-2. In Render: **New +** → **Blueprint** → select the repository.
-3. Render reads `render.yaml`, creates `honeysentinel-db` and
-   `honeysentinel-api`, and generates `SECRET_KEY`, `ENCRYPTION_KEY` and
-   `HONEYPOT_INGEST_TOKEN` automatically.
-4. Fill in the variables marked `sync: false` in the dashboard:
-
-   | Variable | Value |
-   |---|---|
-   | `CORS_ORIGINS` | Your frontend origin, e.g. `https://your-app.vercel.app` |
-   | `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` | Optional, for email alerts |
-   | `BREVO_API_KEY` | Optional; or SendGrid/Resend/SMTP equivalents |
-   | `WEBHOOK_URL` / `WEBHOOK_SECRET` | Optional, for webhook alerts |
-
-5. **Copy the generated `HONEYPOT_INGEST_TOKEN`** out of the dashboard. The
-   engine needs exactly the same value or every ingest is rejected with 401.
-
-The first boot applies migrations automatically. Once more than one instance
-is running, set `RUN_MIGRATIONS_ON_STARTUP=false` and run
-`alembic upgrade head` as a release step instead, so two instances cannot
-migrate concurrently.
-
-To create the first administrator, set `SEED_ON_STARTUP=true` for one boot —
-the generated password is printed once to the service log — then turn it back
-off. Alternatively set `ADMIN_SEED_PASSWORD` yourself and nothing is logged.
-
-### Free-tier caveats
-
-Render's free web services sleep after 15 minutes idle and cold-start in
-roughly 30–60 seconds. The AI models are fitted at build time, so a cold start
-is dominated by process startup rather than training.
-
----
-
-## 2. Frontend on Vercel
-
-1. **New Project** → import the repository.
-2. Vercel detects Vite from `vercel.json`.
-3. Set one environment variable:
-
-   ```
-   VITE_API_URL = https://your-api.onrender.com/api/v1
-   ```
-
-   `VITE_*` variables are read at **build** time, so changing this requires a
-   redeploy.
-4. Deploy, then add the resulting origin to `CORS_ORIGINS` on the backend.
-
-`vercel.json` sends `X-Content-Type-Options`, `X-Frame-Options`,
-`Referrer-Policy` and `Permissions-Policy` on every response, and rewrites all
-paths to `index.html` for client-side routing.
-
----
-
-## 3. Honeypot engine on a free VM
-
-The engine listens on raw TCP ports (2222/2121/8080/8443). PaaS free tiers —
-Render, Vercel, Railway, Fly's HTTP services — expose a single HTTP port
-behind a TLS-terminating proxy and cannot forward those connections, so the
-engine needs a machine where you control the network. That rules out putting
-it next to the backend on Render.
-
-Two hosts give you one permanently, with no card charged after a trial:
-
-| Host | Always-free allowance | Notes |
-|---|---|---|
-| **Oracle Cloud** (recommended) | 2 Ampere ARM OCPUs, 12 GB RAM, 200 GB block storage | Halved from 4/24 in June 2026, still far more than this needs. Card required for identity check only. |
-| **Google Cloud** | 1 `e2-micro`, 30 GB disk, in `us-west1`/`us-central1`/`us-east1` | 1 GB/month egress. Tighter, but sufficient — the engine's traffic is almost all inbound. |
-
-Both give a public IPv4 and arbitrary inbound TCP, which is the requirement.
-The engine image is `python:3.12-slim` with two pure-Python dependencies, so
-it builds unmodified on ARM.
-
-### Before you start
-
-Running a honeypot on a free tier is not free of consequences. It advertises
-open services and will be found within hours. Two things follow from that:
-
-- **Read the provider's acceptable-use policy.** A honeypot that only records
-  inbound connections is ordinarily fine, but an instance that starts emitting
-  traffic will draw abuse reports and free accounts get reclaimed quickly. The
-  engine's egress allowlist and the container hardening below exist for this;
-  do not disable them.
-- **Use a throwaway project, not your main account.** If the instance is
-  suspended you want to lose the instance, not the account holding the rest of
-  your work.
-
-The emulators never execute attacker input — they return canned protocol
-responses — so a shell is never spawned. That is what makes this reasonable to
-expose at all.
-
-### Provisioning
-
-Create an Ubuntu 22.04 or 24.04 instance, then open the ports **in the cloud
-firewall as well as on the host**. On Oracle these are separate systems and
-the cloud one silently drops traffic if you forget:
-
-> Networking → Virtual Cloud Networks → *your VCN* → Security Lists →
-> Default Security List → **Add Ingress Rules** — source `0.0.0.0/0`,
-> TCP `21`, `22`, `80`, `443`, plus `22022` for your own SSH.
-
-### Installing
+## 1. Development stack
 
 ```bash
-git clone https://github.com/mandoof1/honeypot-ui.git
-cd honeypot-ui/deploy/node
-sudo bash bootstrap.sh
+./start.sh        # writes .env with generated secrets, then docker compose up
+./stop.sh
 ```
 
-`bootstrap.sh` moves the real SSH daemon to port 22022 and makes you confirm
-you can still log in **before** it hands port 22 to the emulator, installs
-Docker, and persists the port redirects. Read it before running it; it changes
-how you reach the box.
+PostgreSQL, the API (with reload), the Vite dev server and one engine, all
+published on loopback. `SEED_ON_STARTUP=true` here fills an empty database
+with 150 synthetic sessions and prints a generated administrator password in
+the backend's log (`docker compose logs backend`). That seed is for
+development only: never enable it where captured traffic is stored.
 
-Then point the node at the backend:
+## 2. Self-hosted server
 
 ```bash
-cp .env.example .env
-$EDITOR .env          # BACKEND_API_URL and HONEYPOT_INGEST_TOKEN
-docker compose up -d --build
-docker compose logs -f
+sudo git clone https://github.com/mandoof1/honeypot-ui.git /opt/honeysentinel
+sudo bash /opt/honeysentinel/deploy/server/install.sh
 ```
 
-`HONEYPOT_INGEST_TOKEN` must be byte-identical to the value on the backend —
-copy it from the Render dashboard under Environment. A mismatch shows up as
-`401` in the node's log and no sessions ever appear.
+One script: secrets, certificates, the egress firewall, the images, the
+administrator (created directly, with no synthetic data; its password is
+shown once), and the dashboard on the tailnet. It verifies what it started
+and exits non-zero if the engines are not contained. The guide covers
+updating, backups and restore, the models, a website behind the decoys, and
+operation: [deploy/server/README.md](deploy/server/README.md).
 
-> Use this `deploy/node/` compose file, not the one at the repository root.
-> The root file's honeypot service declares `depends_on: backend`, so running
-> it here would start a second backend and Postgres alongside the engine.
+The engines emulate SSH, Telnet, FTP, HTTP and HTTPS on ports 2222, 2323,
+2121, 8080 and 8443 (plus 50000-50009 for passive FTP); the network's
+firewall forwards 22, 23, 21, 80 and 443 to them.
 
-On startup the engine verifies its isolation, registers itself with the
-backend as a node, binds the enabled emulators, and starts its control API on
-loopback.
+Email and webhook alerts do not work on this deployment, by design: no
+container can open an outbound connection. Alerts are in the dashboard, and
+the host pings an external dead man's switch (`HEARTBEAT_URL`) while
+everything is healthy.
 
-### Letting the backend reach the control API
+## 3. Remote sensor
 
-`/api/v1/honeypot/*` proxies to the engine, and the compose file binds that
-port to `127.0.0.1` only — it is authenticated by the shared token alone and
-must never face the internet.
+For when attack traffic should not enter your network at all, or for a
+second vantage point. The sensor is an engine and nothing else, with its own
+ingest token and exactly one permitted outbound destination: the server's
+ingest endpoint on a WireGuard or Tailscale address. Step-by-step runbook and
+pre-exposure checklist: [deploy/node/README.md](deploy/node/README.md).
 
-Render's free tier has no static outbound IP, so it cannot be allowlisted.
-Either:
+A PaaS web service (Render, Vercel, Railway, Fly's HTTP services) cannot host
+an engine: it exposes one HTTP port behind a TLS-terminating proxy, and the
+engine needs raw TCP on several ports.
 
-- **Leave it closed.** Sessions still ingest normally; the dashboard shows
-  "Engine unreachable" and hides live emulation status. Nothing is fabricated.
-- **Expose it through a free Cloudflare Tunnel** and set `HONEYPOT_CONTROL_URL`
-  on the backend to the tunnel hostname, with Cloudflare Access in front.
+## The old split deployment
 
-## 4. Optional: GeoIP
+The project was first deployed with the API on Render, the console on Vercel
+and the engine on a separate VM. Those files are in
+[`deploy/legacy/`](deploy/legacy/README.md), unmaintained; that README says
+why they are not a supported path.
 
-Without a GeoLite2 database, sessions are recorded with no location and the
-map shows fewer markers. To enable geolocation:
-
-1. Create a free MaxMind account and download `GeoLite2-City.mmdb`.
-2. Place it where `GEOIP_DB_PATH` points (default `./data/GeoLite2-City.mmdb`).
-
----
-
-## Verifying the deployment
+## Verifying a deployment
 
 ```bash
-# API is up
-curl https://your-api.onrender.com/health
-
-# Emulators answer
-nc your-vps-ip 2222              # SSH banner
-curl http://your-vps-ip:8080/    # HTTP response
-
-# Engine reports itself through the backend
-curl -H "Authorization: Bearer $TOKEN" \
-     https://your-api.onrender.com/api/v1/honeypot/status
+cd /opt/honeysentinel/deploy/server
+docker compose ps                                  # every service healthy
+sudo bash honeysentinel-egress.sh check            # firewall rules and networks
+sudo bash honeysentinel-egress.sh probe            # connect out from inside the engines
+sudo bash controlled-test.sh --purge               # end to end, as controlled-test-node
+sudo bash host-heartbeat.sh                        # the host-level checks
 ```
-
-A healthy response has `"reachable": true` and `"running": true`. If
-`reachable` is false, the backend cannot see the control API — check
-`HONEYPOT_CONTROL_URL` and the network path.
-
----
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| Backend exits with "Refusing to start" | A secret is still a placeholder and `ENVIRONMENT` is not `development`. Set real values. |
-| Ingest returns 401 | `HONEYPOT_INGEST_TOKEN` differs between backend and engine. |
-| `/honeypot/*` returns 502 "rejected the control token" | Same mismatch, on the control API side. |
-| CORS errors in the browser | The frontend origin is missing from `CORS_ORIGINS`. |
-| Rate limits trigger far too early | Behind a proxy without `TRUST_PROXY_HEADERS=true`, so every client shares the proxy's IP. |
-| Sessions have no country | No GeoLite2 database configured — working as intended, not a failure. |
-| Isolation checks report failures | Expected outside Docker. Inside Docker, check `cap_drop`, `read_only` and the `internal` network are all set. |
+| `install.sh` stops with "do not match the address plan" | `docker-compose.override.yml` predates the fixed network names; update it from the example. |
+| `install.sh` stops with "requirements.lock is out of date" during the build | A `requirements.txt` changed; run `bash scripts/lock-requirements.sh` and commit. |
+| Backend exits with "Refusing to start" | A secret is still a placeholder and `ENVIRONMENT` is not `development`. |
+| An engine exits with code 78 | Its ingest token is the published default; set a real one (`install.sh` and `start.sh` do). |
+| Ingest returns 401 or 403 | 401: the token is unknown. 403: the token belongs to another node name. |
+| `/honeypot/*` returns 502 "rejected the control token" | `HONEYPOT_CONTROL_TOKEN` differs between backend and engine. |
+| Rate limits trigger far too early for everyone | The API is not seeing client addresses: check `TRUSTED_PROXIES` covers the proxy and nothing else. |
+| Sessions have no country | No GeoIP database yet (`sudo bash fetch-geoip.sh`). Not a failure. |
+| Verdicts say `model_source: "synthetic"` | No trained classifier in the models volume: `train-model.sh`, or restore it from a backup. |
+| A system alert "Egress rules were missing or altered" | Something removed the firewall tables; they were re-applied. Find out what (`journalctl -u honeysentinel-egress-check`). |

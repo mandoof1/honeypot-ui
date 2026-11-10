@@ -1,0 +1,54 @@
+# A stock Cowrie beside the HoneySentinel engine, for comparison only.
+# README.md has the protocol; nothing here is part of the product.
+#
+#   docker compose up -d        # from this directory, on the server
+#
+# The official image in its default configuration: no cowrie.cfg is supplied
+# and no setting is changed. What is added is around it, not in it: the same
+# egress policy as the engine (the hs-cowrie bridge is one the host firewall
+# knows; Cowrie may answer and nothing more), and the same limits.
+#
+# Different ports from the engine, so the two never compete for one port:
+# the router forwards a second public port (or the same ports of a second
+# public address) to these.
+
+name: honeysentinel-cowrie
+
+services:
+  cowrie:
+    # Not pinned: no digest of a known-good build is on record for this
+    # image. Before the comparison period starts, pin it
+    # (`scripts/pin-images.sh --write`) and commit, so the report can name
+    # the exact build that was compared.
+    image: cowrie/cowrie:latest
+    ports:
+      # Cowrie's default SSH listener. Telnet is off in Cowrie's default
+      # configuration, so there is no Telnet port to publish.
+      - "${COWRIE_BIND_IPV4:-0.0.0.0}:${COWRIE_SSH_PORT:-2022}:2222"
+    networks: [cowrie]
+    volumes:
+      # Logs (var/log/cowrie/cowrie.json) and downloads; export-logs.sh
+      # copies the logs out for the comparison tool.
+      - cowrie_var:/cowrie/cowrie-git/var
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 256
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+networks:
+  # Name and subnet are the firewall's (honeysentinel-egress.sh, hs-cowrie).
+  cowrie:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: hs-cowrie
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.77.0/24
+
+volumes:
+  cowrie_var:

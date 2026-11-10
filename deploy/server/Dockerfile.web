@@ -3,10 +3,16 @@
 #
 # The repository-root Dockerfile.frontend runs the Vite dev server and is for
 # development only.
+#
+# Neither base image has a digest recorded from a known-good deployment, so
+# they stay on tags here. `scripts/pin-images.sh --write` resolves both to
+# digests on a machine that can pull them; run it before a release build.
 
 FROM node:22-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
+# package-lock.json carries an integrity hash for every package; npm ci
+# refuses to install anything that does not match it.
 RUN npm ci
 COPY index.html vite.config.js ./
 COPY public ./public
@@ -26,3 +32,10 @@ COPY deploy/server/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/dist /srv
 USER 1000:1000
 EXPOSE 8080
+
+# Last, so a new revision rebuilds only this layer; see backend/Dockerfile.
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.title="HoneySentinel console" \
+      org.opencontainers.image.source="https://github.com/mandoof1/honeypot-ui" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.revision="${GIT_REVISION}"

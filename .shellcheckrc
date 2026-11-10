@@ -1,0 +1,6 @@
+# Checked in CI with `shellcheck --severity=warning`.
+
+# The scripts source .env files that exist only on a deployed machine.
+disable=SC1091
+# sed is used to indent multi-line output; ${var//} is not clearer there.
+disable=SC2001

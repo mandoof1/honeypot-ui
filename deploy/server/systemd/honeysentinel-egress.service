@@ -1,8 +1,8 @@
 [Unit]
-Description=HoneySentinel: block outbound connections from the honeypot bridge
-# In place before Docker starts any container, and after ufw has loaded its
-# own rules so they cannot be reordered above these.
-After=ufw.service
+Description=HoneySentinel: containers may answer connections, never open them
+# In place before Docker starts any container. After ufw and nftables.service,
+# because a ruleset loaded at boot with "flush ruleset" would remove ours.
+After=ufw.service nftables.service
 Before=docker.service
 DefaultDependencies=no
 Wants=network-pre.target
@@ -11,7 +11,11 @@ After=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh
+ExecStart=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh apply
+# `systemctl reload` re-applies the rules (one atomic swap). Never restart
+# this unit to do that: Docker Requires= it, and a restart restarts dockerd
+# and every container with it.
+ExecReload=/opt/honeysentinel/deploy/server/honeysentinel-egress.sh apply
 
 [Install]
 WantedBy=multi-user.target

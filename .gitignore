@@ -23,9 +23,14 @@ dist-ssr
 *.sln
 *.sw?
 
-# Environment
+# Environment: every .env and every copy or variant of one, anywhere.
+# Only the documented examples are tracked.
 .env
+.env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Backend
 backend/__pycache__
@@ -44,10 +49,21 @@ __pycache__/
 .venv/
 venv/
 *.pkl
+.pytest_cache/
+.ruff_cache/
+
+# Model files and geolocation databases: large, licensed, fetched by script.
+*.gguf
+*.mmdb
+*.mmdb.gz
 
 # Captured honeypot data (never commit attacker payloads)
 data/
 !data/.gitkeep
+
+# Deployment state: secrets, certificates, backups' leftovers, tool output.
+deploy/**/state/
+deploy/server/egress.conf
 
 # Editor swap files
 *.kate-swp
