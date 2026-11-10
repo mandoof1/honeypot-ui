@@ -1,7 +1,8 @@
+import json
 import os
 import secrets
 from functools import lru_cache
-from typing import Annotated, List
+from typing import Annotated, Dict, List
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -26,6 +27,14 @@ class Settings(BaseSettings):
     #: real deployment and refuses to start on placeholder credentials.
     ENVIRONMENT: str = "development"
 
+    #: Which routes this process serves. "full" is the dashboard API: every
+    #: route, plus the background workers when BACKGROUND_WORKERS is on.
+    #: "ingest" is for the multi-worker service the engines talk to: only the
+    #: ``-internal`` routes and /health are mounted and no worker is started,
+    #: so a process reachable from the engine network exposes no login, no
+    #: user route and no export.
+    API_ROLE: str = "full"
+
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://honeypot:honeypot@localhost:5432/honeysentinel"
     DATABASE_URL_SYNC: str = "postgresql+psycopg2://honeypot:honeypot@localhost:5432/honeysentinel"
@@ -38,9 +47,25 @@ class Settings(BaseSettings):
 
     # Encryption at rest for captured commands/payloads
     ENCRYPTION_KEY: str = ""
+    #: Keys this deployment used before the current one, comma-separated,
+    #: newest first. Never used to encrypt; they exist so rows written under
+    #: them still decrypt until `python -m app.core.rotate_key` has
+    #: re-encrypted everything, after which the entry can be removed.
+    ENCRYPTION_KEY_PREVIOUS: str = ""
 
     # Shared secret the honeypot engine uses to ingest sessions
     HONEYPOT_INGEST_TOKEN: str = ""
+    #: Per-engine secrets, as a JSON object of node name to token, e.g.
+    #: {"honeysentinel-debian": "...", "honeysentinel-web": "..."}. A node
+    #: named here must use its own token for registration, heartbeat and
+    #: ingest, and that token works for no other node; a node not named here
+    #: keeps using HONEYPOT_INGEST_TOKEN. With one shared token, an engine
+    #: that is compromised can submit sessions and heartbeats as any other.
+    HONEYPOT_NODE_TOKENS: str = ""
+    #: Sent to the engines' control API (mode changes, blocks) instead of the
+    #: ingest token when set, so the secret that lets the backend steer an
+    #: engine is not the one every engine holds for writing sessions.
+    HONEYPOT_CONTROL_TOKEN: str = ""
 
     # CORS. Comma-separated in the environment.
     #
@@ -57,8 +82,13 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
     #: Largest request body accepted on user-facing routes (413 above it).
-    #: The engine's -internal routes are exempt; see core/body_limit.py.
+    #: The engine's -internal routes have their own limit below.
     MAX_REQUEST_BODY_BYTES: int = 1_048_576
+    #: Largest body accepted on the engine's ``-internal`` routes. A session
+    #: can forward captured files (the engine's budget is 24 MiB of content
+    #: per session, about 32 MiB once base64-encoded) beside its transcript,
+    #: so this is generous, but it is a limit: those routes had none.
+    MAX_INTERNAL_BODY_BYTES: int = 64 * 1024 * 1024
     #: Enable only when the app really is behind a trusted reverse proxy;
     #: otherwise clients can spoof X-Forwarded-For to dodge rate limits.
     TRUST_PROXY_HEADERS: bool = False
@@ -180,14 +210,34 @@ class Settings(BaseSettings):
     AUDIT_RETENTION_DAYS: int = 365
     OUTBOX_RETENTION_DAYS: int = 30
 
-    # Account lockout after repeated wrong passwords.
+    # Account lockout after repeated wrong passwords or second-factor codes.
     LOGIN_LOCKOUT_THRESHOLD: int = 10
     LOGIN_LOCKOUT_MINUTES: int = 15
+    #: Failed sign-ins one source address may make against one account inside
+    #: LOGIN_LOCKOUT_MINUTES before further attempts from it are refused
+    #: without being checked. This is what stops a password-guessing run; the
+    #: account-wide lock above no longer refuses a correct sign-in, so it
+    #: cannot be used to keep an administrator out.
+    LOGIN_SOURCE_FAILURE_LIMIT: int = 5
+
+    #: One-time codes (signup verification, password reset) issued per
+    #: account per hour. Each code allows five guesses, so without a cap a
+    #: client could keep requesting fresh codes and guess indefinitely.
+    OTP_MAX_CODES_PER_HOUR: int = 5
 
     #: Optional static token for the plain-text indicator feed, so a firewall
     #: or SIEM can pull it without a user session that expires hourly. Sent
     #: as X-Feed-Token. Empty leaves the feed JWT-only.
     IOC_FEED_TOKEN: str = ""
+    #: Addresses and networks (comma-separated, CIDR allowed) that never
+    #: appear in the address blocklist feed whatever was captured: the
+    #: operator's own egress address, a monitoring service, a partner range.
+    IOC_FEED_ALLOWLIST: str = ""
+
+    #: Seconds the dashboard summary may be served from memory. The summary
+    #: is a dozen aggregate queries and every open dashboard polls it; a few
+    #: seconds of staleness is invisible there. 0 disables the cache.
+    DASHBOARD_CACHE_SECONDS: float = 10.0
 
     #: Addresses treated as reverse proxies when reading X-Forwarded-For:
     #: walked from the right, the first address not in this list is the
@@ -207,6 +257,17 @@ class Settings(BaseSettings):
     #: parser libraries reserve a lot of it, so this is floored at 1024 MiB in
     #: the worker regardless of what is set here.
     PAYLOAD_ANALYSIS_MEMORY_MB: int = 2048
+    #: Times one sample's analysis is started before it is marked failed. A
+    #: sample whose result could not be stored used to stay pending and was
+    #: re-run every hour for ever.
+    PAYLOAD_ANALYSIS_MAX_ATTEMPTS: int = 3
+
+    #: Longest an investigation report waits for the language model while
+    #: the background enrichment queue is using it, before failing with a
+    #: "try again" message. One enrichment call is bounded by
+    #: CHIMERA_TIMEOUT (300 s by default), so this covers one call in
+    #: progress and a margin.
+    REPORT_MODEL_WAIT_SECONDS: float = 420.0
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -250,6 +311,59 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT.strip().lower() not in ("development", "dev", "test")
+
+    @property
+    def api_role(self) -> str:
+        return self.API_ROLE.strip().lower() or "full"
+
+    @property
+    def node_tokens(self) -> Dict[str, str]:
+        """HONEYPOT_NODE_TOKENS as a mapping of node name to token."""
+        return _parse_node_tokens(self.HONEYPOT_NODE_TOKENS)
+
+    @property
+    def previous_encryption_keys(self) -> List[str]:
+        return [
+            item.strip()
+            for item in self.ENCRYPTION_KEY_PREVIOUS.split(",")
+            if item.strip()
+        ]
+
+    def validate_roles_and_tokens(self) -> None:
+        """Refuse settings that would quietly weaken engine authentication.
+
+        These fail in every environment, development included: a malformed
+        HONEYPOT_NODE_TOKENS that was skipped would leave every engine on the
+        shared token while the operator believed otherwise.
+        """
+        if self.api_role not in ("full", "ingest"):
+            raise RuntimeError(
+                f"API_ROLE must be 'full' or 'ingest', not {self.API_ROLE!r}"
+            )
+
+        tokens = self.node_tokens
+        values = list(tokens.values())
+        if len(set(values)) != len(values):
+            raise RuntimeError(
+                "HONEYPOT_NODE_TOKENS gives two nodes the same token; a token "
+                "must identify exactly one node"
+            )
+        if self.HONEYPOT_INGEST_TOKEN and self.HONEYPOT_INGEST_TOKEN in values:
+            raise RuntimeError(
+                "A token in HONEYPOT_NODE_TOKENS equals HONEYPOT_INGEST_TOKEN; "
+                "a node's own token must not also be the shared one"
+            )
+        if self.is_production:
+            weak = sorted(
+                name
+                for name, token in tokens.items()
+                if token in PLACEHOLDER_SECRETS or len(token) < 16
+            )
+            if weak:
+                raise RuntimeError(
+                    "HONEYPOT_NODE_TOKENS entries must be random values of at "
+                    "least 16 characters: " + ", ".join(weak)
+                )
 
     @property
     def database_ssl_required(self) -> bool:
@@ -312,8 +426,34 @@ class Settings(BaseSettings):
     }
 
 
+@lru_cache(maxsize=8)
+def _parse_node_tokens(raw: str) -> Dict[str, str]:
+    """Decode HONEYPOT_NODE_TOKENS, rejecting anything but name -> token."""
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        decoded = json.loads(text)
+    except ValueError as exc:
+        raise RuntimeError(f"HONEYPOT_NODE_TOKENS is not valid JSON: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError(
+            "HONEYPOT_NODE_TOKENS must be a JSON object of node name to token"
+        )
+    tokens: Dict[str, str] = {}
+    for name, token in decoded.items():
+        if not isinstance(token, str) or not token.strip() or not str(name).strip():
+            raise RuntimeError(
+                "HONEYPOT_NODE_TOKENS must map each node name to a non-empty "
+                "string token"
+            )
+        tokens[str(name)] = token
+    return tokens
+
+
 @lru_cache()
 def get_settings() -> Settings:
     settings = Settings()
     settings.validate_secrets()
+    settings.validate_roles_and_tokens()
     return settings

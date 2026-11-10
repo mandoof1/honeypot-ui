@@ -114,9 +114,12 @@ class AdminPasswordReset(BaseModel):
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    # Longer than any password this system issues (128), and bounded: the
+    # value is fed to a 600,000-round key derivation.
+    password: str = Field(..., max_length=1024)
     # Optional: only required once the account has enrolled an authenticator.
-    totp_code: Optional[str] = None
+    # Six digits, or a recovery code of the form xxxx-xxxx-xxxx.
+    totp_code: Optional[str] = Field(None, max_length=32)
 
 
 class UserResponse(BaseModel):
@@ -169,22 +172,25 @@ class RegisterResponse(BaseModel):
 
 
 class PasswordChange(BaseModel):
-    current_password: str
+    current_password: str = Field(..., max_length=1024)
     new_password: str = Field(..., min_length=12, max_length=128)
 
 
 class HoneypotNodeCreate(BaseModel):
-    name: str
-    protocol: str
-    ip_address: str
-    port: int
+    # Bounded to the column widths. These fields are also what an engine
+    # posts to register itself; an over-long name used to reach PostgreSQL,
+    # fail there with a 500, and be retried by the engine every minute.
+    name: str = Field(..., min_length=1, max_length=255)
+    protocol: str = Field(..., min_length=1, max_length=50)
+    ip_address: str = Field(..., min_length=1, max_length=45)
+    port: int = Field(..., ge=0, le=65535)
     mode: HoneypotMode = HoneypotMode.ACTIVE
-    location_lat: Optional[float] = None
-    location_lon: Optional[float] = None
+    location_lat: Optional[float] = Field(None, ge=-90, le=90)
+    location_lon: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class HoneypotNodeUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
     mode: Optional[HoneypotMode] = None
     is_active: Optional[bool] = None
 
@@ -215,9 +221,9 @@ class HoneypotNodeResponse(BaseModel):
 
 class NodeHeartbeat(BaseModel):
     node_id: Optional[int] = None
-    name: str
+    name: str = Field(..., min_length=1, max_length=255)
     status: dict = {}
-    version: Optional[str] = None
+    version: Optional[str] = Field(None, max_length=64)
 
 
 class SessionEnrichment(BaseModel):
@@ -292,6 +298,8 @@ class TranscriptEntry(BaseModel):
     output: str = ""
     exit_code: int = 0
     timestamp: Optional[float] = None
+    #: Request headers, present on entries captured by the HTTP decoys.
+    headers: Optional[Dict[str, str]] = None
 
 
 class SessionTranscriptResponse(BaseModel):
@@ -447,7 +455,23 @@ class HoneypotSessionResponse(BaseModel):
         )
 
     @classmethod
-    def from_model(cls, obj):
+    def from_model(
+        cls,
+        obj,
+        has_transcript: Optional[bool] = None,
+        has_credentials: Optional[bool] = None,
+    ):
+        """Build the response from a session row.
+
+        List and detail queries leave the encrypted columns unloaded (see
+        ``session_filters.without_blobs``) and pass the two ``has_`` flags
+        computed by the database. A caller holding a fully loaded row can
+        omit them, and they are read off the row as before.
+        """
+        if has_transcript is None:
+            has_transcript = bool(obj.transcript_encrypted)
+        if has_credentials is None:
+            has_credentials = bool(obj.credentials_encrypted)
         return cls(
             id=obj.id,
             session_uuid=obj.session_uuid,
@@ -491,8 +515,8 @@ class HoneypotSessionResponse(BaseModel):
                 for e in (obj.network_events or [])
                 if isinstance(e, dict) and e.get("event_type")
             ],
-            has_transcript=bool(obj.transcript_encrypted),
-            has_credentials=bool(obj.credentials_encrypted),
+            has_transcript=has_transcript,
+            has_credentials=has_credentials,
             scanner_operator=obj.scanner_operator,
             class_probabilities=obj.class_probabilities,
             analysis_ms=obj.analysis_ms,
