@@ -141,6 +141,9 @@ class SessionRecord:
                     "output": (c.get("output") or "")[: self.MAX_OUTPUT_CHARS],
                     "exit_code": c.get("exit_code", 0),
                     "timestamp": c["timestamp"],
+                    # HTTP entries carry the request's headers, already
+                    # bounded where they were recorded (emulators/http.py).
+                    **({"headers": c["headers"]} if c.get("headers") else {}),
                 }
                 for c in self.commands[: self.MAX_TRANSCRIPT_ENTRIES]
             ],

