@@ -241,7 +241,7 @@ jobs:
           - Dockerfile.frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: hadolint/hadolint-action@v3.1.0
+      - uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: ${{ matrix.dockerfile }}
           failure-threshold: warning
