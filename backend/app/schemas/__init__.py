@@ -400,6 +400,11 @@ class HoneypotSessionResponse(BaseModel):
     #: failed, or skipped (never a candidate: no commands, or a scanner).
     triage_status: str = "not_configured"
     triage: Optional[SessionTriage] = None
+    #: The client's handshake fingerprints, as the engine measured them.
+    fingerprints: Optional[dict] = None
+    #: Flags derived by the analysis (ai_agent, honeytoken, anomaly, verdict,
+    #: severity, disagreement). Null on rows analysed before they existed.
+    signals: Optional[dict] = None
     created_at: datetime
 
     class Config:
@@ -525,6 +530,8 @@ class HoneypotSessionResponse(BaseModel):
             enrichment=cls._enrichment(obj),
             triage_status=cls._triage_status(obj),
             triage=cls._triage(obj),
+            fingerprints=getattr(obj, "fingerprints", None),
+            signals=getattr(obj, "signals", None),
             created_at=obj.created_at,
         )
 
@@ -554,6 +561,8 @@ class AlertResponse(BaseModel):
     mitre_techniques: Optional[List[MitreTechnique]]
     notes: Optional[str] = None
     occurrences: int = 1
+    #: Every session folded into this alert; session_id is the most serious.
+    session_ids: Optional[List[int]] = None
     last_seen_at: Optional[datetime] = None
     acknowledged_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
@@ -610,6 +619,8 @@ class DashboardStats(BaseModel):
     attack_distribution: Dict[str, int]
     severity_distribution: Dict[str, int]
     sessions_by_hour: Dict[str, int]
+    #: The zone the hour-of-day buckets above are counted in.
+    timezone: str = "UTC"
     top_attacker_ips: List[Dict[str, Any]]
     top_tools_detected: List[Dict[str, Any]]
 

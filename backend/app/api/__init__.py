@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
-from app.api import auth, sessions, alerts, dashboard, nodes, export, settings, honeypot, iocs, payloads, audit
+from app.api import auth, sessions, alerts, dashboard, nodes, export, settings, honeypot, iocs, payloads, audit, attack
 
 #: Every router, where it is mounted, and its tag.
 _MOUNTS = [
@@ -16,6 +16,7 @@ _MOUNTS = [
     (settings.router, "/settings", "Settings"),
     (honeypot.router, "/honeypot", "Honeypot Engine"),
     (audit.router, "/audit-logs", "Audit"),
+    (attack.router, "/attack", "ATT&CK"),
 ]
 
 #: Suffix that marks a route as engine-facing: authenticated with an engine

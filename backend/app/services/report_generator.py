@@ -164,7 +164,9 @@ class ReportGenerator:
                 "ended_at": session_data.get("ended_at"),
                 "duration_seconds": session_data.get("duration_seconds"),
                 "status": session_data.get("status"),
+                "fingerprints": session_data.get("fingerprints"),
             },
+            "signals": session_data.get("signals"),
             "ai_analysis": {
                 "attack_category": analysis.get("category"),
                 "confidence": analysis.get("confidence"),

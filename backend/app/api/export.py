@@ -90,6 +90,8 @@ _EXPORT_COLUMNS = (
     HoneypotSession.scanner_operator,
     HoneypotSession.mitre_tactics,
     HoneypotSession.mitre_techniques,
+    HoneypotSession.fingerprints,
+    HoneypotSession.signals,
 )
 
 _CSV_HEADER = [
@@ -117,6 +119,9 @@ def _session_to_dict(session) -> dict:
         "duration_seconds": session.duration_seconds,
         "status": session.status.value,
         "uploads": session.uploaded_files or [],
+        # The client's handshake fingerprints and the analysis's derived flags.
+        "fingerprints": getattr(session, "fingerprints", None),
+        "signals": getattr(session, "signals", None),
     }
 
 

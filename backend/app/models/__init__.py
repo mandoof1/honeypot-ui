@@ -300,6 +300,15 @@ class HoneypotSession(Base):
     # Uploaded files
     uploaded_files = Column(_jsonb(), nullable=True)
 
+    #: What the engine measured of the client's handshake (SSH client
+    #: version, HASSH, JA3/JA4, Telnet options, HTTP header order), stored as
+    #: received with every value length-capped.
+    fingerprints = Column(_jsonb(), nullable=True)
+    #: Flags derived by the analysis: ``ai_agent``, ``honeytoken``,
+    #: ``anomaly`` (whether the score is calibrated), ``verdict`` (what set
+    #: the category), ``severity``, model/rule ``disagreement``.
+    signals = Column(_jsonb(), nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     node = relationship("HoneypotNode", back_populates="sessions")
@@ -451,6 +460,14 @@ class Alert(Base):
     occurrences = Column(Integer, nullable=False, default=1, server_default="1")
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
     dedup_key = Column(String(160), nullable=True, index=True)
+    #: Ids of every session folded into this alert, most recent last.
+    #: ``session_id`` points at the most serious of them.
+    session_ids = Column(_jsonb(), nullable=True)
+    #: What makes concurrent ingest workers agree on one alert: the source
+    #: and its fixed time window. Unique, so two workers raising the same
+    #: alert at once produce one row. Null on rows from before grouping was
+    #: keyed this way, and on system alerts.
+    group_key = Column(String(200), nullable=True, unique=True)
 
     session = relationship("HoneypotSession", back_populates="alerts")
     user = relationship("User", back_populates="alerts", foreign_keys=[assigned_to_id])
