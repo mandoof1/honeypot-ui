@@ -80,9 +80,74 @@ test('an analyst cannot download the raw sample', async ({ page }) => {
   await expect(page.getByRole('button', { name: /Download sample/ })).toHaveCount(0)
 })
 
-test('an admin is offered the download, marked as malware', async ({ page }) => {
+test('downloading a sample asks first and says what the file is', async ({ page }) => {
+  let downloads = 0
+  await page.route('**/api/v1/payloads/*/download', (route) => {
+    downloads += 1
+    return route.fulfill({
+      body: 'MZ-not-really',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${'a'.repeat(64)}.bin"`,
+        'Access-Control-Expose-Headers': 'Content-Disposition',
+      },
+    })
+  })
   await page.goto('/payloads?sha=' + 'a'.repeat(64))
-  const button = page.getByRole('button', { name: /Download sample/ })
-  await expect(button).toBeVisible()
-  await expect(button).toHaveAttribute('title', /live malware/)
+  await page.getByRole('button', { name: /Download sample/ }).click()
+  const dialog = page.getByRole('dialog', { name: 'Download a live malware sample?' })
+  await expect(dialog).toContainText('exactly as the attacker uploaded it')
+  await expect(dialog).toContainText('64-bit x86-64 ELF')
+  await expect(dialog).toContainText('a'.repeat(64))
+  await expect(dialog).toContainText('recorded in the audit log')
+  // One click is not enough: it has to be acknowledged.
+  const confirm = dialog.getByRole('button', { name: 'Download sample' })
+  await expect(confirm).toBeDisabled()
+  expect(downloads).toBe(0)
+
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByRole('dialog', { name: 'Download a live malware sample?' })).toHaveCount(0)
+  expect(downloads).toBe(0)
+
+  await page.getByRole('button', { name: /Download sample/ }).click()
+  await page.getByLabel(/I understand this file is live malware/).check()
+  const download = page.waitForEvent('download')
+  await page.getByRole('dialog', { name: 'Download a live malware sample?' }).getByRole('button', { name: 'Download sample' }).click()
+  expect((await download).suggestedFilename()).toBe(`${'a'.repeat(64)}.bin`)
+  expect(downloads).toBe(1)
+})
+
+test('a failed payload list is not shown as "no payloads", and the linked sample can be retried', async ({ page }) => {
+  let detailFails = true
+  let detailReads = 0
+  await page.route('**/api/v1/payloads/?**', (route) => route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } }))
+  await page.route('**/api/v1/payloads/' + 'a'.repeat(64), (route) => {
+    detailReads += 1
+    return detailFails
+      ? route.fulfill({ status: 502, json: { detail: 'Bad gateway' } })
+      : route.fulfill({ json: DETAIL })
+  })
+  await page.goto('/payloads?sha=' + 'a'.repeat(64))
+  await expect(page.getByRole('alert').filter({ hasText: 'Could not load payloads' })).toBeVisible()
+  await expect(page.getByText(/No payloads/)).toHaveCount(0)
+
+  const banner = page.getByRole('alert').filter({ hasText: 'Could not open the linked sample' })
+  await expect(banner).toContainText('Bad gateway')
+  const before = detailReads
+  detailFails = false
+  // "Try again" used to set the address to what it already was.
+  await banner.getByRole('button', { name: 'Try again' }).click()
+  await expect.poll(() => detailReads).toBeGreaterThan(before)
+  await expect(page.getByRole('heading', { name: 'ELF binary' })).toBeVisible()
+})
+
+test('on a narrow screen the sample opens in a dialog that Escape closes', async ({ page }) => {
+  await page.setViewportSize({ width: 412, height: 915 })
+  await page.goto('/payloads')
+  await page.getByRole('button', { name: /likely Mirai/ }).click()
+  const sheet = page.getByRole('dialog', { name: 'Sample analysis' })
+  await expect(sheet.getByRole('heading', { name: 'ELF binary' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page).not.toHaveURL(/sha=/)
 })

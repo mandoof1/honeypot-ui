@@ -172,33 +172,54 @@ test('the session panel shows the model analysis, the rule reason, and can queue
   await expect(block).toContainText('Deploy a cryptominer')
   await expect(block).toContainText('persist via cron')
   await expect(block).toContainText('Script kiddie')
-  await expect(block).toContainText('82%')
+  // The model's own figure is shown as a score, named for what it is.
+  await expect(block).toContainText('Self-reported confidence')
+  await expect(block).toContainText('0.82')
+  await expect(block).toContainText('Written by the language model wolfram')
   await expect(page.getByText(/Matched:/)).toContainText('2 file upload(s)')
-  await expect(page.getByText('model', { exact: true })).toBeVisible()
+  await expect(page.getByText('language model', { exact: true })).toBeVisible()
   await block.getByRole('button', { name: 'Analyse again' }).click()
   await expect(block).toContainText('Queued')
   expect(api.calls.some((c) => c.method === 'POST' && c.path.endsWith('/sessions/1/enrich'))).toBe(true)
 })
 
-test('the session selection survives the background refresh', async ({ page }) => {
+test('a linked session on another page stays open, and stays current, across background refreshes', async ({ page }) => {
   // The selected session lives on another page, as an alert link produces.
   let lists = 0
+  let reads = 0
   await mockApi(page, {
     handlers: {
       'GET .*/sessions/$': (route) => { lists += 1; return route.fulfill({ json: { sessions: [session], total: 1 } }) },
-      'GET .*/sessions/99$': (route) => route.fulfill({ json: { ...session, id: 99, session_uuid: 'outside-page' } }),
+      // Still running when first opened; finished by the next read.
+      'GET .*/sessions/99$': (route) => {
+        reads += 1
+        return route.fulfill({
+          json: { ...session, id: 99, session_uuid: 'outside-page', has_transcript: true, status: reads < 2 ? 'active' : 'completed' },
+        })
+      },
+      'GET .*/sessions/99/transcript$': (route) => route.fulfill({
+        json: { session_id: 99, session_uuid: 'outside-page', available: true, entries: [{ command: 'id', output: 'uid=0(root)\n', exit_code: 0 }] },
+      }),
     },
   }).route
+  await page.setViewportSize({ width: 1400, height: 900 })
   await page.clock.install()
   await page.goto('/sessions?session=99')
-  await expect(page.getByText('outside-page', { exact: true }).last()).toBeVisible()
-  const detailRequests = []
-  page.on('request', (req) => { if (/\/sessions\/99$/.test(new URL(req.url()).pathname)) detailRequests.push(1) })
+  await expect(page.getByText('outside-page', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('session-status')).toHaveText('active')
+  // Open the transcript: a refresh must not close it again.
+  await page.getByRole('button', { name: /Transcript/ }).click()
+  await expect(page.getByText('uid=0(root)')).toBeVisible()
+
   // Two poll ticks.
   await page.clock.runFor(31_000)
   await expect.poll(() => lists).toBeGreaterThanOrEqual(2)
-  await expect(page.getByText('outside-page', { exact: true }).last()).toBeVisible()
-  expect(detailRequests.length).toBe(0)
+  await expect(page.getByText('outside-page', { exact: true })).toBeVisible()
+  // It was re-read, and the panel shows what the server now says...
+  await expect(page.getByTestId('session-status')).toHaveText('completed')
+  expect(reads).toBeGreaterThanOrEqual(2)
+  // ...without being remounted: the transcript is still open.
+  await expect(page.getByText('uid=0(root)')).toBeVisible()
 })
 
 test('alerts can carry notes, be bulk-acknowledged, and system alerts have no session link', async ({ page }) => {
@@ -286,6 +307,7 @@ test('viewers do not see account management', async ({ page }) => {
 test('signing in returns to the page that was asked for', async ({ page }) => {
   await page.addInitScript(() => localStorage.removeItem('access_token'))
   let authed = false
+  const alertQueries = []
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url())
     if (url.pathname.endsWith('/auth/login')) {
@@ -295,9 +317,12 @@ test('signing in returns to the page that was asked for', async ({ page }) => {
     if (url.pathname.endsWith('/auth/me')) {
       return authed ? route.fulfill({ json: ADMIN }) : route.fulfill({ status: 401, json: { detail: 'no' } })
     }
-    if (url.pathname.endsWith('/alerts/')) return route.fulfill({ json: { alerts: [], total: 0 } })
+    if (url.pathname.endsWith('/alerts/')) {
+      alertQueries.push(url.searchParams.get('status'))
+      return route.fulfill({ json: { alerts: [], total: 0 } })
+    }
     if (url.pathname.endsWith('/alerts/stats')) return route.fulfill({ json: { new: 0 } })
-    return route.fulfill({ json: Array.isArray([]) && url.pathname.endsWith('/nodes/') ? [] : {} })
+    return route.fulfill({ json: url.pathname.endsWith('/nodes/') ? [] : {} })
   })
   await page.goto('/alerts?status=resolved')
   await expect(page).toHaveURL(/\/login\?next=%2Falerts%3Fstatus%3Dresolved/)
@@ -306,6 +331,11 @@ test('signing in returns to the page that was asked for', async ({ page }) => {
   await page.getByLabel('Password', { exact: true }).fill('correct horse battery')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page).toHaveURL(/\/alerts\?status=resolved$/)
+  // The page that was asked for is the page that opens: the filter in the
+  // address is the filter in force, and the one sent to the API.
+  await expect(page.getByLabel('Status')).toHaveValue('resolved')
+  await expect.poll(() => alertQueries.at(-1)).toBe('resolved')
+  expect(alertQueries.every((status) => status === 'resolved')).toBe(true)
 })
 
 test('a transient failure to load the account does not sign the user out', async ({ page }) => {
