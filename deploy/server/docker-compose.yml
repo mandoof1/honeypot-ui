@@ -75,12 +75,12 @@ x-backend-env: &backend_env
   # Caddy is the only thing that can reach the API, and it sets
   # X-Forwarded-For itself.
   TRUST_PROXY_HEADERS: "true"
-  # The proxies in front of the API and nothing else: loopback (Tailscale
-  # Serve), Caddy on hs-app, and the hs-edge gateway through which Caddy
-  # receives the published loopback port. Not the engine or decoy subnets:
-  # an address listed here is believed when it names someone else as the
-  # client.
-  TRUSTED_PROXIES: 127.0.0.0/8,::1,172.30.70.0/24,172.30.72.0/24
+  # Caddy's two networks and nothing else: hs-app, from which it connects to
+  # the API, and hs-edge, whose gateway is the hop Caddy appends for requests
+  # arriving through the published loopback port (Tailscale Serve). Not the
+  # engine, decoy or control subnets: an address listed here is believed
+  # when it names someone else as the client.
+  TRUSTED_PROXIES: 172.30.70.0/24,172.30.72.0/24
   # Never: the seed inserts 150 synthetic sessions. install.sh creates
   # the administrator without them.
   SEED_ON_STARTUP: "false"
@@ -108,6 +108,8 @@ x-backend-env: &backend_env
   AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
   NODE_OFFLINE_ALERT_SECONDS: ${NODE_OFFLINE_ALERT_SECONDS:-300}
   IOC_FEED_TOKEN: ${IOC_FEED_TOKEN:-}
+  # Addresses that must never appear in the blocklist feed (your own).
+  IOC_FEED_ALLOWLIST: ${IOC_FEED_ALLOWLIST:-}
   # No container here can open an outbound connection, so these do nothing
   # on this deployment; see deploy/server/README.md, "Alerts leave by the
   # host".
@@ -414,6 +416,10 @@ services:
       HONEYPOT_ANTI_FINGERPRINT: "true"
       HONEYPOT_ADAPTIVE_RESPONSE: "true"
       HONEYPOT_ENABLE_ISOLATION: "true"
+      # Seconds between the engine's own isolation checks (it tries to connect
+      # out and to the host); the result travels in every heartbeat.
+      HONEYPOT_ISOLATION_CHECK_INTERVAL: ${HONEYPOT_ISOLATION_CHECK_INTERVAL:-600}
+      HONEYPOT_AI_CANARY: ${HONEYPOT_AI_CANARY:-true}
       HONEYPOT_DOCKER_NETWORK: honeysentinel_engine
       HONEYPOT_FTP_PASV_PORTS: "50000-50009"
       # Passive FTP advertises this address to clients; it must be the

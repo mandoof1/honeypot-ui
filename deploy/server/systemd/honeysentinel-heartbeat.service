@@ -1,0 +1,8 @@
+[Unit]
+Description=HoneySentinel: host health check and dead man's switch ping
+After=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/host-heartbeat.sh

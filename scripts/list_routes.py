@@ -102,6 +102,19 @@ def _prefixes() -> dict[str, str]:
     tree = ast.parse((API_DIR / "__init__.py").read_text(encoding="utf-8"))
     found: dict[str, str] = {}
     for node in ast.walk(tree):
+        # The mount table: (auth.router, "/auth", "Authentication"), ...
+        if isinstance(node, ast.Tuple) and len(node.elts) >= 2:
+            first, second = node.elts[0], node.elts[1]
+            if (
+                isinstance(first, ast.Attribute)
+                and first.attr == "router"
+                and isinstance(first.value, ast.Name)
+                and isinstance(second, ast.Constant)
+                and isinstance(second.value, str)
+            ):
+                found[first.value.id] = second.value
+            continue
+        # The older form: router.include_router(auth.router, prefix="/auth").
         if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "include_router"):
             continue
         if not node.args:

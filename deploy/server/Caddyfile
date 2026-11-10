@@ -3,10 +3,12 @@
 	auto_https off
 	servers {
 		# Tailscale Serve terminates TLS on the host and forwards from
-		# loopback, which reaches this container through Docker's bridge.
-		# Trusting private ranges keeps the X-Forwarded-For it sets, so the
-		# API's per-client rate limit sees the real tailnet address.
-		trusted_proxies static private_ranges
+		# loopback, which reaches this container through the hs-edge bridge.
+		# Trusting that bridge keeps the X-Forwarded-For Serve sets, so the
+		# API's per-client rate limit sees the real tailnet address. Only
+		# that bridge: with every private range trusted, anything that could
+		# reach this port could name any client it liked.
+		trusted_proxies static 172.30.72.0/24
 	}
 }
 

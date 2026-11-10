@@ -1,0 +1,9 @@
+[Unit]
+Description=HoneySentinel: refresh the geolocation database
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=honeysentinel-alert@%p.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/honeysentinel/deploy/server/fetch-geoip.sh --restart
