@@ -345,6 +345,24 @@ class NetworkEvent(BaseModel):
     reason: Optional[str] = None
     since: Optional[float] = None
     at: Optional[float] = None
+    #: ai_canary_triggered: which bait was acted on, and through which channel
+    #: ("shell", "file" or "http"). honeytoken_used: which planted secret came
+    #: back, and as what ("credential", "api_key" or "path").
+    canary: Optional[str] = None
+    channel: Optional[str] = None
+    token_id: Optional[str] = None
+    kind: Optional[str] = None
+    detail: Optional[str] = None
+    #: direct_tcpip: where an SSH client asked to be forwarded, and from where.
+    dest_host: Optional[str] = None
+    dest_port: Optional[int] = None
+    orig_host: Optional[str] = None
+    orig_port: Optional[int] = None
+    #: connection_refused: how many connections one record stands for.
+    count: Optional[int] = None
+    first_seen: Optional[float] = None
+    #: payload_execution: the interpreter a fetched file was handed to.
+    interpreter: Optional[str] = None
 
 
 class HoneypotSessionResponse(BaseModel):

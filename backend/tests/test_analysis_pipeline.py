@@ -561,3 +561,21 @@ class TestTools:
         header = evidence_header(args, what="a measurement")
         assert header["what"] == "a measurement" and header["model"] == "Kev-4B Q8_0, 6 threads"
         assert header["measured"] and header["git_revision"] and "arguments" in header
+
+
+def test_the_session_response_keeps_the_fields_of_the_new_event_types():
+    """The schema used to list only the dropper and diversion fields, so a
+    canary or honeytoken event reached the console as a bare event type."""
+    from app.schemas import NetworkEvent
+
+    canary = NetworkEvent(event_type="ai_canary_triggered", canary="c1", channel="shell", detail="ran the marker")
+    token = NetworkEvent(event_type="honeytoken_used", token_id="db-password", kind="credential", detail="ssh login")
+    forward = NetworkEvent(event_type="direct_tcpip", dest_host="192.0.2.7", dest_port=25, orig_host="10.0.0.1", orig_port=4000)
+    refused = NetworkEvent(event_type="connection_refused", reason="rate_limited", count=12, first_seen=1.0)
+
+    assert canary.model_dump(exclude_none=True) == {
+        "event_type": "ai_canary_triggered", "canary": "c1", "channel": "shell", "detail": "ran the marker",
+    }
+    assert token.token_id == "db-password" and token.kind == "credential"
+    assert (forward.dest_host, forward.dest_port, forward.orig_port) == ("192.0.2.7", 25, 4000)
+    assert refused.count == 12 and refused.first_seen == 1.0
