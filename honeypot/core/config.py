@@ -47,6 +47,11 @@ def _optional_int_env(name: str) -> Optional[int]:
         return None
 
 
+#: The ingest token the code ships with. Everyone who has read the
+#: repository knows it, so the engine refuses to start with it.
+DEFAULT_INGEST_TOKEN = "honeypot-ingest-token-change-in-production"
+
+
 class OperationalMode(str, Enum):
     ACTIVE_EMULATION = "active"
     PASSIVE_MONITORING = "passive"
@@ -198,8 +203,27 @@ class HoneypotConfig:
     ).lower() == "true"
     docker_network: str = os.getenv("HONEYPOT_DOCKER_NETWORK", "honeypot_isolated")
 
+    #: Profile each source address from what it does (tools, techniques,
+    #: volume) and send the resulting label to the backend with its sessions
+    #: as ``threat_profile``. Off: no profiling, no label. The name is
+    #: historical — nothing about the decoy's responses changes with it.
     adaptive_response: bool = os.getenv(
         "HONEYPOT_ADAPTIVE_RESPONSE", "true"
+    ).lower() == "true"
+    #: Plant a note addressed to automated assistants in each home directory
+    #: and raise ``ai_canary_triggered`` when a session acts on it; see
+    #: honeypot/core/canary.py.
+    ai_canary: bool = os.getenv("HONEYPOT_AI_CANARY", "true").lower() == "true"
+    #: Seconds a source that was let in with a guessed password may come
+    #: back with the same credential and be let in again.
+    accepted_login_ttl: int = _int_env("HONEYPOT_ACCEPTED_LOGIN_TTL", 7 * 86400)
+    #: Seconds between isolation checks, so the heartbeat reports the
+    #: current state and not the one found at startup. 0 checks only once.
+    isolation_check_interval: int = _int_env("HONEYPOT_ISOLATION_CHECK_INTERVAL", 600)
+    #: Start even though HONEYPOT_INGEST_TOKEN is still the published
+    #: default. For a throwaway local run only.
+    allow_default_token: bool = os.getenv(
+        "HONEYPOT_ALLOW_DEFAULT_TOKEN", "false"
     ).lower() == "true"
 
     # Management API. Bound separately from the emulators so it can be kept
@@ -213,8 +237,16 @@ class HoneypotConfig:
         "BACKEND_API_URL", "http://backend:8000/api/v1"
     )
     ingest_token: str = os.getenv(
-        "HONEYPOT_INGEST_TOKEN", "honeypot-ingest-token-change-in-production"
+        "HONEYPOT_INGEST_TOKEN", DEFAULT_INGEST_TOKEN
     )
+    #: Token the control API accepts. Unset, it is the ingest token, as it
+    #: always was; set, only this one opens the control API, so the secret
+    #: that can change the engine's mode is not the one every ingest carries.
+    control_token: str = os.getenv("HONEYPOT_CONTROL_TOKEN", "")
+
+    @property
+    def effective_control_token(self) -> str:
+        return self.control_token or self.ingest_token
 
 
 config = HoneypotConfig()

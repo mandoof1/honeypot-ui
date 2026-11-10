@@ -667,6 +667,30 @@ class SessionManager:
                     "success": success,
                 }
             )
+            await self._check_honeytoken(session, username or "", password or "")
+
+    async def _check_honeytoken(self, session: SessionRecord, username: str, password: str) -> None:
+        """Raise ``honeytoken_used`` when a login presents a planted secret.
+
+        Here rather than in any one emulator: SSH, Telnet, FTP and the web
+        login forms all record their attempts through this method, so all of
+        them are covered. Once per token per session — a brute-forcer
+        replaying the same planted password is one finding, not two hundred.
+        """
+        try:
+            from honeypot.core import honeytokens
+
+            hit = honeytokens.match_credential(username, password)
+        except Exception as exc:  # pragma: no cover - never fail a login record
+            logger.debug("Honeytoken check failed: %s", exc)
+            return
+        if hit is None:
+            return
+        seen = session.metadata.setdefault("honeytokens_seen", [])
+        if hit["token_id"] in seen:
+            return
+        seen.append(hit["token_id"])
+        await self.record_network_event(session.session_id, "honeytoken_used", hit)
 
     async def set_threat_profile(self, session_id: str, profile: str):
         session = await self.get_session(session_id)
