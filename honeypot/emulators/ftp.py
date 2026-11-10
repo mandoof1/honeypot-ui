@@ -1,48 +1,101 @@
 import asyncio
+import hashlib
 import inspect
 import logging
 import os
+import posixpath
 import random
+import time
+from dataclasses import dataclass
 from typing import Optional
 
 from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
+from honeypot.core.honeytokens import get_honeytokens
 from honeypot.core.identity import get_identity
 from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
-from honeypot.adaptive.fingerprint import fingerprint_engine
+from honeypot.emulators.ftp_dialect import Dialect
 from honeypot.adaptive.response import adaptive_engine
 
 logger = logging.getLogger(__name__)
+
+#: The files every client finds, before it changes anything.
+_BASE_FS = {
+    "/": ["pub", "incoming", "readme.txt", "config.bak"],
+    "/pub": ["documents", "software", "files"],
+    "/pub/documents": ["report.pdf", "notes.txt", "data.csv"],
+    "/pub/software": ["update.exe", "patch.zip", "installer.msi"],
+    "/pub/files": ["backup.tar.gz", "database.sql", "logs.zip"],
+    "/incoming": [],
+}
+
+#: Leading bytes for the generated files, so each is the type its name says.
+_MAGIC = {
+    "pdf": b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n",
+    "zip": b"PK\x03\x04\x14\x00\x00\x00\x08\x00",
+    "gz": b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03",
+    "exe": b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00",
+    "msi": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+}
+_TEXT_EXTENSIONS = ("txt", "csv", "sql")
+_WORDS = (
+    "backup", "nightly", "transfer", "completed", "archive", "rotated",
+    "report", "pending", "checked", "mirror", "updated", "invoice",
+    "queue", "export", "window", "verified",
+)
 
 
 def _stable_meta(name: str) -> tuple[int, float]:
     """A size and mtime for a listed file, stable for its name on this host.
 
-    Derived from the host identity's seed, so LIST, SIZE and MDTM agree with
-    one another and do not change between two listings — random sizes on every
-    call were a giveaway that nothing was really there.
+    Derived from the host identity's seed, so LIST, SIZE, MDTM and what RETR
+    sends agree with one another and do not change between two calls. The
+    time is anchored to the machine's boot time, not to now: counted back
+    from the present it moved with every call, so two MDTMs a second apart
+    disagreed.
     """
-    import hashlib
-    import time
-
-    seed = f"{get_identity().seed}:{name}".encode()
-    digest = hashlib.sha256(seed).digest()
-    size = 180 + int.from_bytes(digest[:4], "big") % 240_000
-    # Between ~30 and ~400 days old, stable per name.
+    identity = get_identity()
+    digest = hashlib.sha256(f"{identity.seed}:{name}".encode()).digest()
+    if name.endswith("config.bak"):
+        # The planted configuration backup: its size is the file's own.
+        size = len(get_honeytokens().config_backup().encode())
+    else:
+        size = 180 + int.from_bytes(digest[:4], "big") % 240_000
+    # Between ~30 and ~400 days before boot, stable per name.
     age = 30 * 86400 + int.from_bytes(digest[4:8], "big") % (370 * 86400)
-    mtime = time.time() - age
-    return size, mtime
+    return size, float(int(identity.boot_time) - age)
 
 
-def _list_date(mtime: float) -> str:
-    """The date column as `ls`/LIST formats it: time if recent, else year."""
-    import time
+def _file_content(path: str) -> bytes:
+    """The bytes of a deployment file: always the same, and exactly as many
+    as SIZE and LIST report.
 
-    now = time.time()
-    fmt = "%b %e %H:%M" if (now - mtime) < 180 * 86400 else "%b %e  %Y"
-    return time.strftime(fmt, time.gmtime(mtime))
+    RETR used to send a random number of random bytes, a different file on
+    every download and never the size just listed.
+    """
+    if path.endswith("config.bak"):
+        return get_honeytokens().config_backup().encode()
+    size, _ = _stable_meta(path)
+    seed = f"{get_identity().seed}:{path}"
+    extension = path.rsplit(".", 1)[-1].lower()
+    if extension in _TEXT_EXTENSIONS:
+        rng = random.Random(seed)
+        lines: list[str] = []
+        length = 0
+        while length < size:
+            if extension == "csv":
+                line = f"{rng.randint(1000, 99999)},2024-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d},{rng.randint(1, 90000) / 100:.2f}"
+            elif extension == "sql":
+                line = f"INSERT INTO records VALUES ({rng.randint(1, 999999)}, '{rng.choice(_WORDS)}', {rng.randint(0, 9999)});"
+            else:
+                line = " ".join(rng.choice(_WORDS) for _ in range(rng.randint(4, 11)))
+            lines.append(line)
+            length += len(line) + 1
+        return ("\n".join(lines)[: size - 1] + "\n").encode()
+    magic = _MAGIC.get(extension, b"")
+    return (magic + hashlib.shake_256(seed.encode()).digest(size))[:size]
 
 
 #: How long to wait for the client to open the data connection, and for a
@@ -134,19 +187,131 @@ class PassiveDataChannel:
             self._server = None
 
 
+@dataclass
+class _File:
+    size: int
+    mtime: float
+    #: The deployment file whose bytes this is, wherever it was renamed to.
+    origin: Optional[str] = None
+    #: An upload's digest, under which its bytes sit in the capture directory.
+    sha: Optional[str] = None
+
+
+class FtpTree:
+    """One client's view of the files: the deployment's, plus its changes.
+
+    MKD, RMD, DELE and RNFR/RNTO used to answer "successful" and change
+    nothing, so a client that made a directory could not enter it and a file
+    it deleted was still listed. Each session now has its own tree, starting
+    from the same files, so a client sees what it did and nobody else does.
+    """
+
+    #: Entries one session's tree may hold, so MKD in a loop is not a way to
+    #: use the engine's memory.
+    MAX_ENTRIES = 512
+    MAX_PATH = 1024
+
+    def __init__(self) -> None:
+        self.dirs: set[str] = set(_BASE_FS)
+        self.files: dict[str, _File] = {}
+        for directory, names in _BASE_FS.items():
+            for name in names:
+                path = posixpath.join(directory, name)
+                if path not in _BASE_FS:
+                    self.files[path] = _File(*_stable_meta(path), origin=path)
+
+    def is_dir(self, path: str) -> bool:
+        return path in self.dirs
+
+    def exists(self, path: str) -> bool:
+        return path in self.dirs or path in self.files
+
+    def _room(self, path: str) -> bool:
+        return (
+            len(path) <= self.MAX_PATH
+            and len(self.dirs) + len(self.files) < self.MAX_ENTRIES
+        )
+
+    def children(self, path: str) -> list[tuple[str, Optional[_File]]]:
+        """(name, file) for each entry of a directory; file is None for a
+        directory. Sorted by name, as both servers list."""
+        entries: list[tuple[str, Optional[_File]]] = []
+        for directory in self.dirs:
+            if directory != "/" and posixpath.dirname(directory) == path:
+                entries.append((posixpath.basename(directory), None))
+        for file_path, node in self.files.items():
+            if posixpath.dirname(file_path) == path:
+                entries.append((posixpath.basename(file_path), node))
+        return sorted(entries, key=lambda entry: entry[0])
+
+    def mkdir(self, path: str) -> bool:
+        if self.exists(path) or posixpath.dirname(path) not in self.dirs or not self._room(path):
+            return False
+        self.dirs.add(path)
+        return True
+
+    def rmdir(self, path: str) -> str:
+        """"ok", "missing" or "not_empty"."""
+        if path == "/" or path not in self.dirs:
+            return "missing"
+        if self.children(path):
+            return "not_empty"
+        self.dirs.discard(path)
+        return "ok"
+
+    def delete(self, path: str) -> bool:
+        return self.files.pop(path, None) is not None
+
+    def put(self, path: str, node: _File) -> bool:
+        if path in self.dirs or posixpath.dirname(path) not in self.dirs:
+            return False
+        if path not in self.files and not self._room(path):
+            return False
+        self.files[path] = node
+        return True
+
+    def rename(self, source: str, target: str) -> bool:
+        if not self.exists(source) or source == "/" or len(target) > self.MAX_PATH:
+            return False
+        if posixpath.dirname(target) not in self.dirs or target in self.dirs:
+            return False
+        if source in self.files:
+            self.files[target] = self.files.pop(source)
+            return True
+        if target == source or target.startswith(source + "/"):
+            return False
+        # A directory takes everything under it along.
+        prefix = source + "/"
+        for directory in [d for d in self.dirs if d == source or d.startswith(prefix)]:
+            self.dirs.discard(directory)
+            self.dirs.add(target + directory[len(source):])
+        for file_path in [f for f in self.files if f.startswith(prefix)]:
+            self.files[target + file_path[len(source):]] = self.files.pop(file_path)
+        return True
+
+
 class FTPSessionState:
     def __init__(self):
         self.username: Optional[str] = None
         self.password: Optional[str] = None
         self.authenticated = False
+        self.auth_failures = 0
         self.cwd = "/"
-        self.passive_mode = False
-        self.transfer_type = "I"
-        self.data_port: Optional[int] = None
+        self.client_ip = ""
+        #: Both servers start a session in ASCII type.
+        self.transfer_type = "A"
         self.data_channel: Optional[PassiveDataChannel] = None
-        #: Files uploaded this session: path -> (sha256, size). Kept per
-        #: session so one attacker never sees another's uploads.
-        self.uploaded: dict[str, tuple[str, int]] = {}
+        #: The client asked for an active-mode transfer (PORT/EPRT).
+        self.active_mode = False
+        self.rename_from: Optional[str] = None
+        self.restart_at = 0
+        self._tree: Optional[FtpTree] = None
+
+    @property
+    def tree(self) -> FtpTree:
+        if self._tree is None:
+            self._tree = FtpTree()
+        return self._tree
 
 
 class FTPHoneypot(BaseEmulator):
@@ -160,17 +325,18 @@ class FTPHoneypot(BaseEmulator):
             "user": "password",
             "test": "test",
         }
-        self._fake_fs = {
-            "/": ["pub", "incoming", "readme.txt", "config.bak"],
-            "/pub": ["documents", "software", "files"],
-            "/pub/documents": ["report.pdf", "notes.txt", "data.csv"],
-            "/pub/software": ["update.exe", "patch.zip", "installer.msi"],
-            "/pub/files": ["backup.tar.gz", "database.sql", "logs.zip"],
-            "/incoming": [],
-        }
 
     def get_banner(self) -> str:
-        return fingerprint_engine.get_ftp_banner()
+        # Straight from the identity. This went through a switch that, with
+        # HONEYPOT_ANTI_FINGERPRINT=false, greeted clients with the
+        # product's own name.
+        return get_identity().ftp_banner_text()
+
+    @staticmethod
+    def _dialect() -> Dialect:
+        """The reply texts of the server the banner names."""
+        identity = get_identity()
+        return Dialect(identity.ftp_family, identity.fqdn)
 
     async def _observe_passively(self, session_id: str, reader: asyncio.StreamReader) -> None:
         """Passive mode: record the connection, send nothing.
@@ -208,14 +374,18 @@ class FTPHoneypot(BaseEmulator):
             "ftp", source_ip, source_port, flow=flow
         )
         state = FTPSessionState()
+        state.client_ip = source_ip
+        dialect = self._dialect()
+        # vsftpd's idle_session_timeout and ProFTPD's TimeoutIdle.
+        idle = config.connection_timeout or (600 if dialect.family == "proftpd" else 300)
 
         try:
             if mode_handler.is_passive():
                 await self._observe_passively(session_id, reader)
                 return
 
-            # The rotating banner strings carry no line terminator; without
-            # CRLF a real FTP client blocks forever waiting for the greeting.
+            # The banner string carries no line terminator; without CRLF a
+            # real FTP client blocks forever waiting for the greeting.
             banner = self.get_banner().rstrip("\r\n") + "\r\n"
             await self._send_response(writer, banner)
             await session_manager.record_network_event(
@@ -224,39 +394,47 @@ class FTPHoneypot(BaseEmulator):
 
             while True:
                 try:
-                    data = await asyncio.wait_for(reader.readline(), timeout=120)
-                    if not data:
-                        break
-
-                    line = data.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-
-                    await session_manager.record_network_event(
-                        session_id, "ftp_command_received", {"command": line}
-                    )
-
-                    response = await self._process_command(
-                        session_id, line, state, source_ip, reader, writer
-                    )
-                    verb = line.split(" ", 1)[0].upper()
-                    # Into the transcript the backend reads; network events
-                    # never leave the engine. LIST records itself with its
-                    # listing. The password is already in the credentials,
-                    # which are admin-only — the transcript is not.
-                    if verb != "LIST":
-                        await session_manager.record_command(
-                            session_id,
-                            "PASS ********" if verb == "PASS" else line[:2000],
-                            output=(response or "").strip()[:2000],
-                        )
-                    await self._send_response(writer, response)
-
-                    if line.upper() in ("QUIT", "BYE"):
-                        break
-
+                    data = await asyncio.wait_for(reader.readline(), timeout=idle)
                 except asyncio.TimeoutError:
-                    await self._send_response(writer, "421 Connection timed out.\r\n")
+                    await self._send_response(writer, dialect.reply("timeout"))
+                    break
+                except ValueError:
+                    # A line past the stream's limit. It used to end the
+                    # session without a word or a record.
+                    await session_manager.record_command(
+                        session_id, "(command line over 64 KiB)",
+                        output=dialect.reply("line_too_long").strip(),
+                    )
+                    await self._send_response(writer, dialect.reply("line_too_long"))
+                    break
+                if not data:
+                    break
+
+                line = data.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+
+                await session_manager.record_network_event(
+                    session_id, "ftp_command_received", {"command": line[:2000]}
+                )
+
+                response = await self._process_command(
+                    session_id, line, state, source_ip, reader, writer
+                )
+                verb = line.split(" ", 1)[0].upper()
+                # Into the transcript the backend reads; network events
+                # never leave the engine. LIST records itself with its
+                # listing. The password is already in the credentials,
+                # which are admin-only — the transcript is not.
+                if verb != "LIST":
+                    await session_manager.record_command(
+                        session_id,
+                        "PASS ********" if verb == "PASS" else line[:2000],
+                        output=(response or "").strip()[:2000],
+                    )
+                await self._send_response(writer, response)
+
+                if verb in ("QUIT", "BYE"):
                     break
 
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
@@ -283,38 +461,32 @@ class FTPHoneypot(BaseEmulator):
         writer: asyncio.StreamWriter,
     ) -> str:
         local_ip = self._get_local_ip(writer)
+        dialect = self._dialect()
 
         parts = line.split(None, 1)
-        cmd = parts[0].upper()
+        cmd = parts[0].upper()[:32]
         arg = parts[1] if len(parts) > 1 else ""
 
         await adaptive_engine.profile_actor(session_id, source_ip, {"ftp_command": cmd})
 
-        if not state.authenticated and cmd not in (
-            "USER", "PASS", "QUIT", "BYE", "FEAT", "OPTS", "AUTH", "PBSZ", "PROT",
-        ):
-            return "530 Please login with USER and PASS.\r\n"
+        if not state.authenticated and cmd not in ("USER", "PASS", "QUIT", "BYE", "FEAT", "OPTS"):
+            if dialect.family == "proftpd" and cmd in ("AUTH", "PBSZ", "PROT"):
+                # No TLS module: to ProFTPD these are not commands at all.
+                return dialect.reply("unknown", command=cmd)
+            return dialect.reply("need_login")
 
         handlers = {
             "USER": lambda: self._cmd_user(arg, state),
             "PASS": lambda: self._cmd_pass(arg, state, session_id),
-            "QUIT": lambda: self._cmd_quit(),
-            "BYE": lambda: self._cmd_quit(),
-            "NOOP": lambda: "200 NOOP ok.\r\n",
-            "SYST": lambda: "215 UNIX Type: L8\r\n",
-            "FEAT": lambda: (
-                "211-Features:\r\n"
-                " EPRT\r\n"
-                " EPSV\r\n"
-                " MDTM\r\n"
-                " PASV\r\n"
-                " REST STREAM\r\n"
-                " SIZE\r\n"
-                " TVFS\r\n"
-                " UTF8\r\n"
-                "211 End\r\n"
+            "QUIT": lambda: dialect.reply("quit"),
+            "BYE": lambda: dialect.reply("quit"),
+            "NOOP": lambda: dialect.reply("noop"),
+            "SYST": lambda: dialect.reply("syst"),
+            "FEAT": dialect.feat,
+            "HELP": dialect.help,
+            "OPTS": lambda: dialect.reply(
+                "opts_utf8" if arg.upper().replace(" ", "") == "UTF8ON" else "opts_bad", arg=arg
             ),
-            "OPTS": lambda: "200 OK\r\n",
             "PWD": lambda: self._cmd_pwd(state),
             "XPWD": lambda: self._cmd_pwd(state),
             "CWD": lambda: self._cmd_cwd(arg, state),
@@ -322,53 +494,70 @@ class FTPHoneypot(BaseEmulator):
             "CDUP": lambda: self._cmd_cdup(state),
             "XCUP": lambda: self._cmd_cdup(state),
             "TYPE": lambda: self._cmd_type(arg, state),
+            "MODE": lambda: dialect.reply("mode_ok" if arg.upper() == "S" else "mode_bad", arg=arg),
+            "STRU": lambda: dialect.reply("stru_ok" if arg.upper() == "F" else "stru_bad", arg=arg),
+            "ALLO": lambda: dialect.reply("allo"),
+            "ABOR": lambda: dialect.reply("abor"),
             "PASV": lambda: self._cmd_pasv(local_ip, state, source_ip),
             "EPSV": lambda: self._cmd_epsv(state, source_ip),
-            "PORT": lambda: self._cmd_port(arg, state),
-            "EPRT": lambda: self._cmd_port(arg, state),
+            "PORT": lambda: self._cmd_port(session_id, cmd, arg, state),
+            "EPRT": lambda: self._cmd_port(session_id, cmd, arg, state),
             "LIST": lambda: self._cmd_list(session_id, arg, state, writer),
             "NLST": lambda: self._cmd_nlst(arg, state, writer),
             "RETR": lambda: self._cmd_retr(session_id, arg, state, writer),
             "STOR": lambda: self._cmd_stor(session_id, arg, state, writer),
             "STOU": lambda: self._cmd_stor(session_id, arg, state, writer),
-            "DELE": lambda: self._cmd_dele(arg),
-            "RMD": lambda: self._cmd_rmd(arg),
-            "MKD": lambda: self._cmd_mkd(arg),
-            "XMKD": lambda: self._cmd_mkd(arg),
-            "RNFR": lambda: "350 Ready for RNTO.\r\n",
-            "RNTO": lambda: "250 Rename successful.\r\n",
+            "APPE": lambda: self._cmd_stor(session_id, arg, state, writer),
+            "DELE": lambda: self._cmd_dele(arg, state),
+            "RMD": lambda: self._cmd_rmd(arg, state),
+            "XRMD": lambda: self._cmd_rmd(arg, state),
+            "MKD": lambda: self._cmd_mkd(arg, state),
+            "XMKD": lambda: self._cmd_mkd(arg, state),
+            "RNFR": lambda: self._cmd_rnfr(arg, state),
+            "RNTO": lambda: self._cmd_rnto(arg, state),
             "SIZE": lambda: self._cmd_size(arg, state),
             "MDTM": lambda: self._cmd_mdtm(arg, state),
-            "REST": lambda: f"350 Restart position accepted ({arg}).\r\n",
-            "APPE": lambda: self._cmd_stor(session_id, arg, state, writer),
+            "REST": lambda: self._cmd_rest(arg, state),
             "STAT": lambda: self._cmd_stat(state),
-            "HELP": lambda: (
-                "214-The following commands are recognized:\r\n"
-                " USER PASS QUIT NOOP SYST FEAT OPTS PWD CWD CDUP\r\n"
-                " TYPE PASV EPSV PORT LIST NLST RETR STOR DELE\r\n"
-                " RMD MKD RNFR RNTO SIZE MDTM REST APPE STAT HELP\r\n"
-                "214 Help OK.\r\n"
-            ),
+            "SITE": lambda: dialect.reply("site", arg=arg),
+            "REIN": lambda: dialect.reply("not_implemented", command=cmd),
+            "ACCT": lambda: dialect.reply("not_implemented", command=cmd),
+            "SMNT": lambda: dialect.reply("not_implemented", command=cmd),
         }
+        if dialect.family == "proftpd":
+            # Commands its FEAT lists and vsftpd has never heard of.
+            handlers["CLNT"] = lambda: dialect.reply("clnt")
+            handlers["HOST"] = lambda: dialect.reply("host", arg=arg)
+            handlers["MLSD"] = lambda: self._cmd_mlsd(arg, state, writer)
+            handlers["MLST"] = lambda: self._cmd_mlst(arg, state)
 
         handler = handlers.get(cmd)
         if handler is None:
-            return f"502 Command not implemented: {cmd}\r\n"
+            # Neither server answers "502 Command not implemented" here.
+            return dialect.reply("unknown", command=cmd)
 
         result = handler()
         if inspect.isawaitable(result):
             result = await result
         return result
 
+    # -- login ---------------------------------------------------------------
+
     def _cmd_user(self, arg: str, state: FTPSessionState) -> str:
         state.username = arg or "anonymous"
-        return "331 Please specify the password.\r\n"
+        anonymous = state.username in ("anonymous", "ftp")
+        return self._dialect().reply(
+            "anonymous_user_ok" if anonymous else "user_ok", user=state.username
+        )
 
     async def _cmd_pass(
         self, arg: str, state: FTPSessionState, session_id: str
     ) -> str:
+        dialect = self._dialect()
+        if state.username is None:
+            return dialect.reply("pass_before_user")
         state.password = arg
-        username = state.username or "anonymous"
+        username = state.username
 
         # The password is actually checked now. Anonymous and ftp accept any
         # string, as real anonymous FTP does. A named account is accepted on
@@ -376,8 +565,8 @@ class FTPHoneypot(BaseEmulator):
         # failures, so a brute-forcer that never guesses the exact password
         # still gets in and reveals what it does next. Accepting every
         # password on the first try was its own fingerprint.
-        state.auth_failures = getattr(state, "auth_failures", 0)
-        if username in ("anonymous", "ftp"):
+        anonymous = username in ("anonymous", "ftp")
+        if anonymous:
             accepted = True
         else:
             expected = self._fake_users.get(username)
@@ -385,60 +574,65 @@ class FTPHoneypot(BaseEmulator):
                 arg == expected or state.auth_failures >= 3
             )
 
+        # Also where a planted login is recognised: the session manager
+        # raises honeytoken_used for one.
         await session_manager.record_auth_attempt(
             session_id, username, arg, accepted
         )
 
         if accepted:
             state.authenticated = True
-            return "230 Login successful.\r\n"
+            return dialect.reply("anonymous_login_ok" if anonymous else "login_ok", user=username)
 
         state.auth_failures += 1
-        return "530 Login incorrect.\r\n"
+        return dialect.reply("login_failed")
+
+    # -- navigation ------------------------------------------------------------
 
     @staticmethod
     def _get_local_ip(writer: asyncio.StreamWriter) -> str:
         sock = writer.get_extra_info("sockname")
         return sock[0] if sock else "0.0.0.0"
 
-    def _cmd_quit(self) -> str:
-        return "221 Goodbye.\r\n"
+    def _resolve(self, arg: str, state: FTPSessionState) -> str:
+        return posixpath.normpath(arg if arg.startswith("/") else posixpath.join(state.cwd, arg))
 
     def _cmd_pwd(self, state: FTPSessionState) -> str:
-        return f'257 "{state.cwd}" is the current directory\r\n'
+        return self._dialect().reply("pwd", path=state.cwd.replace('"', '""'))
 
     def _cmd_cwd(self, arg: str, state: FTPSessionState) -> str:
+        dialect = self._dialect()
         if not arg:
-            return '501 Syntax error.\r\n'
-
-        if arg.startswith("/"):
-            new_path = arg
-        else:
-            new_path = os.path.join(state.cwd, arg)
-
-        new_path = os.path.normpath(new_path)
-        if new_path in self._fake_fs:
-            state.cwd = new_path
-            return f'250 Directory successfully changed to "{state.cwd}".\r\n'
-
-        return f'550 Failed to change directory.\r\n'
+            return dialect.reply("cwd_failed", arg=arg)
+        path = self._resolve(arg, state)
+        if state.tree.is_dir(path):
+            state.cwd = path
+            return dialect.reply("cwd_ok")
+        return dialect.reply("cwd_failed", arg=arg)
 
     def _cmd_cdup(self, state: FTPSessionState) -> str:
-        parent = os.path.dirname(state.cwd)
-        if parent in self._fake_fs or parent == "/":
-            state.cwd = parent if parent else "/"
-            return '250 Directory successfully changed to "..".\r\n'
-        return '550 Failed to change directory.\r\n'
+        state.cwd = posixpath.dirname(state.cwd) or "/"
+        return self._dialect().reply("cdup_ok")
 
     def _cmd_type(self, arg: str, state: FTPSessionState) -> str:
-        state.transfer_type = arg.upper() if arg else "I"
-        return f"200 Switching to {'Binary' if state.transfer_type == 'I' else 'ASCII'} mode.\r\n"
+        dialect = self._dialect()
+        kind = arg.upper().replace(" ", "")
+        if kind in ("I", "L8"):
+            state.transfer_type = "I"
+            return dialect.reply("type_binary")
+        if kind in ("A", "AN"):
+            state.transfer_type = "A"
+            return dialect.reply("type_ascii")
+        return dialect.reply("type_bad", arg=arg)
+
+    # -- data connections ---------------------------------------------------------
 
     async def _open_data_channel(
         self, state: FTPSessionState, source_ip: str
     ) -> Optional[int]:
         if state.data_channel is not None:
             await state.data_channel.close()
+        state.active_mode = False
         state.data_channel = PassiveDataChannel(source_ip)
         port = await state.data_channel.open()
         if port is None:
@@ -451,77 +645,73 @@ class FTPHoneypot(BaseEmulator):
         # PASV must advertise the address clients can reach. Behind NAT that
         # is not the socket's own address, so it is configurable. IPv6 cannot
         # be expressed in the PASV quad form at all.
+        dialect = self._dialect()
         address = config.ftp_pasv_address or local_ip
         octets = address.split(".")
         if len(octets) != 4:
-            return "425 Use EPSV instead.\r\n"
+            return dialect.reply("pasv_ipv6")
         port = await self._open_data_channel(state, source_ip)
         if port is None:
-            return "425 Could not open passive connection.\r\n"
-        state.passive_mode = True
-        return (
-            f"227 Entering Passive Mode ({octets[0]},{octets[1]},"
-            f"{octets[2]},{octets[3]},{port // 256},{port % 256}).\r\n"
-        )
+            return dialect.reply("pasv_failed")
+        return dialect.reply("pasv", quad=",".join(octets), high=port // 256, low=port % 256)
 
     async def _cmd_epsv(self, state: FTPSessionState, source_ip: str) -> str:
+        dialect = self._dialect()
         port = await self._open_data_channel(state, source_ip)
         if port is None:
-            return "425 Could not open passive connection.\r\n"
-        state.passive_mode = True
-        return f"229 Entering Extended Passive Mode (|||{port}|)\r\n"
+            return dialect.reply("pasv_failed")
+        return dialect.reply("epsv", port=port)
 
-    def _cmd_port(self, arg: str, state: FTPSessionState) -> str:
-        # Active mode means the server connects out to an address the client
-        # names. For a honeypot that is an outbound connection to the attacker
-        # — or, with FTP bounce, to anyone — and the engine makes none. vsftpd
-        # configured with port_enable=NO answers exactly this.
-        return "500 Illegal PORT command.\r\n"
+    async def _cmd_port(self, session_id: str, cmd: str, arg: str, state: FTPSessionState) -> str:
+        """PORT and EPRT: accepted as either server accepts them, and never
+        acted on.
+
+        Active mode has the server connect out to an address the client
+        names — for a honeypot, an outbound connection to the attacker or,
+        with FTP bounce, to anyone. The engine makes none. A request naming
+        the client's own address is acknowledged, and the transfer that
+        follows fails the way it does when a server's outbound connection is
+        refused. One naming any other address is the bounce attempt both
+        servers reject.
+        """
+        dialect = self._dialect()
+        address = ""
+        if cmd == "PORT":
+            fields = arg.split(",")
+            if len(fields) == 6 and all(f.strip().isdigit() and int(f) < 256 for f in fields):
+                address = ".".join(f.strip() for f in fields[:4])
+        else:
+            fields = arg.split(arg[:1]) if arg else []
+            if len(fields) >= 4 and fields[3].isdigit():
+                address = fields[2]
+        own = bool(address) and _normalise_ip(address) == _normalise_ip(state.client_ip)
+        await session_manager.record_network_event(
+            session_id, "ftp_active_mode_requested" if own else "ftp_bounce_attempt",
+            {"command": cmd, "argument": arg[:200]},
+        )
+        if not own:
+            return dialect.reply("port_illegal")
+        if state.data_channel is not None:
+            await state.data_channel.close()
+            state.data_channel = None
+        state.active_mode = True
+        return dialect.reply("port_ok" if cmd == "PORT" else "eprt_ok")
 
     async def _with_data_connection(self, state, writer, preamble):
         """Send the 150, then wait for the client's data connection."""
+        dialect = self._dialect()
         channel = state.data_channel
         state.data_channel = None
         if channel is None:
-            return None, "425 Use PORT or PASV first.\r\n"
+            failed = "data_failed" if state.active_mode else "no_data_channel"
+            state.active_mode = False
+            return None, dialect.reply(failed)
         await self._send_response(writer, preamble)
         connection = await channel.accept()
         if connection is None:
             await channel.close()
-            return None, "425 Failed to establish connection.\r\n"
+            return None, dialect.reply("data_failed")
         return (channel, connection), None
-
-    def _listing(self, arg: str, state: FTPSessionState, names_only: bool) -> str:
-        path = state.cwd
-        if arg and not arg.startswith("-"):
-            path = arg if arg.startswith("/") else os.path.join(state.cwd, arg)
-        path = os.path.normpath(path)
-
-        entries = list(self._fake_fs.get(path, []))
-        uploaded = {
-            os.path.basename(p): size
-            for p, (_, size) in state.uploaded.items()
-            if os.path.dirname(p) == path
-        }
-        lines = []
-        for entry in entries + sorted(set(uploaded) - set(entries)):
-            if names_only:
-                lines.append(f"{entry}\r\n")
-                continue
-            full_path = os.path.join(path, entry)
-            if full_path in self._fake_fs:
-                _, mtime = _stable_meta(full_path)
-                lines.append(
-                    f"drwxr-xr-x    2 0        0            4096 {_list_date(mtime)} {entry}\r\n"
-                )
-            else:
-                size = uploaded.get(entry)
-                stable_size, mtime = _stable_meta(full_path)
-                size = size if size is not None else stable_size
-                lines.append(
-                    f"-rw-r--r--    1 0        0        {size:>8} {_list_date(mtime)} {entry}\r\n"
-                )
-        return "".join(lines)
 
     async def _send_data(self, state, writer, preamble: str, data: bytes, done: str) -> str:
         opened, error = await self._with_data_connection(state, writer, preamble)
@@ -537,62 +727,132 @@ class FTPHoneypot(BaseEmulator):
             await channel.close()
         return done
 
+    # -- listings ---------------------------------------------------------------------
+
+    def _entries(self, arg: str, state: FTPSessionState):
+        """What a listing command names: the entries of a directory, or the
+        one file. Options such as ``-la`` are not a path."""
+        target = " ".join(word for word in arg.split() if not word.startswith("-"))
+        path = self._resolve(target, state) if target else state.cwd
+        tree = state.tree
+        if tree.is_dir(path):
+            return tree.children(path)
+        if path in tree.files:
+            return [(posixpath.basename(path), tree.files[path])]
+        return []
+
+    def _listing(self, arg: str, state: FTPSessionState, names_only: bool) -> str:
+        dialect = self._dialect()
+        now = time.time()
+        lines = []
+        for name, node in self._entries(arg, state):
+            if names_only:
+                lines.append(f"{name}\r\n")
+            elif node is None:
+                _, mtime = _stable_meta(name)
+                lines.append(dialect.list_line(name, True, 4096, mtime, now))
+            else:
+                lines.append(dialect.list_line(name, False, node.size, node.mtime, now))
+        return "".join(lines)
+
     async def _cmd_list(
         self, session_id: str, arg: str, state: FTPSessionState, writer
     ) -> str:
+        dialect = self._dialect()
         listing = self._listing(arg, state, names_only=False)
         await session_manager.record_command(session_id, "LIST", listing)
         return await self._send_data(
-            state, writer, "150 Here comes the directory listing.\r\n",
-            listing.encode(), "226 Directory send OK.\r\n",
+            state, writer, dialect.reply("list_open"), listing.encode(), dialect.reply("list_done")
         )
 
     async def _cmd_nlst(self, arg: str, state: FTPSessionState, writer) -> str:
+        dialect = self._dialect()
         return await self._send_data(
-            state, writer, "150 Here comes the directory listing.\r\n",
-            self._listing(arg, state, names_only=True).encode(),
-            "226 Directory send OK.\r\n",
+            state, writer, dialect.reply("list_open"),
+            self._listing(arg, state, names_only=True).encode(), dialect.reply("list_done"),
         )
+
+    def _facts(self, name: str, node: Optional[_File], path: str) -> str:
+        unique = int.from_bytes(hashlib.sha256(path.encode()).digest()[:3], "big")
+        if node is None:
+            return Dialect.facts_line(name, True, 4096, _stable_meta(name)[1], unique)
+        return Dialect.facts_line(name, False, node.size, node.mtime, unique)
+
+    async def _cmd_mlsd(self, arg: str, state: FTPSessionState, writer) -> str:
+        dialect = self._dialect()
+        path = self._resolve(arg, state) if arg else state.cwd
+        if not state.tree.is_dir(path):
+            return dialect.reply("mlst_failed", arg=arg)
+        listing = "".join(
+            self._facts(name, node, posixpath.join(path, name)) + "\r\n"
+            for name, node in state.tree.children(path)
+        )
+        return await self._send_data(
+            state, writer, dialect.reply("mlsd_open"), listing.encode(), dialect.reply("list_done")
+        )
+
+    def _cmd_mlst(self, arg: str, state: FTPSessionState) -> str:
+        dialect = self._dialect()
+        path = self._resolve(arg, state) if arg else state.cwd
+        tree = state.tree
+        if not tree.exists(path):
+            return dialect.reply("mlst_failed", arg=arg)
+        facts = self._facts(path, tree.files.get(path), path)
+        return f"250-Start of list for {path}\r\n {facts}\r\n250 End of list\r\n"
+
+    # -- files ---------------------------------------------------------------------------
 
     async def _cmd_retr(
         self, session_id: str, arg: str, state: FTPSessionState, writer
     ) -> str:
+        dialect = self._dialect()
         if not arg:
-            return "501 Syntax error.\r\n"
-        path = os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
+            return dialect.reply("syntax")
+        path = self._resolve(arg, state)
 
         await session_manager.record_network_event(
             session_id, "ftp_download_attempt", {"filename": arg[:255], "path": path[:500]}
         )
 
-        if path in state.uploaded:
+        node = state.tree.files.get(path)
+        if node is None:
+            return dialect.reply("retr_failed", arg=arg)
+        if node.sha is not None:
             # Their own upload comes back byte for byte, as it would.
-            sha, _ = state.uploaded[path]
             try:
-                with open(os.path.join(config.file_capture_dir, sha), "rb") as handle:
+                with open(os.path.join(config.file_capture_dir, node.sha), "rb") as handle:
                     data = handle.read()
             except OSError:
-                return "550 Failed to open file.\r\n"
-        elif os.path.basename(path) in self._fake_fs.get(os.path.dirname(path), []):
-            data = random.randbytes(random.randint(512, 4096))
+                return dialect.reply("retr_failed", arg=arg)
+        elif node.origin is not None:
+            data = _file_content(node.origin)
+        elif node.size == 0:
+            data = b""
         else:
-            return "550 Failed to open file.\r\n"
+            # An upload whose bytes were not kept (over the session's cap).
+            return dialect.reply("retr_failed", arg=arg)
 
+        offset, state.restart_at = state.restart_at, 0
         return await self._send_data(
             state, writer,
-            f"150 Opening BINARY mode data connection for {os.path.basename(path)} "
-            f"({len(data)} bytes).\r\n",
-            data, "226 Transfer complete.\r\n",
+            dialect.reply("retr_open", name=posixpath.basename(path), size=len(data)),
+            data[offset:], dialect.reply("transfer_done"),
         )
 
     async def _cmd_stor(
         self, session_id: str, arg: str, state: FTPSessionState, writer
     ) -> str:
+        dialect = self._dialect()
         if not arg:
-            return "501 Syntax error.\r\n"
-        path = os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
+            return dialect.reply("syntax")
+        path = self._resolve(arg, state)
+        tree = state.tree
+        if tree.is_dir(path) or not tree.is_dir(posixpath.dirname(path)):
+            return dialect.reply("stor_failed", arg=arg)
 
-        opened, error = await self._with_data_connection(state, writer, "150 Ok to send data.\r\n")
+        opened, error = await self._with_data_connection(
+            state, writer, dialect.reply("stor_open", name=posixpath.basename(path))
+        )
         if error:
             return error
         channel, (data_reader, _) = opened
@@ -626,55 +886,84 @@ class FTPHoneypot(BaseEmulator):
             }
         )
         if oversize:
-            return "552 Requested file action aborted. Exceeded storage allocation.\r\n"
+            return dialect.reply("stor_too_large")
 
         sha = await session_manager.record_file_upload(
-            session_id, os.path.basename(path) or arg, bytes(received),
+            session_id, posixpath.basename(path) or arg, bytes(received),
             remote_path=path, source="ftp_stor",
         )
-        if sha:
-            state.uploaded[path] = (sha, len(received))
-        return "226 Transfer complete.\r\n"
+        # Listed and retrievable afterwards, whether or not the bytes could
+        # be kept: the client just watched the transfer succeed.
+        tree.put(path, _File(len(received), float(int(time.time())), sha=sha))
+        return dialect.reply("transfer_done")
 
-    def _cmd_dele(self, arg: str) -> str:
-        return f"250 DELE command successful.\r\n"
+    def _cmd_dele(self, arg: str, state: FTPSessionState) -> str:
+        deleted = bool(arg) and state.tree.delete(self._resolve(arg, state))
+        return self._dialect().reply("dele_ok" if deleted else "dele_failed", arg=arg)
 
-    def _cmd_rmd(self, arg: str) -> str:
-        return f"250 RMD command successful.\r\n"
+    def _cmd_rmd(self, arg: str, state: FTPSessionState) -> str:
+        outcome = state.tree.rmdir(self._resolve(arg, state)) if arg else "missing"
+        key = {"ok": "rmd_ok", "not_empty": "rmd_not_empty"}.get(outcome, "rmd_failed")
+        return self._dialect().reply(key, arg=arg)
 
-    def _cmd_mkd(self, arg: str) -> str:
-        return f'257 "{arg}" created.\r\n'
+    def _cmd_mkd(self, arg: str, state: FTPSessionState) -> str:
+        dialect = self._dialect()
+        path = self._resolve(arg, state) if arg else ""
+        if path and state.tree.mkdir(path):
+            return dialect.reply("mkd_ok", path=path.replace('"', '""'))
+        return dialect.reply("mkd_failed", arg=arg)
 
-    def _resolve(self, arg: str, state: FTPSessionState) -> str:
-        return os.path.normpath(arg if arg.startswith("/") else os.path.join(state.cwd, arg))
+    def _cmd_rnfr(self, arg: str, state: FTPSessionState) -> str:
+        dialect = self._dialect()
+        path = self._resolve(arg, state) if arg else ""
+        if path and path != "/" and state.tree.exists(path):
+            state.rename_from = path
+            return dialect.reply("rnfr_ok")
+        state.rename_from = None
+        return dialect.reply("rnfr_failed", arg=arg)
+
+    def _cmd_rnto(self, arg: str, state: FTPSessionState) -> str:
+        dialect = self._dialect()
+        source, state.rename_from = state.rename_from, None
+        if source is None:
+            return dialect.reply("rnto_without_rnfr")
+        if arg and state.tree.rename(source, self._resolve(arg, state)):
+            return dialect.reply("rnto_ok")
+        return dialect.reply("rnto_failed", arg=arg)
 
     def _cmd_size(self, arg: str, state: FTPSessionState) -> str:
-        path = self._resolve(arg, state)
-        if path in state.uploaded:
-            return f"213 {state.uploaded[path][1]}\r\n"
-        if os.path.basename(path) in self._fake_fs.get(os.path.dirname(path), []):
-            size, _ = _stable_meta(path)
-            return f"213 {size}\r\n"
-        return "550 Could not get file size.\r\n"
+        dialect = self._dialect()
+        if dialect.has("size_ascii") and state.transfer_type == "A":
+            return dialect.reply("size_ascii")
+        node = state.tree.files.get(self._resolve(arg, state)) if arg else None
+        if node is None:
+            return dialect.reply("size_failed", arg=arg)
+        return f"213 {node.size}\r\n"
 
     def _cmd_mdtm(self, arg: str, state: FTPSessionState) -> str:
-        import time
+        path = self._resolve(arg, state) if arg else ""
+        tree = state.tree
+        if path in tree.files:
+            mtime = tree.files[path].mtime
+        elif path and tree.is_dir(path):
+            mtime = _stable_meta(posixpath.basename(path))[1]
+        else:
+            return self._dialect().reply("mdtm_failed", arg=arg)
+        return "213 " + time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime)) + "\r\n"
 
-        path = self._resolve(arg, state)
-        if path in state.uploaded or os.path.basename(path) in self._fake_fs.get(
-            os.path.dirname(path), []
-        ):
-            _, mtime = _stable_meta(path)
-            return "213 " + time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime)) + "\r\n"
-        return "550 Could not get modification time.\r\n"
+    def _cmd_rest(self, arg: str, state: FTPSessionState) -> str:
+        offset = arg.strip()
+        if not (offset.isascii() and offset.isdigit()) or len(offset) > 12:
+            return self._dialect().reply("syntax")
+        state.restart_at = int(offset)
+        return self._dialect().reply("rest", offset=state.restart_at)
 
     def _cmd_stat(self, state: FTPSessionState) -> str:
-        identity = get_identity()
-        return (
-            f"211-FTP server status:\r\n"
-            f"     Connected to {identity.ip}\r\n"
-            f"     Logged in as {state.username or 'anonymous'}\r\n"
-            "     TYPE: Binary\r\n"
-            f"     Current directory: {state.cwd}\r\n"
-            "211 End\r\n"
+        # The client's own address, as both servers report it. A server
+        # listening on the IPv6 wildcard shows an IPv4 client in mapped form.
+        client = state.client_ip or get_identity().ip
+        if "." in client and ":" not in client:
+            client = f"::ffff:{client}"
+        return self._dialect().stat(
+            client, state.username or "anonymous", state.transfer_type == "I"
         )
