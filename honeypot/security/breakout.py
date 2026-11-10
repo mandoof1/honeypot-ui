@@ -12,9 +12,11 @@ secure posture regardless of how the engine was actually deployed.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import socket
+import time
 from typing import Optional
 import subprocess
 
@@ -26,6 +28,14 @@ logger = logging.getLogger(__name__)
 #: any of them means the engine could equally reach an attacker's server.
 EGRESS_PROBES = (("1.1.1.1", 443), ("8.8.8.8", 53), ("9.9.9.9", 443))
 
+#: Ports tried on the engine's gateway — the host it runs on. SSH, the web
+#: ports and the Docker API are what an attacker who got out of the engine
+#: would try first.
+GATEWAY_PROBE_PORTS = (22, 80, 443, 2375)
+
+#: Reports kept for the status endpoint.
+MAX_REPORTS = 48
+
 
 class IsolationReport:
     """Result of one isolation sweep."""
@@ -33,6 +43,7 @@ class IsolationReport:
     def __init__(self, checks: dict[str, bool], warnings: list[str]):
         self.checks = checks
         self.warnings = warnings
+        self.checked_at = 0.0
 
     @property
     def secure(self) -> bool:
@@ -67,22 +78,23 @@ class BreakoutPrevention:
                 },
                 ["Isolation is disabled via HONEYPOT_ENABLE_ISOLATION"],
             )
-            self._reports.append(report)
+            self._record(report)
             return report.to_dict()
 
-        # One probe sweep per report: a dropped SYN only fails by timing out,
-        # so each sweep costs up to a few seconds.
-        reachable = self._egress_reachable()
+        # Each check asks its own question. Segmentation and egress used to be
+        # answered by one probe of the public internet, so the report listed
+        # five checks and ran four: "the engine cannot reach the host it runs
+        # on" was never tested at all.
         checks = {
-            "network_segmentation": self._check_network_segmentation(warnings, reachable),
-            "egress_blocked": self._check_egress_blocked(warnings, reachable),
+            "network_segmentation": self._check_network_segmentation(warnings),
+            "egress_blocked": self._check_egress_blocked(warnings),
             "container_isolation": self._check_container_isolation(warnings),
             "read_only_rootfs": self._check_read_only_rootfs(warnings),
             "privilege_restriction": self._check_privilege_restriction(warnings),
         }
 
         report = IsolationReport(checks, warnings)
-        self._reports.append(report)
+        self._record(report)
 
         if not report.secure:
             failed = [name for name, ok in checks.items() if not ok]
@@ -96,8 +108,19 @@ class BreakoutPrevention:
 
         return report.to_dict()
 
-    def _check_network_segmentation(self, warnings: list[str], reachable: Optional[bool] = None) -> bool:
-        """The engine must sit on an internal-only Docker network."""
+    def _record(self, report: IsolationReport) -> None:
+        report.checked_at = time.time()
+        self._reports.append(report)
+        # The sweep now runs for the life of the process; keep a short tail.
+        del self._reports[:-MAX_REPORTS]
+
+    def _check_network_segmentation(self, warnings: list[str]) -> bool:
+        """The engine must not be able to reach the host or network behind it.
+
+        On an internal-only Docker network there is nothing to reach. An
+        engine with published ports has a gateway — the host — and is
+        segmented only if the host does not answer it.
+        """
         try:
             result = subprocess.run(
                 [
@@ -114,9 +137,9 @@ class BreakoutPrevention:
             )
         except (subprocess.SubprocessError, FileNotFoundError):
             # No Docker socket inside the container is the expected, correct
-            # state. Fall back to checking that no default route leaves the
-            # container towards the public internet.
-            return self._check_no_default_route(warnings, reachable)
+            # state. Fall back to the routing table and, where it shows a
+            # gateway, to whether that gateway can be reached.
+            return self._check_gateway_unreachable(warnings)
 
         if result.returncode != 0:
             warnings.append(
@@ -131,64 +154,93 @@ class BreakoutPrevention:
         return True
 
     @staticmethod
-    def _check_no_default_route(warnings: list[str], reachable: Optional[bool] = None) -> bool:
+    def _default_gateway() -> tuple[bool, Optional[str]]:
+        """(routing table readable, default gateway address or None)."""
         try:
             with open("/proc/net/route", "r", encoding="utf-8") as fh:
                 lines = fh.read().splitlines()[1:]
         except OSError:
-            warnings.append("Could not read /proc/net/route to verify egress")
-            return False
+            return False, None
+        for fields in (line.split() for line in lines):
+            # Destination 00000000 is the default route; the gateway is the
+            # next column, as little-endian hex.
+            if len(fields) > 2 and fields[1] == "00000000":
+                try:
+                    return True, socket.inet_ntoa(bytes.fromhex(fields[2])[::-1])
+                except (ValueError, OSError):
+                    return True, None
+        return True, None
 
-        # Destination 00000000 is the default route.
-        has_default_route = any(
-            len(fields) > 1 and fields[1] == "00000000"
-            for fields in (line.split() for line in lines)
-        )
-        if not has_default_route:
+    @staticmethod
+    def _probe(host: str, port: int, timeout: float = 1.0) -> str:
+        """One connection attempt: ``open``, ``refused``, ``blocked`` or ``error``.
+
+        Which failure it was matters. A timeout or "unreachable" is a
+        firewall or a missing route doing its job. A refusal means the packet
+        arrived and something answered: the path is open. And a failure of
+        any other kind — no file descriptors, a broken resolver — says
+        nothing about the network at all. Treating every exception as
+        "blocked", as this did, let all three pass.
+        """
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return "open"
+        except ConnectionRefusedError:
+            return "refused"
+        except (socket.timeout, TimeoutError):
+            return "blocked"
+        except OSError as exc:
+            if exc.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EACCES, errno.EPERM, errno.ETIMEDOUT):
+                return "blocked"
+            return "error"
+
+    @classmethod
+    def _check_gateway_unreachable(cls, warnings: list[str]) -> bool:
+        readable, gateway = cls._default_gateway()
+        if not readable:
+            warnings.append("Could not read /proc/net/route to verify segmentation")
+            return False
+        if gateway is None:
+            # No way out of the network the engine is on.
             return True
 
         # Docker will not publish ports for a container that is only on an
-        # internal network, so an engine that must accept connections from
-        # the internet has a default route, and egress has to be dropped by
-        # the host firewall instead (deploy/server/honeysentinel-egress.sh).
-        # The routing table cannot show whether that firewall is in place, so
-        # test it.
-        if reachable is None:
-            reachable = BreakoutPrevention._egress_reachable()
-        if reachable:
+        # internal network, so an engine that accepts connections from the
+        # internet has a gateway: the host. The host firewall is meant to
+        # drop everything the engine sends it
+        # (deploy/server/honeysentinel-egress.sh, the INPUT rule), and the
+        # routing table cannot show whether it does, so ask the host.
+        results = {port: cls._probe(gateway, port, 0.7) for port in GATEWAY_PROBE_PORTS}
+        answered = [port for port, result in results.items() if result in ("open", "refused")]
+        if answered:
             warnings.append(
-                "Container has a default route and outbound connections "
-                "succeed; egress is not blocked"
+                f"The host at {gateway} answers the engine (port {answered[0]}); "
+                "the engine is not segmented from it"
             )
+            return False
+        if any(result == "error" for result in results.values()):
+            warnings.append(f"Could not determine whether the host at {gateway} is reachable")
             return False
         return True
 
-    @staticmethod
-    def _egress_reachable(timeout: float = 1.0) -> bool:
-        # A dropped SYN only fails by timing out, so the timeout bounds how
-        # long a sweep takes when egress is correctly blocked.
-        for host, port in EGRESS_PROBES:
-            try:
-                with socket.create_connection((host, port), timeout=timeout):
-                    return True
-            except OSError:
-                continue
-        return False
-
-    @staticmethod
-    def _check_egress_blocked(warnings: list[str], reachable: Optional[bool] = None) -> bool:
+    @classmethod
+    def _check_egress_blocked(cls, warnings: list[str]) -> bool:
         """The engine must not be able to open outbound connections.
 
         This replaced a check that only confirmed an in-process "allowlist"
         was non-empty — it always was, because the backend URL was always
         on it, and nothing consulted the list anyway. The honest test is to
         try: connect to well-known public addresses and pass only when every
-        attempt is refused or times out.
+        attempt is dropped. A dropped SYN only fails by timing out, so the
+        timeout bounds how long a sweep takes when egress is correctly
+        blocked.
         """
-        if reachable is None:
-            reachable = BreakoutPrevention._egress_reachable()
-        if reachable:
+        results = [cls._probe(host, port) for host, port in EGRESS_PROBES]
+        if any(result in ("open", "refused") for result in results):
             warnings.append("Outbound connections from the engine succeed")
+            return False
+        if any(result == "error" for result in results):
+            warnings.append("Could not determine whether outbound connections are blocked")
             return False
         return True
 
@@ -260,6 +312,9 @@ class BreakoutPrevention:
             "network_name": self._network_name,
             "total_checks": len(self._reports),
             "overall_secure": bool(latest.get("overall_secure", False)),
+            # When the answer below was obtained, so a reader can tell a
+            # current result from one left over from startup.
+            "checked_at": self._reports[-1].checked_at if self._reports else None,
             "last_check": latest,
         }
 
