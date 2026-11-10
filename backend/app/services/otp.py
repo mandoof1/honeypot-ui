@@ -10,7 +10,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 OTP_EXPIRY_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 OTP_LENGTH = 6
+
+#: How long a code's row is kept after it expires. The per-account hourly
+#: cap counts rows, so they have to outlive the hour they are counted in.
+OTP_RETENTION = timedelta(hours=2)
+
+#: One message for every way a code can fail to verify. The old ones ("No
+#: active code found", "2 attempt(s) remaining") were only ever produced for
+#: an address that had an account, so they told a caller which addresses did.
+INVALID_CODE = "Invalid or expired code."
 
 
 def _hash_code(code: str) -> str:
@@ -38,13 +47,51 @@ def _hash_code(code: str) -> str:
 
 
 class OTPService:
-    async def generate_and_send(
+    @property
+    def delivery_available(self) -> bool:
+        """Whether a code could reach anyone on this deployment."""
+        return email_service.configured
+
+    async def issue(
         self,
         db: AsyncSession,
         user: User,
         purpose: str = "email_verification",
         ip_address: Optional[str] = None,
-    ) -> bool:
+    ) -> Optional[tuple[int, str]]:
+        """Create a code for ``user``. Returns (row id, code), or None.
+
+        None means no code was created: mail cannot be sent at all, or the
+        account has had its codes for the hour. Either way the caller answers
+        exactly as it would have otherwise, so the response says nothing
+        about the account.
+
+        A code allows five guesses out of a million. Unlimited fresh codes
+        made that unlimited guesses, so issuing is capped per account, and
+        each new code retires the ones before it.
+        """
+        if not self.delivery_available:
+            logger.warning(
+                "No mail provider is configured; not issuing a %s code", purpose
+            )
+            return None
+
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        issued = (
+            await db.execute(
+                select(func.count(OTPVerification.id)).where(
+                    OTPVerification.user_id == user.id,
+                    OTPVerification.created_at >= since,
+                )
+            )
+        ).scalar() or 0
+        if issued >= max(1, get_settings().OTP_MAX_CODES_PER_HOUR):
+            logger.warning(
+                "Code request for user id %s refused: %s issued in the last hour",
+                user.id, issued,
+            )
+            return None
+
         await self._invalidate_existing(db, user.id, purpose)
 
         otp_code = self._generate_code()
@@ -59,32 +106,64 @@ class OTPService:
         )
         db.add(otp_record)
         await db.commit()
+        return otp_record.id, otp_code
 
+    async def deliver(
+        self,
+        db: AsyncSession,
+        record_id: int,
+        email: str,
+        name: str,
+        otp_code: str,
+        purpose: str,
+    ) -> bool:
+        """Send a code that ``issue`` created, and retire it if sending fails.
+
+        A code nobody received must not stay usable: until it expired it was
+        five free guesses at the account for anyone who knew the address.
+        """
+        sender = (
+            email_service.send_password_reset_email
+            if purpose == "password_reset"
+            else email_service.send_otp_email
+        )
         # smtplib and urllib block; running them inline stalled the whole
         # event loop for the duration of the send.
-        if purpose == "password_reset":
-            sent = await asyncio.to_thread(
-                email_service.send_password_reset_email,
-                user.email,
-                otp_code,
-                user.name or "",
-            )
-        else:
-            sent = await asyncio.to_thread(
-                email_service.send_otp_email,
-                user.email,
-                otp_code,
-                user.name or "",
-            )
+        try:
+            sent = await asyncio.to_thread(sender, email, otp_code, name or "")
+        except Exception:
+            logger.exception("Sending a %s code raised", purpose)
+            sent = False
 
         if not sent:
             # Never log the code itself: application logs are routinely shipped
             # to third parties and would hand over every account.
-            logger.error(
-                "Failed to deliver %s OTP for user id %s", purpose, user.id
-            )
+            logger.error("Failed to deliver %s code (record %s)", purpose, record_id)
+            record = (
+                await db.execute(
+                    select(OTPVerification).where(OTPVerification.id == record_id)
+                )
+            ).scalar_one_or_none()
+            if record is not None and not record.is_used:
+                record.is_used = True
+                await db.commit()
+        return bool(sent)
 
-        return sent
+    async def generate_and_send(
+        self,
+        db: AsyncSession,
+        user: User,
+        purpose: str = "email_verification",
+        ip_address: Optional[str] = None,
+    ) -> bool:
+        """Issue a code and send it, waiting for the send. True if delivered."""
+        issued = await self.issue(db, user, purpose, ip_address)
+        if issued is None:
+            return False
+        record_id, otp_code = issued
+        return await self.deliver(
+            db, record_id, user.email, user.name or "", otp_code, purpose
+        )
 
     async def verify(
         self,
@@ -93,6 +172,8 @@ class OTPService:
         otp_code: str,
         purpose: str = "email_verification",
     ) -> dict:
+        """Check a code. ``reason`` is the same for every kind of failure."""
+        failed = {"valid": False, "reason": INVALID_CODE}
         result = await db.execute(
             select(OTPVerification)
             .where(
@@ -101,38 +182,29 @@ class OTPService:
                 OTPVerification.is_used.is_(False),
                 OTPVerification.expires_at > datetime.now(timezone.utc),
             )
-            .order_by(OTPVerification.created_at.desc())
+            .order_by(OTPVerification.created_at.desc(), OTPVerification.id.desc())
             .limit(1)  # more than one live row raised MultipleResultsFound
+            # Two guesses arriving together must not both read "4 attempts
+            # used" and both be allowed a fifth.
+            .with_for_update()
         )
         otp_record = result.scalar_one_or_none()
 
         if not otp_record:
-            return {
-                "valid": False,
-                "reason": "No active code found. Please request a new one.",
-            }
+            return failed
 
         if otp_record.attempts >= OTP_MAX_ATTEMPTS:
             otp_record.is_used = True
             await db.commit()
-            return {
-                "valid": False,
-                "reason": "Too many incorrect attempts. Please request a new code.",
-            }
+            return failed
 
         # Constant-time comparison; a plain != leaks the code byte by byte.
         if not hmac.compare_digest(otp_record.otp_code, _hash_code(otp_code)):
             otp_record.attempts += 1
-            remaining = OTP_MAX_ATTEMPTS - otp_record.attempts
+            if otp_record.attempts >= OTP_MAX_ATTEMPTS:
+                otp_record.is_used = True
             await db.commit()
-            return {
-                "valid": False,
-                "reason": (
-                    f"Invalid verification code. {remaining} attempt(s) remaining."
-                    if remaining > 0
-                    else "Too many incorrect attempts. Please request a new code."
-                ),
-            }
+            return failed
 
         otp_record.is_used = True
         otp_record.used_at = datetime.now(timezone.utc)
@@ -156,7 +228,7 @@ class OTPService:
     async def cleanup_expired(self, db: AsyncSession):
         await db.execute(
             delete(OTPVerification).where(
-                OTPVerification.expires_at < datetime.now(timezone.utc)
+                OTPVerification.expires_at < datetime.now(timezone.utc) - OTP_RETENTION
             )
         )
         await db.commit()

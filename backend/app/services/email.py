@@ -17,6 +17,26 @@ class EmailService:
     def __init__(self):
         self._settings = get_settings()
 
+    @property
+    def configured(self) -> bool:
+        """Whether any way of sending mail is set up at all.
+
+        The same conditions the senders below check before they try. With
+        none of them met, a verification or reset code can never arrive, and
+        the flows that depend on one are refused up front rather than left
+        to issue codes into the void.
+        """
+        if any(
+            os.environ.get(name, "").strip()
+            for name in ("BREVO_API_KEY", "SENDGRID_API_KEY", "RESEND_API_KEY")
+        ):
+            return True
+        return bool(
+            self._settings.SMTP_HOST
+            and self._settings.SMTP_USER
+            and self._settings.SMTP_PASSWORD
+        )
+
     def _send_via_sendgrid(self, to_email: str, subject: str, html: str, text: str) -> bool:
         api_key = os.environ.get("SENDGRID_API_KEY", "")
         if not api_key:
