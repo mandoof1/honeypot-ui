@@ -282,6 +282,8 @@ handler's docstring, or its name where it has none.
 | GET | `/api/v1/alerts/stats` | any | Alert stats |
 | GET | `/api/v1/alerts/{alert_id}` | any | Get alert |
 | PATCH | `/api/v1/alerts/{alert_id}` | analyst | Update alert |
+| GET | `/api/v1/attack/matrix` | any | Observed techniques by tactic, in kill-chain order, with session counts |
+| GET | `/api/v1/attack/navigator-layer` | analyst | An ATT&CK Navigator layer scoring each technique by its session count |
 | GET | `/api/v1/audit-logs` | admin | Audit rows, newest first, with the acting user's email where known |
 | GET | `/api/v1/audit-logs/` | admin | Audit rows, newest first, with the acting user's email where known |
 | GET | `/api/v1/auth/capabilities` | none | What the sign-in pages can offer here. Public, and says nothing secret |
@@ -352,7 +354,7 @@ handler's docstring, or its name where it has none.
 | PATCH | `/api/v1/settings/thresholds/{threshold_id}` | admin | Update threshold |
 | DELETE | `/api/v1/settings/thresholds/{threshold_id}` | admin | Delete threshold |
 
-74 routes.
+76 routes.
 
 ---
 

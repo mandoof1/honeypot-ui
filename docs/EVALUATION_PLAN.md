@@ -59,9 +59,9 @@ cannot be chosen to suit the outcome.
 
 The flow classifier is expected to do poorly here: on the controlled test it
 called every session benign. That is a result to report, not to tune away.
-Retraining on captured sessions (`ml.train_sessions`) and refitting the
-anomaly model (`ml.fit_anomaly`) are separate experiments, evaluated on a
-later, untouched part of the period.
+A classifier trained on captured sessions does not exist yet. Building one,
+and refitting the anomaly model (`ml.fit_anomaly`), are separate experiments,
+evaluated on a later, untouched part of the period.
 
 ## 3. Fingerprint self-audit against the real daemons
 

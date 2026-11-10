@@ -53,7 +53,7 @@ Generate a secret with
 | `DASHBOARD_CACHE_SECONDS` | `10` | How long the dashboard summary is served from memory; 0 disables. |
 | `SEED_ON_STARTUP` | `false` | Insert the demo dataset (150 synthetic sessions) into an empty database. Development only. |
 | `GEOIP_DB_PATH` | `./data/GeoLite2-City.mmdb` | MaxMind GeoLite2 or DB-IP City Lite file. |
-| `SCANNER_LIST_PATH` | built-in list | A MISP warninglist export of research scanners. |
+| `SCANNER_LIST_PATH` | built-in list | A MISP warninglist export of research scanners. The built-in list is deliberately short. A range match labels a session, and quiets its alerts, only when the session also behaves like a scan. |
 | `HONEYPOT_CONTROL_URL`, `HONEYPOT_CONTROL_EXTRA_URLS` | `http://honeypot:8000`, empty | Engines' control APIs: status from the first, mode changes and blocks to all. |
 
 ## Accounts and sign-in
@@ -84,7 +84,7 @@ Generate a secret with
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `MODEL_PATH_RF`, `MODEL_PATH_IF` | `./models/...` | Classifier and anomaly model files; the cluster model is stored beside the first. Absent: a synthetic bootstrap, and verdicts say `model_source: "synthetic"`. |
+| `MODEL_PATH_RF`, `MODEL_PATH_IF` | `./models/...` | Flow classifier and anomaly model files; the cluster model is stored beside the first. The flow classifier is advisory: its output is stored in `class_probabilities` and never sets a session's category. Until an anomaly model has been fitted on captured sessions, no session is flagged anomalous and `signals.anomaly.calibrated` is `false`. |
 | `SPACY_MODEL` | `en_core_web_sm` | Installed in the image at build time. |
 | `CHIMERA_URL`, `CHIMERA_MODEL`, `CHIMERA_TIMEOUT` | empty, `wolfram` on the server, `300` | The language model (stage 2): an OpenAI-compatible endpoint, its name, seconds per call. Empty disables the stage. |
 | `CHIMERA_MAX_TOKENS`, `CHIMERA_MAX_TRANSCRIPT_CHARS` | `600`, `6000` | Answer length; transcript sent. |
@@ -95,6 +95,13 @@ Generate a secret with
 | `DECIDER_TRIAGE_RULE_SKIPPED` | `false` | Also triage sessions the rules skip. |
 | `DECIDER_SUPPORT_THRESHOLD`, `DECIDER_DROP_UNCONFIRMED` | `0.3`, `false` | Below the first a language-model technique is marked unconfirmed; the second removes it instead. |
 | `DECIDER_FALLBACK_SECONDS` | `900` | Wait on an unreachable decision model before the rules route the session. |
+| `DECIDER_ALERT_THRESHOLD` | `0.8` | Probability at which a triage or language-model finding the rules did not make raises or escalates an alert. |
+| `BRUTE_FORCE_MIN_FAILED_LOGINS` | `5` | Failed logins in one session before it counts as credential guessing. |
+| `ANALYSIS_EXECUTOR_THREADS` | `2` | Threads the synchronous analysis runs on, so one long transcript does not hold up other sessions. |
+| `NLP_ENTITIES_ENABLED` | `false` | The spaCy entity pass. Off: nothing reads its output and it was the largest cost in the 200 ms budget. |
+| `MODEL_REFIT_ENABLED` | `true` | Scheduled fitting of the anomaly and cluster models on stored sessions (background worker only). |
+| `ANOMALY_MIN_SESSIONS`, `ANOMALY_CONTAMINATION`, `ANOMALY_REFIT_HOURS` | `200`, `0.05`, `24` | Sessions needed before the anomaly model is fitted, the share it is told to expect as outliers, and hours between refits. |
+| `CLUSTER_REFIT_HOURS`, `CLUSTER_USE_FINGERPRINTS` | `24`, `false` | Hours between cluster refits; whether client fingerprints (HASSH, JA3/JA4) join the clustering features. |
 | `PAYLOAD_ANALYSIS_ENABLED`, `PAYLOAD_MAX_STORE_BYTES` | `true`, `10485760` | Static analysis of uploaded files; largest sample whose bytes are kept. |
 | `PAYLOAD_ANALYSIS_TIMEOUT`, `PAYLOAD_ANALYSIS_MEMORY_MB`, `PAYLOAD_ANALYSIS_MAX_ATTEMPTS` | `60`, `2048`, `3` | Limits on the analysis subprocess, and tries before a sample is marked failed. |
 
@@ -176,6 +183,9 @@ container may open. Empty on the server.
 
 The evaluation and export tools (`python -m app.tools.*`) take their options
 on the command line; see each tool's `--help` and
-[EVALUATION_PLAN.md](EVALUATION_PLAN.md). Settings introduced by work merged
+[EVALUATION_PLAN.md](EVALUATION_PLAN.md). Two read the environment:
+`EXPORT_PSEUDONYM_KEY` is the key `export_dataset` uses to replace source
+addresses (without it the export refuses to run), and `GIT_REVISION`, set in
+the images at build time, is recorded in every evaluation output. Settings introduced by work merged
 after this file was written belong here, in the table of the component that
 reads them.
