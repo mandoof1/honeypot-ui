@@ -19,15 +19,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Optional
 
 from honeypot.adaptive.response import adaptive_engine
 from honeypot.capture.flow import FlowMeter
-from honeypot.capture.shell_capture import capture_command, flush_session_files
+from honeypot.capture.shell_capture import flush_session_files
 from honeypot.capture.shell_writes import HeredocBuffer, needs_continuation
+from honeypot.core import shell_dispatch
 from honeypot.core.config import config
 from honeypot.core.identity import get_identity
+from honeypot.core.login_policy import login_policy
 from honeypot.core.modes import mode_handler
 from honeypot.core.session import session_manager
 from honeypot.core.shell_state import shell_states
@@ -56,6 +59,13 @@ SERVER_OPTIONS = {OPT_ECHO, OPT_SGA}
 #: Options the client is allowed to turn on at its end.
 CLIENT_OPTIONS = {OPT_SGA}
 
+#: Terminal escape sequences a character-mode client sends for arrow and
+#: function keys. They are keystrokes, not text: left in, an up-arrow became
+#: ``[A`` in the command line and in the echo.
+_ESCAPE_SEQUENCE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z~]|\x1bO[A-Za-z]|\x1b.?")
+#: Option negotiations kept as the client's fingerprint.
+MAX_FINGERPRINT_OPTIONS = 32
+
 
 class TelnetLineReader:
     """Strips Telnet commands out of a byte stream and yields text lines.
@@ -69,7 +79,8 @@ class TelnetLineReader:
         self._state = "data"
         self._verb: Optional[int] = None
         self._sb = bytearray()
-        self._pending_cr = False
+        #: The byte after a CR is its LF or NUL partner and is dropped.
+        self._after_cr = False
         self.replies = bytearray()
         #: Options the client WILLs that we agreed to (currently only SGA).
         self.client_will: set[int] = set()
@@ -83,16 +94,19 @@ class TelnetLineReader:
             if self._state == "data":
                 if byte == IAC:
                     self._state = "iac"
-                elif self._pending_cr:
-                    self._pending_cr = False
-                    # CR LF and CR NUL both mean end of line; a bare CR
-                    # followed by anything else is also a line end here.
-                    out.append(10)
-                    if byte not in (10, 0):
-                        out.append(byte)
+                elif self._after_cr and byte in (10, 0):
+                    # CR LF and CR NUL both mean end of line, and the CR has
+                    # already ended it.
+                    self._after_cr = False
                 elif byte == 13:
-                    self._pending_cr = True
+                    # The line ends at the CR, not at whatever follows it.
+                    # Waiting for the next byte to decide left a client that
+                    # sends a bare CR — and many bots do — staring at a shell
+                    # that never ran its command.
+                    self._after_cr = True
+                    out.append(10)
                 else:
+                    self._after_cr = False
                     out.append(byte)
             elif self._state == "iac":
                 if byte == IAC:
@@ -178,7 +192,9 @@ class TelnetHoneypot(BaseEmulator):
 
     async def _write(self, writer: asyncio.StreamWriter, text: str | bytes) -> None:
         if isinstance(text, str):
-            text = text.encode("utf-8", "replace")
+            # Bytes a command printed (a binary read with cat) travel inside
+            # the text as surrogates and go out as the bytes they were.
+            text = text.encode("utf-8", "surrogateescape")
         if text:
             writer.write(text)
             await writer.drain()
@@ -211,6 +227,12 @@ class TelnetHoneypot(BaseEmulator):
             if newline >= 0:
                 raw = bytes(buffer[:newline])
                 del buffer[: newline + 1]
+                if b"\x03" in raw:
+                    # Ctrl-C: the line is abandoned.
+                    return ""
+                if raw == b"\x04":
+                    # Ctrl-D on an empty line: end of input.
+                    return None
                 return self._apply_backspaces(raw).decode("utf-8", "replace")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -218,7 +240,7 @@ class TelnetHoneypot(BaseEmulator):
             data = await asyncio.wait_for(reader.read(1024), timeout=remaining)
             if not data:
                 return None
-            text = parser.feed(data)
+            text = _ESCAPE_SEQUENCE.sub(b"", parser.feed(data))
             await self._flush_replies(writer, parser)
             if state.session_id:
                 for ch in text.decode("utf-8", "replace"):
@@ -257,19 +279,8 @@ class TelnetHoneypot(BaseEmulator):
     # Login
 
     def _check_credentials(self, source_ip: str, username: str, password: str) -> bool:
-        """The SSH decoy's policy: the weak credential, or persistence."""
-        prior_failures = _failures_by_ip.get(source_ip, 0)
-        expected = FAKE_USERS.get(username)
-        accepted = expected is not None and (
-            password == expected or prior_failures >= SOFT_ACCEPT_AFTER
-        )
-        if not accepted:
-            if len(_failures_by_ip) >= _MAX_TRACKED_IPS:
-                _failures_by_ip.clear()
-            _failures_by_ip[source_ip] = prior_failures + 1
-        else:
-            _failures_by_ip.pop(source_ip, None)
-        return accepted
+        """The SSH decoy's policy, shared with it: see core/login_policy.py."""
+        return login_policy.check(source_ip, username, password)
 
     async def _login(self, reader, writer, parser, state, buffer, source_ip) -> bool:
         await self._write(writer, self.get_banner())
@@ -301,10 +312,11 @@ class TelnetHoneypot(BaseEmulator):
             if accepted:
                 state.username = username
                 state.authenticated = True
-                if username == "root":
-                    state.is_root = True
-                    state.cwd = "/root"
-                    shell_states.get(state.session_id).cwd = "/root"
+                state.is_root = username == "root"
+                # Each account starts in its own home directory.
+                state.cwd = shell_dispatch.start_shell(
+                    state.session_id, username, state.is_root, source_ip, 0
+                )
                 await adaptive_engine.profile_actor(
                     state.session_id, source_ip,
                     {"auth_success": True, "username": username, "protocol": "telnet"},
@@ -327,23 +339,10 @@ class TelnetHoneypot(BaseEmulator):
 
     async def _dispatch(self, source_ip: str, state: _TelnetState, command: str) -> str:
         """One command through the same path as the SSH shell."""
-        await adaptive_engine.profile_actor(state.session_id, source_ip, {"command": command})
-        await capture_command(
-            state.session_id, command, "/root" if state.is_root else "/home/user"
+        response, _status = await shell_dispatch.run_command(
+            state.session_id, source_ip, state, command, pty=True
         )
-        payload = {
-            "command": command,
-            "username": state.username,
-            "cwd": state.cwd,
-            "is_root": state.is_root,
-        }
-        response = await mode_handler.handle_interaction(
-            state.session_id, "ssh", "command", payload
-        )
-        if payload.get("cwd_after"):
-            state.cwd = payload["cwd_after"]
-        await session_manager.record_command(state.session_id, command, response or "", 0)
-        return response or ""
+        return response
 
     async def _shell(self, reader, writer, parser, state, buffer, source_ip) -> None:
         welcome = await mode_handler.handle_interaction(
@@ -380,7 +379,13 @@ class TelnetHoneypot(BaseEmulator):
             if not command:
                 await self._write(writer, await self._prompt(state))
                 continue
-            if command in ("exit", "logout"):
+            if shell_dispatch.parse_exit(command, 0) is not None:
+                shell = shell_states.get(state.session_id)
+                if shell.subshells > 0:
+                    # Leaves the nested shell, not the session.
+                    shell.subshells -= 1
+                    await self._write(writer, "exit\r\n" + await self._prompt(state))
+                    continue
                 await self._write(writer, "logout\r\n")
                 return
             response = await self._dispatch(source_ip, state, command)
@@ -453,11 +458,23 @@ class TelnetHoneypot(BaseEmulator):
         except Exception as exc:
             logger.error("Telnet session error from %s: %s", source_ip, exc, exc_info=True)
         finally:
+            # The option sequence is the client's fingerprint, and the most
+            # useful one for the connections that never get past the login.
+            if parser.negotiations:
+                record = await session_manager.get_session(session_id)
+                if record is not None:
+                    record.fingerprints["telnet_options"] = [
+                        f"{verb} {option}" for verb, option in parser.negotiations[:MAX_FINGERPRINT_OPTIONS]
+                    ]
             try:
-                await flush_session_files(session_id, shell_states.get(session_id))
+                # Taken out of the store, not just read: the state holds every
+                # file the session wrote, and leaving it there kept all of it
+                # in memory after the connection had gone.
+                await flush_session_files(session_id, shell_states.pop(session_id))
             except Exception as exc:
                 logger.warning("Telnet file flush failed for %s: %s", session_id, exc)
-            await session_manager.end_session(session_id)
+            finally:
+                await session_manager.end_session(session_id)
             try:
                 writer.close()
                 await writer.wait_closed()

@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Optional
 
 from honeypot.core.config import config
+from honeypot.security.refusals import refusal_log
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class RateLimiter:
         self._active_total = 0
         for key in self.refused:
             self.refused[key] = 0
+        refusal_log.reset()
 
     async def start(self):
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -70,6 +72,7 @@ class RateLimiter:
         ip: str,
         max_per_ip: Optional[int] = None,
         max_per_minute: Optional[int] = None,
+        protocol: Optional[str] = None,
     ) -> bool:
         """Accept-time admission: rate window plus concurrency caps.
 
@@ -77,21 +80,24 @@ class RateLimiter:
         the key exchange, where a refused address costs no cryptography. The
         caller must pair a True result with exactly one release(). An
         emulator may pass its own per-address limits; None uses the engine's.
+        ``protocol`` names the decoy, so a refusal can be reported against it.
         """
         per_ip = self._max_per_ip if max_per_ip is None else max_per_ip
+        reason = None
         if self.is_blocked(ip):
-            self.refused["blocked"] += 1
-            return False
-        if self._active_total >= self._max_total:
-            self.refused["total"] += 1
+            reason = "blocked"
+        elif self._active_total >= self._max_total:
+            reason = "total"
             logger.warning("Connection from %s refused: %d connections open", ip, self._active_total)
-            return False
-        if self._active[ip] >= per_ip:
-            self.refused["per_ip"] += 1
+        elif self._active[ip] >= per_ip:
+            reason = "per_ip"
             logger.warning("Connection from %s refused: %d already open from it", ip, self._active[ip])
-            return False
-        if not self._allow_sync(ip, max_per_minute):
-            self.refused["rate"] += 1
+        elif not self._allow_sync(ip, max_per_minute):
+            reason = "rate"
+        if reason is not None:
+            self.refused[reason] += 1
+            # Counted for the record as well as the totals; see refusals.py.
+            refusal_log.note(ip, protocol or "ssh", reason)
             return False
         self._active[ip] += 1
         self._active_total += 1
@@ -161,6 +167,10 @@ class RateLimiter:
         while True:
             await asyncio.sleep(self._cleanup_interval)
             now = time.time()
+            try:
+                await refusal_log.flush()
+            except Exception as exc:
+                logger.warning("Could not write refused-connection records: %s", exc)
 
             expired_blocks = [
                 ip for ip, expiry in self._blocked.items()

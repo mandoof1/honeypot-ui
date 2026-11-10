@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from honeypot import ENGINE_VERSION
-from honeypot.core.config import config
+from honeypot.core.config import DEFAULT_INGEST_TOKEN, config
 from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.ssh import SSHHoneypot
@@ -17,6 +17,12 @@ from honeypot.adaptive.fingerprint import fingerprint_engine
 from honeypot.security.rate_limiter import rate_limiter
 from honeypot.core.control_api import build_control_api
 from honeypot.security.breakout import breakout_prevention
+from honeypot.security.refusals import refusal_log
+
+
+class InsecureConfiguration(RuntimeError):
+    """The engine was asked to start in a state it refuses to run in."""
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +48,9 @@ class HoneypotService:
         #: Listeners that actually bound, as opposed to those configured.
         self._bound: list[str] = []
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._isolation_task: Optional[asyncio.Task] = None
+        #: Result of the last isolation sweep, to log a change once.
+        self._isolation_ok: Optional[bool] = None
 
     async def start(self):
         logger.info("=" * 60)
@@ -50,28 +59,26 @@ class HoneypotService:
 
         logger.info(f"Operational Mode: {mode_handler.mode.value}")
         logger.info(f"Anti-fingerprinting: {config.enable_anti_fingerprinting}")
-        logger.info(f"Adaptive Response: {config.adaptive_response}")
+        logger.info(f"Actor profiling (HONEYPOT_ADAPTIVE_RESPONSE): {config.adaptive_response}")
         logger.info(f"Isolation: {config.enable_isolation}")
 
-        if config.ingest_token == "honeypot-ingest-token-change-in-production":
+        if config.ingest_token == DEFAULT_INGEST_TOKEN:
+            # This used to be one log line among the startup noise, after
+            # which the engine carried on with a control API that anyone who
+            # had read the repository could drive.
+            if not config.allow_default_token:
+                raise InsecureConfiguration(
+                    "HONEYPOT_INGEST_TOKEN is still the published default. "
+                    "Set a unique token, or set HONEYPOT_ALLOW_DEFAULT_TOKEN=true "
+                    "to run a throwaway local instance with it."
+                )
             logger.error(
-                "HONEYPOT_INGEST_TOKEN is still the default value. The backend "
-                "will reject ingest and the control API is effectively "
-                "unauthenticated. Set a unique token before exposing this host."
+                "HONEYPOT_INGEST_TOKEN is the published default and "
+                "HONEYPOT_ALLOW_DEFAULT_TOKEN is set: the control API is "
+                "effectively unauthenticated. Do not expose this instance."
             )
 
-        # The sweep probes the network with one-second timeouts; off the loop
-        # so nothing else waits on it.
-        isolation = await asyncio.to_thread(breakout_prevention.verify_isolation)
-        if not isolation["overall_secure"]:
-            logger.warning(
-                "Starting WITHOUT verified isolation. Failing checks: %s",
-                ", ".join(
-                    name
-                    for name, ok in isolation.items()
-                    if isinstance(ok, bool) and not ok
-                ),
-            )
+        await self._check_isolation(startup=True)
 
         await rate_limiter.start()
 
@@ -107,6 +114,8 @@ class HoneypotService:
         await session_manager.register_node()
         session_manager.start_background()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
+        if config.isolation_check_interval > 0:
+            self._isolation_task = asyncio.create_task(self._isolation_loop(), name="isolation-check")
 
         self._control_api = build_control_api(self)
         await self._control_api.start()
@@ -143,12 +152,13 @@ class HoneypotService:
         logger.info("Stopping honeypot services...")
         self._running = False
 
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (self._heartbeat_task, self._isolation_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         # Listeners and their connections first. Closing a connection runs
         # its handler's cleanup, which ends the session and starts the
@@ -199,6 +209,43 @@ class HoneypotService:
         finally:
             await self.stop()
 
+    async def _check_isolation(self, startup: bool = False) -> dict:
+        """Run the isolation sweep and say so if it fails.
+
+        The sweep probes the network with short timeouts; it runs off the
+        loop so nothing else waits on it.
+        """
+        isolation = await asyncio.to_thread(breakout_prevention.verify_isolation)
+        if not isolation["overall_secure"]:
+            failing = ", ".join(
+                name for name, ok in isolation.items() if isinstance(ok, bool) and not ok
+            )
+            if startup:
+                logger.warning("Starting WITHOUT verified isolation. Failing checks: %s", failing)
+            elif self._isolation_ok is not False:
+                logger.error("Isolation is no longer verified. Failing checks: %s", failing)
+        elif self._isolation_ok is False:
+            logger.info("Isolation verified again: all checks pass")
+        self._isolation_ok = bool(isolation["overall_secure"])
+        return isolation
+
+    async def _isolation_loop(self):
+        """Re-check isolation for as long as the engine runs.
+
+        It was checked once, at startup, and that answer was what every
+        heartbeat reported from then on: a firewall rule flushed an hour
+        later, or one put in place after a bad start, never showed.
+        """
+        interval = max(30, config.isolation_check_interval)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._check_isolation()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Isolation check failed to run: %s", exc)
+
     async def _heartbeat_loop(self):
         """Tell the backend we are alive, on a fixed interval, for ever.
 
@@ -245,6 +292,9 @@ class HoneypotService:
             "open_connections": rate_limiter.active_connections(),
             "blocked_ips": len(blocked_ips),
             "refused_connections": dict(rate_limiter.refused),
+            "refused_records": {
+                "recorded": refusal_log.recorded, "suppressed": refusal_log.suppressed,
+            },
             "isolation": isolation_status,
             "node_id": session_manager.node_id,
             "node_registered": session_manager.registered,
@@ -260,7 +310,11 @@ class HoneypotService:
 
 async def main():
     service = HoneypotService()
-    await service.run()
+    try:
+        await service.run()
+    except InsecureConfiguration as exc:
+        logger.critical("Refusing to start: %s", exc)
+        raise SystemExit(78)  # EX_CONFIG
 
 
 if __name__ == "__main__":

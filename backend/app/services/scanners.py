@@ -40,7 +40,28 @@ logger = logging.getLogger(__name__)
 #: This is a seed, not a maintained feed, and it will go stale. Point
 #: SCANNER_LIST_PATH at a MISP warninglist export (the ``*-scanning`` lists at
 #: github.com/MISP/misp-warninglists) to override it with something current.
+#:
+#: What qualifies an entry: a range the scanning organisation itself holds
+#: and publishes for opt-out. A range in a hosting provider's space does not,
+#: however often a scanner has been seen there: its other tenants would be
+#: labelled as that scanner too, and a labelled session is one that raises no
+#: alert (when it also behaves like a scan; see services/analysis.py).
+#:
+#: Removed on that test, because nothing in this file justified them:
+#:
+#: * every Shodan entry, among them 71.6.128.0/17 — half of a hosting
+#:   provider's allocation. Shodan does not publish ranges; its scanners sit
+#:   in several hosting providers' space beside unrelated customers.
+#: * Rapid7's 71.6.216.0/24 and 146.185.25.0/24, and Shadowserver's
+#:   184.105.139.0/24, 184.105.247.0/24 and 216.218.206.0/24: whole /24s of
+#:   providers' space with no source given here for the operator holding all
+#:   of each.
+#:
+#: Sessions from those sources are attackers to this system until a
+#: maintained list says otherwise, which is the safe direction to be wrong
+#: in. Load one with SCANNER_LIST_PATH.
 SEED_NETWORKS: dict[str, tuple[str, ...]] = {
+    # Censys's own address space, which it publishes for opt-out.
     "censys": (
         "162.142.125.0/24",
         "167.94.138.0/24",
@@ -50,25 +71,9 @@ SEED_NETWORKS: dict[str, tuple[str, ...]] = {
         "199.45.154.0/24",
         "199.45.155.0/24",
     ),
-    "shodan": (
-        "198.20.69.0/24",
-        "198.20.70.0/24",
-        "198.20.99.0/24",
-        "66.240.192.0/24",
-        "66.240.219.0/24",
-        "71.6.128.0/17",
-        "80.82.77.0/24",
-        "82.221.105.0/24",
-    ),
+    # Project Sonar, from the ranges Rapid7 publishes for it.
     "rapid7": (
         "5.63.151.96/27",
-        "71.6.216.0/24",
-        "146.185.25.0/24",
-    ),
-    "shadowserver": (
-        "184.105.139.0/24",
-        "184.105.247.0/24",
-        "216.218.206.0/24",
     ),
 }
 

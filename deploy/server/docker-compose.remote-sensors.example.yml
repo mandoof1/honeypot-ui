@@ -1,0 +1,43 @@
+# Example: let remote sensors (deploy/node) deliver sessions to this server.
+#
+# The ingest service has no published port by default: the two local engines
+# reach it on an internal bridge. A sensor on another machine needs an
+# address to send to, and that address must be on a private overlay
+# (WireGuard or Tailscale), never the public one.
+#
+# Append the two blocks below to docker-compose.override.yml (create it if it
+# does not exist; Compose merges it automatically), set in .env
+#
+#   SENSOR_INGEST_BIND=<this server's overlay address, e.g. 100.x.y.z>
+#   SENSOR_INGEST_PORT=8001
+#
+# and re-run install.sh. Then create a token for each sensor:
+#
+#   sudo python3 node_tokens.py add <node-name>
+#
+# What a sensor can do here: POST to the three *-internal routes with its own
+# token, which is bound to its node name. The ingest service runs with
+# API_ROLE=ingest and serves nothing else. Who can reach the port at all is
+# the overlay's business: restrict it there (a Tailscale ACL, or WireGuard
+# AllowedIPs) to the sensors' addresses.
+#
+# Publishing needs a bridge with a gateway, so ingest gains a second, normal
+# network. The host firewall treats it like every other hs-* bridge: the
+# container may answer and nothing more.
+
+services:
+  ingest:
+    ports:
+      - "${SENSOR_INGEST_BIND:?set SENSOR_INGEST_BIND to the overlay address}:${SENSOR_INGEST_PORT:-8001}:8000"
+    networks:
+      sensors: {}
+
+networks:
+  sensors:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: hs-sensors
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.76.0/24

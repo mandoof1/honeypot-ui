@@ -2,6 +2,7 @@
 Description=HoneySentinel: reset the shop behind the HTTP decoys
 Requires=docker.service
 After=docker.service
+OnFailure=honeysentinel-alert@%p.service
 
 [Service]
 Type=oneshot

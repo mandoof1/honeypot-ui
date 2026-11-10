@@ -1,76 +1,127 @@
-# Standalone honeypot node.
+# Remote sensor: one engine on a small public VPS, reporting to a
+# HoneySentinel server somewhere else over a private overlay.
 #
-# Runs ONLY the engine, reporting into a HoneySentinel backend that lives
-# somewhere else (Render, in the reference deployment). Use this on the
-# internet-facing box; use the repository-root compose file for a full local
-# stack instead.
-#
-# The root compose file cannot be used here: its honeypot service declares
-# `depends_on: backend`, so `docker compose up honeypot` would also start a
-# second backend and Postgres on the node.
-#
-#   cp .env.example .env   # then fill it in
+#   sudo bash bootstrap.sh      # firewall, units, certificate; see README.md
 #   docker compose up -d --build
-#   docker compose logs -f
+#
+# Nothing but the engine runs here: no database, no API, no dashboard, and no
+# secret of the server except this sensor's own ingest token.
+#
+# How the ports are published, and why not host networking. The decoy ports
+# are bound to the VPS's own IPv4 address and Docker forwards them with DNAT,
+# which keeps the client's address: the engine sees who connected. Host
+# networking would do that too, for IPv6 as well, but it puts the engine in
+# the host's network namespace, where it can reach everything listening on
+# loopback and its traffic can only be told apart by user id. On a bridge the
+# engine has an interface of its own, and the firewall
+# (../server/honeysentinel-egress.sh) can say exactly what leaves it: replies,
+# and connections to one address and port, the server's ingest endpoint.
+# The cost is IPv4 only (Docker would proxy IPv6 and every such client would
+# appear as the bridge gateway, so no IPv6 port is published at all), and a
+# client on the VPS itself also appears as the gateway.
+#
+# The previous version of this kit redirected the well-known ports into
+# docker-proxy with iptables, which recorded every attacker as 172.x.0.1, had
+# no egress control and no limits, and never forwarded Telnet.
+
+name: honeysentinel-sensor
 
 services:
-  honeypot:
+  sensor:
     build:
       # The build context is the repository root so `honeypot` stays an
       # importable package.
       context: ../..
       dockerfile: honeypot/Dockerfile
-    container_name: honeysentinel-node
-    env_file: .env
+      args:
+        GIT_REVISION: ${GIT_REVISION:-unknown}
+    image: honeysentinel-honeypot
     environment:
       HONEYPOT_CONTAINER: "true"
+      # The name this sensor was given a token for (node_tokens.py add, on
+      # the server). The token is accepted for this name only.
+      HONEYPOT_NODE_NAME: ${HONEYPOT_NODE_NAME:?set HONEYPOT_NODE_NAME in .env}
+      HONEYPOT_INGEST_TOKEN: ${HONEYPOT_NODE_TOKEN:?set HONEYPOT_NODE_TOKEN in .env}
+      # The server's ingest endpoint on the overlay. The firewall allows
+      # connections to exactly this address and port (bootstrap.sh writes the
+      # rule from the same two values).
+      BACKEND_API_URL: http://${INGEST_ADDR:?set INGEST_ADDR in .env}:${INGEST_PORT:-8001}/api/v1
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
+      # Loopback inside the container: the server cannot reach this sensor's
+      # control API and nothing else can either. A mode saved in the
+      # dashboard is adopted the next time the sensor registers.
+      HONEYPOT_CONTROL_BIND: 127.0.0.1
+      HONEYPOT_CONTROL_PORT: "8000"
+      HONEYPOT_CONTROL_TOKEN: ${HONEYPOT_CONTROL_TOKEN:?run bootstrap.sh, which generates one}
       HONEYPOT_SSH_PORT: "2222"
       HONEYPOT_FTP_PORT: "2121"
       HONEYPOT_TELNET_PORT: "2323"
       HONEYPOT_HTTP_PORT: "8080"
       HONEYPOT_HTTPS_PORT: "8443"
-      HONEYPOT_CONTROL_PORT: "8000"
+      HONEYPOT_PROTOCOLS: ${HONEYPOT_PROTOCOLS:-ssh,telnet,ftp,http,https}
+      HONEYPOT_OPERATIONAL_MODE: ${HONEYPOT_OPERATIONAL_MODE:-active}
+      HONEYPOT_MAX_CONN_PER_IP: "5"
+      HONEYPOT_RATE_LIMIT: "60"
+      HONEYPOT_ANTI_FINGERPRINT: "true"
+      HONEYPOT_ADAPTIVE_RESPONSE: "true"
+      HONEYPOT_ENABLE_ISOLATION: "true"
+      HONEYPOT_DOCKER_NETWORK: honeysentinel-sensor_sensor
+      HONEYPOT_FTP_PASV_PORTS: "50000-50009"
+      # Passive FTP advertises this address; it must be the public one, which
+      # on most clouds is not the address on the interface.
+      HONEYPOT_FTP_PASV_ADDRESS: ${SENSOR_PUBLIC_IPV4:-}
+      HONEYPOT_TLS_CERT: /run/decoy-tls/server.crt
+      HONEYPOT_TLS_KEY: /run/decoy-tls/server.key
       HONEYPOT_CAPTURE_DIR: /app/data/sessions
       HONEYPOT_FILE_CAPTURE_DIR: /app/data/uploads
-      HONEYPOT_LOG_DIR: /app/data/logs
-      HONEYPOT_FTP_PASV_PORTS: "50000-50009"
-      # Set to this VM's public address in .env, or passive FTP transfers
-      # (STOR/RETR) advertise an unreachable one and fail.
-      HONEYPOT_FTP_PASV_ADDRESS: ${HONEYPOT_FTP_PASV_ADDRESS:-}
-
     ports:
-      # Emulated services, deliberately published so they can be probed.
-      - "2222:2222"
-      - "2121:2121"
-      - "2323:2323"
-      - "8080:8080"
-      - "8443:8443"
+      # The well-known ports themselves, on the VPS's IPv4 address only.
+      # bootstrap.sh moves the real sshd off 22 first.
+      - "${SENSOR_BIND_IPV4:?set SENSOR_BIND_IPV4 in .env}:22:2222"
+      - "${SENSOR_BIND_IPV4}:23:2323"
+      - "${SENSOR_BIND_IPV4}:21:2121"
+      - "${SENSOR_BIND_IPV4}:80:8080"
+      - "${SENSOR_BIND_IPV4}:443:8443"
       # FTP passive data channel; must match HONEYPOT_FTP_PASV_PORTS.
-      - "50000-50009:50000-50009"
-      # The control API is bound to loopback only. It is authenticated by a
-      # shared token alone, so it must never face the internet; tunnel to it
-      # if the backend needs to reach it.
-      - "127.0.0.1:8000:8000"
-
+      - "${SENSOR_BIND_IPV4}:50000-50009:50000-50009"
+    networks: [sensor]
+    # Docker's embedded DNS, with nothing forwarded upstream.
+    dns: [127.0.0.1]
     volumes:
-      - node_data:/app/data
-
-    # Same hardening as the bundled stack: no capabilities beyond binding a
-    # port, an immutable root filesystem, and no privilege escalation. The
-    # emulators never execute attacker input, but this is the box that is
-    # deliberately exposed, so it gets the strictest profile available.
+      - sensor_data:/app/data
+      - ./state/decoy-tls:/run/decoy-tls:ro
+    # The same profile as the engines on the server: no capability (every
+    # listener is above 1024 inside the container), an immutable root, no
+    # privilege escalation, bounded memory, processes and logs.
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
     read_only: true
     tmpfs:
-      - /tmp:noexec,nosuid,size=100M
-    security_opt:
-      - no-new-privileges:true
+      - /tmp:noexec,nosuid,nodev,size=100M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    stop_grace_period: 20s
+    mem_limit: 512m
+    pids_limit: 256
     restart: unless-stopped
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+networks:
+  # Name and subnet are the firewall's (honeysentinel-egress.sh, hs-sensor).
+  sensor:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: hs-sensor
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.80.0/24
+
 volumes:
-  node_data:
+  sensor_data:
