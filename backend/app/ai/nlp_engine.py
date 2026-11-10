@@ -57,6 +57,18 @@ WEB_ATTACK_SIGNATURES = {
     "lfi_rfi": r"(?:php://(?:filter|input)|data://text|expect://|/proc/self/environ)",
     "webshell": r"(?:<\?php|eval\(\$_(?:get|post|request|server)|system\(\$_|passthru\(|assert\(\$_|\bcmd=|shell_exec\()",
     "ssrf": r"(?:169\.254\.169\.254|metadata\.google\.internal|/latest/meta-data/)",
+    # A shell function definition where a header or a path should be: the
+    # Shellshock prefix. It arrives in the User-Agent as often as anywhere.
+    "shellshock": r"\(\)\s{0,4}\{\s{0,4}[:;]",
+    # Paths nobody browses to: exposed secrets, version-control directories,
+    # backups and management consoles. One request for any of them is a probe.
+    # Ordinary application paths such as /admin or /login are deliberately
+    # absent: behind the decoys there may be a real site whose owner uses them.
+    "sensitive_path_probe": (
+        r"(?:/\.env\b|/\.git/|/\.aws/|/\.ssh/|/\.ds_store\b|/server-status\b|/manager/html\b"
+        r"|/phpmyadmin\b|/wp-login\.php\b|/xmlrpc\.php\b|/actuator(?:/|\b)"
+        r"|\.(?:bak|old|swp)(?:\s|\?|$)|/backup\.(?:zip|sql|tar|tgz)\b|/cgi-bin/)"
+    ),
 }
 
 #: Which of the four stored classes each web signature implies.
@@ -68,7 +80,9 @@ WEB_ATTACK_CATEGORY = {
     "lfi_rfi": "exploitation",
     "webshell": "exploitation",
     "ssrf": "exploitation",
+    "shellshock": "exploitation",
     "path_traversal": "reconnaissance",
+    "sensitive_path_probe": "reconnaissance",
 }
 
 _WEB_PATTERNS = {

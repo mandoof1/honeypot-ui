@@ -128,6 +128,8 @@ RULE_TECHNIQUES: Dict[str, Tuple[Tuple[str, Optional[str]], ...]] = {
     "web:log4shell": (("T1190", None),),
     "web:lfi_rfi": (("T1190", None),),
     "web:path_traversal": (("T1190", None),),
+    "web:shellshock": (("T1190", None),),
+    "web:sensitive_path_probe": (("T1595.003", None),),
     "web:ssrf": (("T1190", None), ("T1552.005", None)),
     "web:webshell": (("T1505.003", None),),
     # Scanners that name themselves in the User-Agent

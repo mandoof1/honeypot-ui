@@ -485,3 +485,57 @@ class TestVerdictAndSeverity:
 
         marked = {f.tool for f in vars(rules).values() if isinstance(f, rules.Finding) and f.critical}
         assert marked == set(verdicts.CRITICAL_TOOLS)
+
+
+# -- Gaps the first controlled-traffic measurement exposed (2026-11-11) --------
+
+class TestGapsFoundByControlledTraffic:
+    def test_guessing_that_ends_in_a_login_is_not_benign(self):
+        guessed = [
+            {"username": "root", "password": "123456", "success": False},
+            {"username": "root", "password": "toor", "success": False},
+            {"username": "root", "password": "admin", "success": True},
+        ]
+        verdict = category([], failed_logins=2, credentials=guessed)
+        assert verdict.category == "exploitation"
+        assert "password_guessing" in {e["key"] for e in verdict.evidence}
+
+    def test_one_mistyped_password_before_a_login_stays_benign(self):
+        typo = [
+            {"username": "root", "password": "hunter3", "success": False},
+            {"username": "root", "password": "hunter2", "success": True},
+        ]
+        assert category([], failed_logins=1, credentials=typo).category == "benign"
+        retyped = [{"username": "root", "password": "same", "success": False}] * 2 + [
+            {"username": "root", "password": "other", "success": True},
+        ]
+        assert category([], failed_logins=2, credentials=retyped).category == "benign"
+
+    @pytest.mark.parametrize("line", [
+        "GET /.env  [ua: curl/8.1.0]",
+        "GET /.git/config  [ua: curl/8.1.0]",
+        "GET /phpmyadmin/  [ua: curl/8.1.0]",
+        "GET /server-status  [ua: curl/8.1.0]",
+        "GET /config.php.bak  [ua: curl/8.1.0]",
+        "GET /actuator/health  [ua: curl/8.1.0]",
+    ])
+    def test_a_request_for_a_path_nobody_browses_to_is_reconnaissance(self, line):
+        result = analyse([line], "http")
+        assert "web:sensitive_path_probe" in keys(result)
+        assert category([line], "http").category == "reconnaissance"
+
+    @pytest.mark.parametrize("line", [
+        "GET /  [ua: Mozilla/5.0]",
+        "GET /admin  [ua: Mozilla/5.0]",
+        "GET /products/backup-generator  [ua: Mozilla/5.0]",
+        "GET /blog/the-environment  [ua: Mozilla/5.0]",
+    ])
+    def test_ordinary_paths_are_not_probes(self, line):
+        assert "web:sensitive_path_probe" not in keys(analyse([line], "http"))
+
+    def test_a_shell_function_in_a_header_is_exploitation(self):
+        line = "GET /cgi-bin/status  [ua: () { :; }; /bin/cat /etc/passwd]"
+        result = analyse([line], "http")
+        assert "web:shellshock" in keys(result)
+        assert category([line], "http").category == "exploitation"
+        assert "T1190" in {t["id"] for t in mitre_mapper.map_evidence(result["evidence"])["techniques"]}

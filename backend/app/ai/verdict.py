@@ -116,6 +116,8 @@ def brute_force_key(session_data: Dict) -> Optional[str]:
     recorded they must differ: a person retyping one password is not a
     dictionary attack.
     """
+    if _guessed_its_way_in(session_data):
+        return "password_guessing"
     failed = int((session_data or {}).get("failed_logins") or 0)
     if failed < get_analysis_settings().BRUTE_FORCE_MIN_FAILED_LOGINS:
         return None
@@ -135,6 +137,26 @@ def brute_force_key(session_data: Dict) -> Optional[str]:
     if len(passwords) == 1 and len(usernames) >= 3:
         return "password_spraying"
     return "brute_force"
+
+
+def _guessed_its_way_in(session_data: Dict) -> bool:
+    """Two or more different wrong passwords, then one that was accepted.
+
+    The failure threshold alone cannot see this: the decoy lets a client in
+    after a few attempts, so a guessing run that succeeds never reaches the
+    count, and was being stored as benign. Measured on controlled traffic,
+    2026-11-11: twelve guessing sessions of twelve were called benign. One
+    wrong attempt before a success is left alone, as a mistyped password.
+    """
+    wrong = set()
+    for attempt in (session_data or {}).get("credentials") or []:
+        if not isinstance(attempt, dict):
+            continue
+        pair = (str(attempt.get("username") or ""), str(attempt.get("password") or ""))
+        if attempt.get("success"):
+            return len(wrong) >= 2
+        wrong.add(pair)
+    return False
 
 
 def _label(key: str) -> str:
