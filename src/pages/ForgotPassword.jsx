@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { api } from '../services/api'
+import { useCapabilities } from '../hooks/useCapabilities'
 import AuthShell, {
-  Field, Outcome, OtpInput, SubmitButton,
+  Field, Outcome, OtpInput, SubmitButton, Unavailable,
 } from '../components/AuthShell'
 
 const MIN_PASSWORD_LENGTH = 12
@@ -24,6 +25,7 @@ export default function ForgotPassword() {
   const [confirm, setConfirm] = useState('')
   const [errors, setErrors] = useState({})
   const [loading, setLoading] = useState(false)
+  const capabilities = useCapabilities()
 
   const handleRequest = async (event) => {
     event.preventDefault()
@@ -71,9 +73,22 @@ export default function ForgotPassword() {
     }
   }
 
+  if (capabilities.status === 'loading') {
+    return <AuthShell title="Reset your password" subtitle="Checking what this deployment offers…" />
+  }
+  if (!capabilities.password_reset) {
+    return (
+      <Unavailable title="Reset your password">
+        A password is reset here with a code sent by e-mail, and this deployment
+        {capabilities.known ? ' has no mail provider to send one.' : ' did not confirm that it can send one.'}
+        {' '}Ask an administrator to set a temporary password for your account.
+      </Unavailable>
+    )
+  }
+
   if (step === 'done') {
     return (
-      <AuthShell>
+      <AuthShell pageTitle="Password updated">
         <Outcome
           title="Password updated"
           action={

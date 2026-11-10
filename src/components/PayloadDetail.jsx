@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Copy, Download, ExternalLink, X } from 'lucide-react'
+import { Download, ExternalLink, X } from 'lucide-react'
 import { api } from '../services/api'
-import { clean } from '../lib/text'
+import { saveBlob } from '../lib/download'
+import { formatBytes } from '../lib/format'
+import { clean, cleanLine } from '../lib/text'
+import ConfirmDialog from './ConfirmDialog'
+import CopyButton from './CopyButton'
 
 /** Indicator rows rendered per group before the reader asks for the rest. */
 const INDICATOR_CAP = 50
@@ -40,19 +44,12 @@ function Fact({ label, children, mono = true, title }) {
 }
 
 function Hash({ label, value }) {
-  const [copied, setCopied] = useState(false)
   if (!value) return null
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200) } catch { /* selectable on screen */ }
-  }
   return (
     <div className="flex items-center gap-2">
-      <span className="eyebrow w-12 shrink-0">{label}</span>
-      <span className="readout min-w-0 flex-1 truncate text-[12px] text-paper-2" title={value}>{value}</span>
-      <button type="button" onClick={copy} aria-label={`Copy ${label}`} className="shrink-0 rounded-[3px] p-1 text-paper-3 hover:text-paper">
-        <Copy className="h-3.5 w-3.5" strokeWidth={2} />
-      </button>
-      {copied && <span className="text-[11px] text-paper-3">copied</span>}
+      <span className="eyebrow w-16 shrink-0">{label}</span>
+      <span className="readout min-w-0 flex-1 truncate text-[12px] text-paper-2" title={value}>{cleanLine(value)}</span>
+      <CopyButton value={value} label={`Copy ${label}`} />
     </div>
   )
 }
@@ -69,7 +66,7 @@ function Techniques({ items }) {
             {t?.id && (
               <a href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`}
                 target="_blank" rel="noreferrer noopener"
-                className="readout shrink-0 text-[11px] text-paper-3 hover:text-paper">
+                className="readout shrink-0 text-[12px] text-paper-3 hover:text-paper">
                 {t.id}
               </a>
             )}
@@ -102,9 +99,9 @@ function IndicatorGroup({ label, items, render }) {
         {shown.map((item, i) => (
           <li key={i} className="readout flex items-baseline gap-2 break-all text-[12px] text-paper-2">
             <span className="min-w-0 flex-1">{clean(render(item))}</span>
-            {item.scope === 'private' && <span className="shrink-0 text-[10px] text-paper-3">private</span>}
+            {item.scope === 'private' && <span className="shrink-0 text-[12px] text-paper-3">private</span>}
             {item.origin && item.origin !== 'strings' && (
-              <span className="shrink-0 text-[10px] text-paper-3" title="Where in the file this was found">{clean(item.origin)}</span>
+              <span className="shrink-0 text-[12px] text-paper-3" title="Where in the file this was found">{clean(item.origin)}</span>
             )}
           </li>
         ))}
@@ -163,7 +160,7 @@ function KeyValues({ data, limit = 12 }) {
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px]">
       {entries.map(([key, value]) => (
         <div key={key} className="contents">
-          <dt className="eyebrow text-paper-3">{key}</dt>
+          <dt className="eyebrow text-paper-3">{cleanLine(key)}</dt>
           <dd className="readout break-words text-paper-2">{clean(String(value))}</dd>
         </div>
       ))}
@@ -172,6 +169,7 @@ function KeyValues({ data, limit = 12 }) {
 }
 
 export default function PayloadDetail({ detail, canDownload, onClose }) {
+  const [confirming, setConfirming] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState(null)
   const a = detail.analysis || {}
@@ -185,16 +183,10 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
     setDownloadError(null)
     try {
       const { blob, filename } = await api.payloads.download(detail.sha256)
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(blob, filename)
+      setConfirming(false)
     } catch (err) {
-      setDownloadError(err.message)
+      setDownloadError(err.message || 'The sample could not be downloaded.')
     } finally {
       setDownloading(false)
     }
@@ -222,15 +214,60 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
         )}
       </header>
 
-      {/* This is live malware. Say so where anyone about to download it looks. */}
+      {/* This is live malware. One click used to save it, with only a
+          tooltip to say so. It now asks first, and says what the file is. */}
       {canDownload && (
-        <div className="mx-4 mb-1 flex items-center justify-between gap-3">
-          <button className="control" onClick={download} disabled={downloading || !detail.content_available}
-            title={detail.content_available ? 'Downloads the raw sample — handle as live malware' : 'No content stored for this sample'}>
-            <Download className="h-3.5 w-3.5" />{downloading ? 'Preparing…' : 'Download sample'}
+        <div className="mx-4 mb-1">
+          <button
+            type="button"
+            className="control"
+            onClick={() => { setDownloadError(null); setConfirming(true) }}
+            disabled={!detail.content_available}
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden="true" />Download sample…
           </button>
-          {downloadError && <span className="text-[12px] text-s4">{downloadError}</span>}
+          {!detail.content_available && (
+            <p className="mt-1 text-[12px] text-paper-3">
+              No content is stored for this sample; only its hash was captured.
+            </p>
+          )}
         </div>
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          title="Download a live malware sample?"
+          confirmLabel={downloading ? 'Downloading…' : 'Download sample'}
+          acknowledge="I understand this file is live malware and I will handle it on an isolated machine."
+          busy={downloading}
+          error={downloadError}
+          onConfirm={download}
+          onCancel={() => setConfirming(false)}
+        >
+          <p>
+            This saves the captured file to this computer exactly as the attacker uploaded it.
+            It is not defanged, renamed, archived or password-protected.
+          </p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-[3px] border border-line bg-ink-0 p-3 text-[12px]">
+            <dt className="eyebrow">Type</dt>
+            <dd className="text-paper">{cleanLine(detail.file_type || detail.file_kind || 'Unknown')}</dd>
+            {detail.family && (
+              <>
+                <dt className="eyebrow">Resembles</dt>
+                <dd className="text-paper">{cleanLine(detail.family)} (heuristic)</dd>
+              </>
+            )}
+            <dt className="eyebrow">Size</dt>
+            <dd className="readout text-paper">{formatBytes(detail.size ?? 0)}</dd>
+            <dt className="eyebrow">SHA-256</dt>
+            <dd className="readout break-all text-paper">{cleanLine(detail.sha256)}</dd>
+          </dl>
+          <p>
+            Opening or running it can compromise the machine it is on, and security software may
+            quarantine it or raise an alert. The download is recorded in the audit log under your
+            account.
+          </p>
+        </ConfirmDialog>
       )}
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line px-4 py-3.5">
@@ -282,7 +319,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {(a.family.evidence || []).map((e, i) => (
-              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[11px] text-paper-3">{clean(e)}</span>
+              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[12px] text-paper-3">{clean(e)}</span>
             ))}
           </div>
         </Block>
@@ -296,7 +333,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
           </dl>
           {elf.capabilities?.length > 0 && (
             <p className="mt-2 flex flex-wrap gap-1">
-              {elf.capabilities.map((c) => <span key={c} className="tag" style={{ color: 'var(--color-s2)' }}>{c}</span>)}
+              {elf.capabilities.map((c) => <span key={c} className="tag" style={{ color: 'var(--color-s2)' }}>{cleanLine(c)}</span>)}
             </p>
           )}
           {elf.libraries?.length > 0 && (

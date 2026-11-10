@@ -7,6 +7,9 @@
  * every time.
  */
 
+import { useEffect } from 'react'
+import { Link } from 'react-router-dom'
+
 function Mark({ className = '' }) {
   return (
     <svg viewBox="0 0 24 24" className={className} aria-hidden="true" fill="none">
@@ -21,7 +24,14 @@ function Mark({ className = '' }) {
   )
 }
 
-export default function AuthShell({ title, subtitle, children, footer }) {
+export default function AuthShell({ title, subtitle, children, footer, pageTitle }) {
+  // The tab says which step this is, so the history and open tabs can be
+  // told apart and a screen reader announces the new page.
+  const name = pageTitle || (typeof title === 'string' ? title : 'Sign in')
+  useEffect(() => {
+    document.title = `${name} · HoneySentinel`
+  }, [name])
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-ink-0 px-4 py-10">
       <div className="w-full max-w-sm">
@@ -153,5 +163,27 @@ export function Notice({ tone = 'info', title, children }) {
         <div className="text-[13px] leading-relaxed text-paper-2">{children}</div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Shown in place of a flow this deployment cannot complete. Sign-up and
+ * password reset both end with a code sent by e-mail; without a mail
+ * provider the form would accept the request and the code would never come.
+ */
+export function Unavailable({ title, children }) {
+  return (
+    <AuthShell
+      title={title}
+      footer={
+        <Link to="/login" className="font-medium text-paper-2 hover:text-paper">
+          Back to sign in
+        </Link>
+      }
+    >
+      <Notice tone="warn" title="Not available on this deployment">
+        {children}
+      </Notice>
+    </AuthShell>
   )
 }

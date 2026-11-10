@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
+import { PreferencesProvider } from './context/PreferencesContext'
 import { useAuth } from './context/useAuth'
 import ErrorBoundary from './components/ErrorBoundary'
 import { Spinner } from './components/Loading'
@@ -15,6 +16,7 @@ const SessionLogs = lazy(() => import('./pages/SessionLogs'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const Indicators = lazy(() => import('./pages/Indicators'))
 const Payloads = lazy(() => import('./pages/Payloads'))
+const AttackMatrix = lazy(() => import('./pages/AttackMatrix'))
 const Settings = lazy(() => import('./pages/Settings'))
 const AttackerProfile = lazy(() => import('./pages/AttackerProfile'))
 
@@ -66,6 +68,7 @@ function AuthRoutes() {
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/indicators" element={<Indicators />} />
         <Route path="/payloads" element={<Payloads />} />
+        <Route path="/attack" element={<AttackMatrix />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
@@ -80,10 +83,12 @@ function AuthRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ErrorBoundary>
-        <Suspense fallback={<Spinner label="Loading view" />}><AuthRoutes /></Suspense>
-      </ErrorBoundary>
-    </AuthProvider>
+    <PreferencesProvider>
+      <AuthProvider>
+        <ErrorBoundary>
+          <Suspense fallback={<Spinner label="Loading view" />}><AuthRoutes /></Suspense>
+        </ErrorBoundary>
+      </AuthProvider>
+    </PreferencesProvider>
   )
 }
