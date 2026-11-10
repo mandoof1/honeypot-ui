@@ -519,7 +519,10 @@ class TestLockout:
         locked = await client.post(
             "/api/v1/auth/login", json={"email": "locked@example.com", "password": "correct-horse-battery"}
         )
-        assert locked.status_code == 423
+        # Refused, and in the same words as a wrong password: the old 423
+        # told anyone who asked that the address had an account.
+        assert locked.status_code == 401
+        assert locked.json() == response.json()
 
     async def test_success_resets_the_counter(self, client, make_user, db_session):
         user = await make_user(email="ok@example.com")

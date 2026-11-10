@@ -1,11 +1,12 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum, JSON
+from sqlalchemy import BigInteger, Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum, JSON
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 import enum
 import uuid
 from app.core.database import Base
+from app.core.sanitize import clean_text
 
 
 class UserRole(str, enum.Enum):
@@ -95,6 +96,25 @@ def _pg_enum(enum_cls):
     )
 
 
+def _fit(row, column: str, value):
+    """Make a string fit the VARCHAR column it is being assigned to.
+
+    Used through ``@validates`` on the columns that receive text an attacker
+    wrote or influenced. SQLite ignores a VARCHAR length and PostgreSQL does
+    not: one URL of 501 characters extracted from a command made the insert
+    of that indicator fail, the whole session with it, and the engine resend
+    the session for ever. Every writer is expected to bound what it stores;
+    this is the backstop for the one that forgets, at the single point every
+    writer passes through. It also escapes the characters PostgreSQL text
+    cannot hold at all.
+    """
+    if not isinstance(value, str):
+        return value
+    limit = row.__table__.c[column].type.length
+    value = clean_text(value)
+    return value[:limit] if limit else value
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -116,6 +136,11 @@ class User(Base):
     totp_enabled = Column(Boolean, default=False, nullable=False)
     totp_recovery_hashes = Column(_jsonb(), nullable=True)
     totp_enrolled_at = Column(DateTime(timezone=True), nullable=True)
+    #: Time step (Unix time // 30) of the last authenticator code accepted.
+    #: A code is valid for about ninety seconds; without this, one that was
+    #: seen in transit or over a shoulder could be used again inside that
+    #: window. A code for this step or an earlier one is refused.
+    totp_last_step = Column(BigInteger, nullable=True)
 
     #: Consecutive failed password attempts, and the lockout they earned.
     failed_login_count = Column(Integer, nullable=False, default=0, server_default="0")
@@ -174,7 +199,7 @@ class HoneypotSession(Base):
     geo_city = Column(String(100), nullable=True)
     geo_lat = Column(Float, nullable=True)
     geo_lon = Column(Float, nullable=True)
-    status = Column(_pg_enum(SessionStatus), default=SessionStatus.ACTIVE, nullable=False)
+    status = Column(_pg_enum(SessionStatus), default=SessionStatus.ACTIVE, nullable=False, index=True)
     started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     duration_seconds = Column(Float, nullable=True)
@@ -292,6 +317,10 @@ class HoneypotSession(Base):
         cascade="all, delete-orphan",
     )
 
+    @validates("protocol", "attacker_ip", "rule_reason", "enrichment_error", "model_source")
+    def _fit_text(self, column, value):
+        return _fit(self, column, value)
+
 
 class IndicatorOfCompromise(Base):
     __tablename__ = "indicators_of_compromise"
@@ -308,6 +337,10 @@ class IndicatorOfCompromise(Base):
     tags = Column(_jsonb(), nullable=True)
 
     session = relationship("HoneypotSession", back_populates="iocs")
+
+    @validates("ioc_type", "value")
+    def _fit_text(self, column, value):
+        return _fit(self, column, value)
 
 
 class PayloadSample(Base):
@@ -338,6 +371,10 @@ class PayloadSample(Base):
     family = Column(String(64), nullable=True, index=True)
     #: pending, complete, failed or metadata_only.
     analysis_status = Column(String(16), nullable=False, default="pending")
+    #: How many times analysis has been started. A sample whose result could
+    #: not be stored stayed pending and was re-run every hour for ever; after
+    #: PAYLOAD_ANALYSIS_MAX_ATTEMPTS it is marked failed instead.
+    analysis_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     analysis_error = Column(String(500), nullable=True)
     analysis = Column(_jsonb(), nullable=True)
     analyser_version = Column(String(16), nullable=True)
@@ -346,6 +383,10 @@ class PayloadSample(Base):
     last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     artifacts = relationship("SessionArtifact", back_populates="sample")
+
+    @validates("file_kind", "file_type", "family", "analysis_error", "analyser_version")
+    def _fit_text(self, column, value):
+        return _fit(self, column, value)
 
 
 class SessionArtifact(Base):
@@ -371,6 +412,10 @@ class SessionArtifact(Base):
 
     session = relationship("HoneypotSession", back_populates="artifacts")
     sample = relationship("PayloadSample", back_populates="artifacts")
+
+    @validates("filename", "remote_path", "source")
+    def _fit_text(self, column, value):
+        return _fit(self, column, value)
 
 
 class Alert(Base):

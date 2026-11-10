@@ -59,24 +59,41 @@ def current_code(secret: str, at: float | None = None) -> str:
     return _code_at(secret, int((at if at is not None else time.time()) // PERIOD))
 
 
-def verify(secret: str, code: str, at: float | None = None) -> bool:
-    """Check a submitted code, allowing for clock drift.
+def matching_step(secret: str, code: str, at: float | None = None) -> int | None:
+    """The time step a submitted code is valid for, or None if it is not.
+
+    Clock drift is allowed for: the steps either side of now are tried too.
+    Returning the step, rather than only yes or no, is what lets the caller
+    refuse a code that has already been used: it records the step it
+    accepted and turns away that step and any earlier one afterwards.
 
     Compared with ``compare_digest``: a plain ``==`` on a six-digit code leaks
     timing information, and six digits is a small enough space that it is
-    worth not helping.
+    worth not helping. Every candidate step is compared, match or not, for
+    the same reason.
     """
     if not secret or not code:
-        return False
+        return None
     code = code.strip().replace(" ", "")
     if not code.isdigit() or len(code) != DIGITS:
-        return False
+        return None
 
     counter = int((at if at is not None else time.time()) // PERIOD)
+    matched = None
     for step in range(-DRIFT_STEPS, DRIFT_STEPS + 1):
-        if hmac.compare_digest(_code_at(secret, counter + step), code):
-            return True
-    return False
+        try:
+            expected = _code_at(secret, counter + step)
+        except (ValueError, struct.error):
+            # A secret that is not valid base32, or a time before the epoch.
+            return None
+        if hmac.compare_digest(expected, code) and matched is None:
+            matched = counter + step
+    return matched
+
+
+def verify(secret: str, code: str, at: float | None = None) -> bool:
+    """Whether a submitted code is currently valid. See ``matching_step``."""
+    return matching_step(secret, code, at) is not None
 
 
 def provisioning_uri(secret: str, email: str, issuer: str = "HoneySentinel") -> str:

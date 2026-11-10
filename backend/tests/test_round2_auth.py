@@ -122,7 +122,9 @@ class TestFeedToken:
             json={"name": "n", "protocol": "multi", "ip_address": "10.0.0.9", "port": 2222},
         )
         node_id = node.json()["id"]
-        for ip in ("100.87.82.102", "10.10.21.69", "203.0.113.9"):
+        # Tailnet (carrier-grade NAT), private, documentation and link-local
+        # addresses, and one ordinary global address.
+        for ip in ("100.87.82.102", "10.10.21.69", "203.0.113.9", "169.254.10.1", "45.83.64.1"):
             for _ in range(2):
                 await client.post(
                     f"/api/v1/sessions/ingest-internal?node_id={node_id}", headers=INGEST_HEADERS,
@@ -130,7 +132,88 @@ class TestFeedToken:
                 )
         feed = await client.get("/api/v1/iocs/feed?min_sessions=1", headers=headers)
         lines = [l for l in feed.text.splitlines() if not l.startswith("#")]
-        assert lines == ["203.0.113.9"]
+        assert lines == ["45.83.64.1"]
+
+    async def _session_with_indicators(self, db_session, rows):
+        """One stored session carrying the given (type, value, tags) rows."""
+        from app.models import HoneypotNode, HoneypotSession, IndicatorOfCompromise
+
+        node = HoneypotNode(name="feed-node", protocol="ssh", ip_address="10.0.0.9", port=2222)
+        db_session.add(node)
+        await db_session.flush()
+        session = HoneypotSession(node_id=node.id, protocol="ssh", attacker_ip="45.83.64.1")
+        db_session.add(session)
+        await db_session.flush()
+        for ioc_type, value, tags in rows:
+            db_session.add(
+                IndicatorOfCompromise(session_id=session.id, ioc_type=ioc_type, value=value, tags=tags)
+            )
+        await db_session.commit()
+
+    async def test_only_addresses_that_connected_are_exported(self, client, auth_headers, db_session):
+        """Typing an address into a decoy must not get it blocked.
+
+        The feed selected every ``ip`` row. That included addresses that only
+        appeared in a command, and whatever else had been stored as an "ip".
+        """
+        await self._session_with_indicators(db_session, [
+            ("ip", "45.83.64.1", ["attacker_ip"]),
+            ("ip", "45.83.64.2", ["referenced_ip"]),          # typed, never connected
+            ("ip", "45.83.64.3", ["payload", "c2"]),          # named inside a file
+            ("referenced_ip", "45.83.64.4", ["referenced_ip"]),
+            ("ip", "0.0.0.0/0", ["attacker_ip"]),             # not an address
+            ("ip", "evil.example", ["attacker_ip"]),
+            ("ip", "224.0.0.251", ["attacker_ip"]),           # multicast
+            ("ip", "45.83.64.9\n10.0.0.0/8", ["attacker_ip"]),
+        ])
+        headers = await auth_headers(UserRole.ADMIN)
+        feed = await client.get("/api/v1/iocs/feed?min_sessions=1", headers=headers)
+        assert feed.status_code == 200
+        lines = [l for l in feed.text.splitlines() if not l.startswith("#")]
+        assert lines == ["45.83.64.1"]
+
+        refused = await client.get("/api/v1/iocs/feed?ioc_type=referenced_ip", headers=headers)
+        assert refused.status_code == 400
+
+    async def test_allowlisted_addresses_are_left_out(self, client, auth_headers, db_session, monkeypatch):
+        from app.core.config import get_settings
+
+        await self._session_with_indicators(db_session, [
+            ("ip", "45.83.64.1", ["attacker_ip"]),
+            ("ip", "45.83.65.7", ["attacker_ip"]),
+            ("ip", "45.83.66.8", ["attacker_ip"]),
+        ])
+        monkeypatch.setattr(get_settings(), "IOC_FEED_ALLOWLIST", "45.83.64.1, 45.83.65.0/24, nonsense")
+        headers = await auth_headers(UserRole.ADMIN)
+        feed = await client.get("/api/v1/iocs/feed?min_sessions=1", headers=headers)
+        lines = [l for l in feed.text.splitlines() if not l.startswith("#")]
+        assert lines == ["45.83.66.8"]
+
+    async def test_bearer_token_reads_the_feed_with_nothing_cached(self, client, auth_headers):
+        """A scheduled pull is the first request its user makes.
+
+        ``feed_auth`` called the user lookup without a database session. It
+        only worked when an earlier request had cached that user's state,
+        which every other test's sign-in happened to do.
+        """
+        from app.core import security
+
+        headers = await auth_headers(UserRole.VIEWER)
+        security._user_state_cache.clear()
+        feed = await client.get("/api/v1/iocs/feed", headers=headers)
+        assert feed.status_code == 200, feed.text
+        assert feed.text.startswith("# HoneySentinel indicator feed")
+
+    async def test_other_feed_types_cannot_carry_a_second_line(self, client, auth_headers, db_session):
+        await self._session_with_indicators(db_session, [
+            ("domain", "c2.example.net", ["c2_host"]),
+            ("domain", "x.example.net\n0.0.0.0/0", ["c2_host"]),
+            ("domain", "# not a comment", ["c2_host"]),
+        ])
+        headers = await auth_headers(UserRole.ADMIN)
+        feed = await client.get("/api/v1/iocs/feed?ioc_type=domain&min_sessions=1", headers=headers)
+        lines = [l for l in feed.text.splitlines() if not l.startswith("#")]
+        assert lines == ["c2.example.net"]
 
 
 class TestEngineControlAudit:

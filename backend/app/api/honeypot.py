@@ -19,7 +19,7 @@ from app.core.config import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_role
+from app.core.security import engine_control_token, get_current_user, require_role
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -87,7 +87,10 @@ async def _engine_request(
                 method,
                 url,
                 json=json_body,
-                headers={"X-Honeypot-Token": settings.HONEYPOT_INGEST_TOKEN},
+                # HONEYPOT_CONTROL_TOKEN when it is set, so the secret that
+                # steers an engine is not the one engines use to write
+                # sessions; the ingest token otherwise, as before.
+                headers={"X-Honeypot-Token": engine_control_token()},
             )
     except httpx.HTTPError as exc:
         logger.warning("Honeypot engine unreachable at %s: %s", url, exc)
@@ -97,11 +100,16 @@ async def _engine_request(
         )
 
     if response.status_code == 401:
+        expected = (
+            "HONEYPOT_CONTROL_TOKEN"
+            if settings.HONEYPOT_CONTROL_TOKEN
+            else "HONEYPOT_INGEST_TOKEN"
+        )
         raise HTTPException(
             status_code=502,
             detail=(
                 "Honeypot engine rejected the control token; backend and "
-                "engine HONEYPOT_INGEST_TOKEN values do not match"
+                f"engine {expected} values do not match"
             ),
         )
     if response.status_code >= 400:
@@ -109,7 +117,13 @@ async def _engine_request(
             status_code=502,
             detail=f"Honeypot engine returned HTTP {response.status_code}",
         )
-    return response.json()
+    try:
+        return response.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=502,
+            detail="Honeypot engine returned a response that is not JSON",
+        )
 
 
 async def _engine_broadcast(method: str, path: str, json_body: Optional[dict] = None) -> Any:

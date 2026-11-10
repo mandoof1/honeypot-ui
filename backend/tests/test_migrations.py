@@ -58,17 +58,36 @@ def _load_migrations():
         modules.append(module)
 
     by_revision = {m.revision: m for m in modules}
-    ordered, revision = [], None
-    while True:
-        nxt = next(
-            (m for m in modules if m.down_revision == revision and m not in ordered),
-            None,
-        )
-        if nxt is None:
-            break
-        ordered.append(nxt)
-        revision = nxt.revision
-    assert len(ordered) == len(by_revision), "migration chain is broken or branched"
+    assert len(by_revision) == len(modules), "two migrations share a revision id"
+
+    def parents(module) -> tuple:
+        # None for the first revision, a string for an ordinary one, and a
+        # tuple for a merge revision that joins two branches.
+        down = module.down_revision
+        if down is None:
+            return ()
+        return (down,) if isinstance(down, str) else tuple(down)
+
+    # Apply a revision once everything it follows has been applied. A plain
+    # walk from one revision to "the" next one cannot order a history where
+    # two revisions follow the same parent and a merge revision joins them,
+    # which is what parallel work produces (011 and 012 both follow 010).
+    ordered, applied = [], set()
+    while len(ordered) < len(modules):
+        ready = [
+            m for m in modules
+            if m.revision not in applied and all(p in applied for p in parents(m))
+        ]
+        assert ready, "migration history has a missing parent or a cycle"
+        for module in sorted(ready, key=lambda m: m.revision):
+            ordered.append(module)
+            applied.add(module.revision)
+
+    # Whatever its shape in the middle, the history must end in one place:
+    # `alembic upgrade head` refuses to run with two heads.
+    referenced = {p for m in modules for p in parents(m)}
+    heads = sorted(set(by_revision) - referenced)
+    assert len(heads) == 1, f"migrations end in more than one head: {heads}"
     return ordered
 
 

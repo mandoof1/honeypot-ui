@@ -140,77 +140,113 @@ async def liveness_tick(db: AsyncSession, now: Optional[datetime] = None) -> dic
 
     raised = resolved = 0
     for node in nodes:
-        if node.last_heartbeat is None:
-            # Registered by an engine that never sent a heartbeat (older
-            # version) — nothing to judge.
+        # Each node on its own: the status report is whatever that engine
+        # sent, and one engine sending nonsense must not stop the check for
+        # every other engine (a non-numeric disk figure used to do that, on
+        # every tick, for as long as the report stayed stored).
+        try:
+            node_raised, node_resolved = await _check_node(db, node, now, stale_after, settings)
+        except Exception:
+            logger.exception("Liveness check failed for engine %s; continuing", node.name)
             continue
-        age = now - _aware(node.last_heartbeat)
-        if age > stale_after and not node.offline_alerted:
-            minutes = int(age.total_seconds() // 60)
-            await alert_service.raise_system_alert(
-                db,
-                key=f"node_offline:{node.name}",
-                severity=AttackSeverity.HIGH,
-                title=f"Engine {node.name} stopped reporting",
-                description=(
-                    f"No heartbeat from honeypot engine '{node.name}' for {minutes} minute(s). "
-                    f"Its decoys may be down, or it cannot reach the API. "
-                    f"Last report: {node.last_heartbeat.isoformat()}."
-                ),
-                node=node,
-            )
-            node.offline_alerted = True
-            raised += 1
-        elif age <= stale_after and node.offline_alerted:
-            await alert_service.resolve_system_alert(
-                db, f"node_offline:{node.name}", f"Engine reported again at {now.isoformat()}."
-            )
-            node.offline_alerted = False
-            resolved += 1
-
-        status = node.last_status if isinstance(node.last_status, dict) else {}
-        disk = status.get("disk") if isinstance(status.get("disk"), dict) else None
-        if disk and disk.get("total_bytes"):
-            free_fraction = float(disk.get("free_bytes") or 0) / float(disk["total_bytes"])
-            key = f"node_disk:{node.name}"
-            if free_fraction < settings.NODE_DISK_ALERT_FRACTION:
-                if await alert_service.raise_system_alert(
-                    db,
-                    key=key,
-                    severity=AttackSeverity.HIGH,
-                    title=f"Engine {node.name} is low on disk",
-                    description=(
-                        f"{free_fraction:.1%} of {disk.get('path') or 'its data volume'} is free "
-                        f"({int(disk.get('free_bytes') or 0) // (1024 * 1024)} MiB). Captured sessions "
-                        f"and uploads stop being written when it fills."
-                    ),
-                    node=node,
-                ):
-                    raised += 1
-            else:
-                resolved += await alert_service.resolve_system_alert(
-                    db, key, f"Disk back to {free_fraction:.0%} free."
-                )
-        spool = status.get("spool_pending")
-        if isinstance(spool, int):
-            key = f"node_spool:{node.name}"
-            if spool >= 100:
-                if await alert_service.raise_system_alert(
-                    db,
-                    key=key,
-                    severity=AttackSeverity.MEDIUM,
-                    title=f"Engine {node.name} has {spool} sessions waiting to be ingested",
-                    description=(
-                        "The engine captured sessions it could not deliver to the API and is "
-                        "retrying from its local spool. Check the ingest service."
-                    ),
-                    node=node,
-                ):
-                    raised += 1
-            elif spool == 0:
-                resolved += await alert_service.resolve_system_alert(db, key, "Spool drained.")
+        raised += node_raised
+        resolved += node_resolved
     await db.commit()
     return {"nodes": len(nodes), "raised": raised, "resolved": resolved}
+
+
+def _number(value) -> Optional[float]:
+    """A finite, non-negative number from an engine's report, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    if number != number or number in (float("inf"), float("-inf")) or number < 0:
+        return None
+    return number
+
+
+async def _check_node(
+    db: AsyncSession, node: HoneypotNode, now: datetime, stale_after: timedelta, settings
+) -> tuple[int, int]:
+    """Raise or resolve one node's system alerts. Returns (raised, resolved)."""
+    raised = resolved = 0
+    if node.last_heartbeat is None:
+        # Registered by an engine that never sent a heartbeat (older
+        # version) — nothing to judge.
+        return raised, resolved
+
+    age = now - _aware(node.last_heartbeat)
+    if age > stale_after and not node.offline_alerted:
+        minutes = int(age.total_seconds() // 60)
+        await alert_service.raise_system_alert(
+            db,
+            key=f"node_offline:{node.name}",
+            severity=AttackSeverity.HIGH,
+            title=f"Engine {node.name} stopped reporting",
+            description=(
+                f"No heartbeat from honeypot engine '{node.name}' for {minutes} minute(s). "
+                f"Its decoys may be down, or it cannot reach the API. "
+                f"Last report: {node.last_heartbeat.isoformat()}."
+            ),
+            node=node,
+        )
+        node.offline_alerted = True
+        raised += 1
+    elif age <= stale_after and node.offline_alerted:
+        await alert_service.resolve_system_alert(
+            db, f"node_offline:{node.name}", f"Engine reported again at {now.isoformat()}."
+        )
+        node.offline_alerted = False
+        resolved += 1
+
+    status = node.last_status if isinstance(node.last_status, dict) else {}
+    disk = status.get("disk") if isinstance(status.get("disk"), dict) else {}
+    total_bytes = _number(disk.get("total_bytes"))
+    free_bytes = _number(disk.get("free_bytes"))
+    if total_bytes and free_bytes is not None:
+        free_fraction = min(free_bytes / total_bytes, 1.0)
+        key = f"node_disk:{node.name}"
+        if free_fraction < settings.NODE_DISK_ALERT_FRACTION:
+            if await alert_service.raise_system_alert(
+                db,
+                key=key,
+                severity=AttackSeverity.HIGH,
+                title=f"Engine {node.name} is low on disk",
+                description=(
+                    f"{free_fraction:.1%} of {str(disk.get('path') or 'its data volume')[:200]} is free "
+                    f"({int(free_bytes) // (1024 * 1024)} MiB). Captured sessions "
+                    f"and uploads stop being written when it fills."
+                ),
+                node=node,
+            ):
+                raised += 1
+        else:
+            resolved += await alert_service.resolve_system_alert(
+                db, key, f"Disk back to {free_fraction:.0%} free."
+            )
+
+    spool = status.get("spool_pending")
+    if isinstance(spool, int) and not isinstance(spool, bool):
+        key = f"node_spool:{node.name}"
+        if spool >= 100:
+            if await alert_service.raise_system_alert(
+                db,
+                key=key,
+                severity=AttackSeverity.MEDIUM,
+                title=f"Engine {node.name} has {spool} sessions waiting to be ingested",
+                description=(
+                    "The engine captured sessions it could not deliver to the API and is "
+                    "retrying from its local spool. Check the ingest service."
+                ),
+                node=node,
+            ):
+                raised += 1
+        elif spool == 0:
+            resolved += await alert_service.resolve_system_alert(db, key, "Spool drained.")
+    return raised, resolved
 
 
 # --------------------------------------------------------------------------
@@ -272,8 +308,14 @@ async def purge_old_audit(db: AsyncSession) -> int:
 async def _cleanup_otp(db: AsyncSession) -> int:
     from app.models import OTPVerification
 
+    from app.services.otp import OTP_RETENTION
+
     before = (await db.execute(select(func.count(OTPVerification.id)))).scalar() or 0
-    await db.execute(delete(OTPVerification).where(OTPVerification.expires_at < _now()))
+    # Kept a while past expiry: the per-account hourly cap on new codes is a
+    # count of these rows, and deleting them at expiry reset it every hour.
+    await db.execute(
+        delete(OTPVerification).where(OTPVerification.expires_at < _now() - OTP_RETENTION)
+    )
     await db.commit()
     after = (await db.execute(select(func.count(OTPVerification.id)))).scalar() or 0
     return max(0, before - after)
@@ -296,12 +338,44 @@ async def _prune_refresh_tokens(db: AsyncSession) -> int:
 
 
 async def _requeue_pending_payloads(db: AsyncSession) -> int:
-    """Samples a restart left in 'pending' never got their detached analysis."""
+    """Samples a restart left in 'pending' never got their detached analysis.
+
+    Only those with attempts left. A sample that has used them up is marked
+    failed here: one whose result could never be stored was otherwise
+    re-queued on every pass, for ever, and crowded the fifty-row window so
+    that genuinely interrupted samples behind it were never reached.
+    """
+    from sqlalchemy import update
+
     from app.services import payload_enrichment
+
+    max_attempts = max(1, get_settings().PAYLOAD_ANALYSIS_MAX_ATTEMPTS)
+    await db.execute(
+        update(PayloadSample)
+        .where(
+            PayloadSample.analysis_status == "pending",
+            PayloadSample.analysis_attempts >= max_attempts,
+        )
+        .values(
+            analysis_status="failed",
+            analysed_at=_now(),
+            analysis_error=func.coalesce(
+                PayloadSample.analysis_error,
+                f"gave up after {max_attempts} attempt(s)",
+            ),
+        )
+    )
+    await db.commit()
 
     ids = (
         await db.execute(
-            select(PayloadSample.id).where(PayloadSample.analysis_status == "pending").limit(50)
+            select(PayloadSample.id)
+            .where(
+                PayloadSample.analysis_status == "pending",
+                PayloadSample.analysis_attempts < max_attempts,
+            )
+            .order_by(PayloadSample.id)
+            .limit(50)
         )
     ).scalars().all()
     if ids:

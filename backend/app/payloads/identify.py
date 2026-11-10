@@ -72,6 +72,22 @@ def _is_text(data: bytes) -> bool:
         return False
 
 
+#: Longest interpreter name kept from a shebang line.
+_MAX_INTERPRETER = 24
+
+
+def _interpreter_label(name: str) -> str:
+    """An interpreter name that is safe to store and to show.
+
+    The name is whatever follows ``#!`` in the uploaded file, so it is the
+    attacker's to choose: a five-kilobyte "interpreter" made the label longer
+    than the file_type column and the analysis could never be saved. Kept to
+    the characters real interpreter names use, and to a sensible length.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._+-]", "", name)[:_MAX_INTERPRETER]
+    return cleaned or "unknown"
+
+
 def identify(data: bytes) -> FileType:
     if not data:
         return FileType("empty", "Empty file", "application/x-empty")
@@ -141,6 +157,7 @@ def identify(data: bytes) -> FileType:
         if interpreter == "env" and shebang.group(2):
             interpreter = shebang.group(2).decode("latin-1")
         language = _INTERPRETERS.get(re.sub(r"[\d.]+$", "", interpreter), interpreter)
+        language = _interpreter_label(language)
         return FileType("script", f"{language} script", f"text/x-{language}", language)
 
     if _is_text(data):
