@@ -13,6 +13,7 @@ The database is the suite's to use: tables are created and dropped in it.
 
 import base64
 import hashlib
+import json
 import os
 
 import pytest
@@ -99,15 +100,21 @@ async def test_session_with_an_overlong_url_is_stored(pg_client, pg_session):
 
 async def test_session_full_of_nuls_and_broken_unicode_is_stored(pg_client, pg_session):
     node = await _node(pg_session)
+    body = {
+        "protocol": "http", "attacker_ip": "45.83.64.20",
+        "commands": ["GET /\x00\x16\x03\x01 HTTP/1.1", "half a pair \ud83d"],
+        "transcript": [{"command": "\x00", "output": "\x00\ud800", "exit_code": 0, "timestamp": 1.0}],
+        "events": [{"event_type": "http_diversion", "reason": "probe\x00"}],
+        "fingerprints": {"ja3": "abc\x00"},
+    }
+    # Sent as the engine sends it: ASCII JSON, where half a surrogate pair is
+    # the escape \ud83d. The client cannot build such a body from `json=`,
+    # because it encodes to UTF-8 first and an unpaired surrogate has no
+    # UTF-8 form.
     response = await pg_client.post(
-        f"{INGEST}?node_id={node.id}", headers=SHARED,
-        json={
-            "protocol": "http", "attacker_ip": "45.83.64.20",
-            "commands": ["GET /\x00\x16\x03\x01 HTTP/1.1", "half a pair \ud83d"],
-            "transcript": [{"command": "\x00", "output": "\x00\ud800", "exit_code": 0, "timestamp": 1.0}],
-            "events": [{"event_type": "http_diversion", "reason": "probe\x00"}],
-            "fingerprints": {"ja3": "abc\x00"},
-        },
+        f"{INGEST}?node_id={node.id}",
+        headers={**SHARED, "Content-Type": "application/json"},
+        content=json.dumps(body).encode("ascii"),
     )
     assert response.status_code == 200, response.text
     stored = (await pg_session.execute(select(HoneypotSession))).scalar_one()
