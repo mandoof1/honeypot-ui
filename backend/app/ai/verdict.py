@@ -254,9 +254,9 @@ def reconcile(flow_result: Optional[Dict], rules: RuleVerdict) -> Dict:
     "exploitation", botnet traffic for "exfiltration") do not resemble decoy
     sessions, its exfiltration precision on that set's own test split is
     0.47, and on the deployment's stored sessions it has never produced a
-    non-benign label. A session-native model (``ml.train_sessions``) is the
-    intended replacement once labelled sessions exist; this is the function
-    to revisit then.
+    non-benign label. A model trained on labelled sessions of this system
+    (``app.tools.label_sessions`` produces the labels) would be the
+    replacement; this is the function to revisit when one exists.
     """
     flow_result = flow_result or {}
     flow_category = str(flow_result.get("category") or BENIGN)

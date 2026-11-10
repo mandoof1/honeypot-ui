@@ -30,7 +30,6 @@ import argparse
 import asyncio
 import json
 import random
-import statistics
 import sys
 import time
 from collections import Counter
