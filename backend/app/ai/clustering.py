@@ -31,7 +31,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import pickle
 import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence
@@ -42,7 +41,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 from app.ai.config import get_analysis_settings
-from app.ai.provenance import dump_pickle, file_stamp, git_revision
+from app.ai.provenance import dump_pickle, file_stamp, git_revision, load_pickle
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -186,8 +185,7 @@ class BehaviouralClusterer:
                 self.metadata = {}
                 return
             try:
-                with open(self._path, "rb") as fh:
-                    data = pickle.load(fh)
+                data = load_pickle(self._path)
                 self._model, self._scaler = data["model"], data["scaler"]
                 self.metadata = dict(data.get("metadata") or {})
                 logger.info("Loaded behavioural cluster model (%s)", self.metadata.get("fitted_at") or "no record")

@@ -52,6 +52,12 @@ docker run --rm --name hs-train --network none -u 0 \
     chown 10001:10001 /models/random_forest_model.pkl /models/random_forest_model_metrics.json
   "
 
+# The API loads only model files signed with this deployment's key, which the
+# training container above deliberately did not have.
+echo "==> Signing the model for this deployment"
+docker compose run --rm --no-deps -T backend \
+  python -m app.ai.provenance sign /app/models/random_forest_model.pkl < /dev/null
+
 # Both services load the model at start. Restarting only the backend left
 # ingest, which does the classifying, on the old one.
 echo "==> Restarting the API and ingest on the new model"

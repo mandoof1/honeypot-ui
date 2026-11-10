@@ -202,9 +202,20 @@ append_env HS_ISOLATED_GATEWAY       "# HS_ISOLATED_GATEWAY=false       # Docker
 # install keeps the identity its engine already created.
 if ! grep -q '^HONEYPOT_IDENTITY_SEED=' "$ENV_FILE"; then
   seed=$(docker compose exec -T honeypot python -c "import json; print(json.load(open('/app/data/sessions/host-identity.json'))['seed'])" < /dev/null 2>/dev/null || true)
-  seed=${seed:-$(python3 -c "import secrets; print(secrets.randbelow(2**31 - 1) + 1)")}
+  seed=${seed:-$(python3 -c "import secrets; print(secrets.randbelow(2**62) + 2**62)")}
   printf '\n# Both engines describe this one host (hostname, OS, banners).\nHONEYPOT_IDENTITY_SEED=%s\n' "$seed" >> "$ENV_FILE"
   echo "    pinned the host identity seed"
+fi
+
+# What the planted secrets (honeytokens) and the AI-agent canary are derived
+# from. Separate from the identity seed on purpose: the seed decides public
+# facts and can be worked out from them, and a planted password that followed
+# from it would prove nothing when it came back. One value for both engines,
+# so the shell's files and the website's /.env plant the same secrets.
+if ! grep -q '^HONEYPOT_DECOY_SECRET=' "$ENV_FILE"; then
+  printf '\n# Planted secrets and the canary token derive from this. Never shown to a client.\nHONEYPOT_DECOY_SECRET=%s\n' \
+    "$(python3 -c "import secrets; print(secrets.token_hex(32))")" >> "$ENV_FILE"
+  echo "    generated the decoy secret"
 fi
 WEB_PORT=$(env_get WEB_PORT | tr -d '[:space:]')
 WEB_PORT=${WEB_PORT:-8088}
@@ -435,6 +446,20 @@ if [[ $egress_status -eq 2 ]]; then
   sed 's/; /\n/g' <<<"$egress_reason" | sed 's/^/      /'
   docker rm -f hs-test hs-stress >/dev/null 2>&1 || true
   docker compose --profile '*' down --remove-orphans
+fi
+
+# Model files are unpickled by the API, so it loads only those signed with
+# this deployment's key. Files written before signing existed are signed
+# here, once, on the upgrade that introduces it; after that an unsigned model
+# is never signed without being asked (python -m app.ai.provenance sign),
+# because "unsigned" is also what a replaced file looks like.
+if [[ ! -f "$STATE/models-signed" ]]; then
+  docker compose run --rm --no-deps -T backend sh -c '
+    for f in /app/models/*.pkl; do
+      [ -f "$f" ] || continue
+      head -c 12 "$f" | grep -q "^hs-model-v1 " || python -m app.ai.provenance sign "$f"
+    done' < /dev/null || echo "    WARNING: could not sign the existing model files; the API will use bootstraps until they are signed" >&2
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/models-signed"
 fi
 
 docker compose up -d --remove-orphans

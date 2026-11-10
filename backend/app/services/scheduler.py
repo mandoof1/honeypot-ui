@@ -86,6 +86,9 @@ async def start() -> None:
                 name="housekeeping",
             ),
             asyncio.create_task(_models_loop(), name="models"),
+            asyncio.create_task(
+                _loop("payload-queue", PAYLOAD_QUEUE_INTERVAL, payload_queue_tick), name="payload-queue"
+            ),
         ]
     )
     logger.info("Background workers started: enrichment, outbox, liveness, housekeeping")
@@ -383,6 +386,15 @@ async def _prune_refresh_tokens(db: AsyncSession) -> int:
     )
     await db.commit()
     return result.rowcount or 0
+
+
+#: Seconds between looks at the payload queue. The ingest service stores
+#: uploaded samples and leaves them pending; this process analyses them.
+PAYLOAD_QUEUE_INTERVAL = 20
+
+
+async def payload_queue_tick(db: AsyncSession) -> dict:
+    return {"payloads_queued": await _requeue_pending_payloads(db)}
 
 
 async def _requeue_pending_payloads(db: AsyncSession) -> int:

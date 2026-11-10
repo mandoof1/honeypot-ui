@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import math
 import os
-import pickle
 import threading
 from collections import Counter
 from datetime import datetime, timezone
@@ -34,7 +33,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 
 from app.ai.config import get_analysis_settings
-from app.ai.provenance import dump_pickle, file_stamp, git_revision
+from app.ai.provenance import dump_pickle, file_stamp, git_revision, load_pickle
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -153,8 +152,7 @@ class AnomalyDetector:
         try:
             # pickle executes arbitrary code on load, so only ever read the
             # operator-controlled path from configuration, never user input.
-            with open(self.path, "rb") as handle:
-                data = pickle.load(handle)
+            data = load_pickle(self.path)
         except Exception as exc:
             logger.warning("Anomaly model at %s is unreadable (%s); using the bootstrap", self.path, exc)
             return False

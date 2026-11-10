@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     #: them still decrypt until `python -m app.core.rotate_key` has
     #: re-encrypted everything, after which the entry can be removed.
     ENCRYPTION_KEY_PREVIOUS: str = ""
+    #: Refuse stored data that is not bound to its row and column where a
+    #: binding is expected. Turn on after `python -m app.core.rotate_key` has
+    #: re-sealed the rows written before binding existed.
+    ENCRYPTION_REQUIRE_CONTEXT: bool = False
 
     # Shared secret the honeypot engine uses to ingest sessions
     HONEYPOT_INGEST_TOKEN: str = ""
@@ -215,9 +219,13 @@ class Settings(BaseSettings):
     LOGIN_LOCKOUT_MINUTES: int = 15
     #: Failed sign-ins one source address may make against one account inside
     #: LOGIN_LOCKOUT_MINUTES before further attempts from it are refused
-    #: without being checked. This is what stops a password-guessing run; the
-    #: account-wide lock above no longer refuses a correct sign-in, so it
-    #: cannot be used to keep an administrator out.
+    #: without being checked. This is what stops a password-guessing run from
+    #: one address. The account-wide lock above still applies on top of it:
+    #: while it lasts, an account WITHOUT two-factor has even its correct
+    #: password refused, so failures from several addresses can keep such an
+    #: account out for LOGIN_LOCKOUT_MINUTES at a time. An account with
+    #: two-factor is not affected (its password and code are still checked),
+    #: which is one more reason every administrator should enrol.
     LOGIN_SOURCE_FAILURE_LIMIT: int = 5
 
     #: One-time codes (signup verification, password reset) issued per

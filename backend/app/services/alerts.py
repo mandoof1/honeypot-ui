@@ -102,6 +102,10 @@ async def _open_alert(db: AsyncSession, dedup_key: str, window: timedelta) -> Op
         )
         .order_by(Alert.id.desc())
         .limit(1)
+        # Four ingest workers fold sessions concurrently. Without the row
+        # lock two of them read the same count and session list, and one
+        # write replaced the other.
+        .with_for_update()
     )
     return row.scalar_one_or_none()
 

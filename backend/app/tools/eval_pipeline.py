@@ -101,15 +101,22 @@ def bootstrap_interval(pairs: Sequence[tuple], metric, resamples: int, seed: int
     return [round(values[int(0.025 * resamples)], 4), round(values[min(resamples - 1, int(0.975 * resamples))], 4)]
 
 
-def layer_report(pairs: Sequence[tuple], headline: bool, resamples: int) -> Dict:
+def layer_report(pairs: Sequence[tuple], headline: bool, resamples: int, min_answered: int = 0) -> Dict:
     answered = [(t, p) for t, p in pairs if p is not None]
     report = {
         "sessions": len(pairs),
         "answered": len(answered),
+        # A layer that answers a fraction of the sessions is scored on that
+        # fraction only; the share is part of the result.
+        "coverage": round(len(answered) / len(pairs), 4) if pairs else None,
         "confusion_matrix": confusion(answered),
         "per_class": per_class(answered) if answered else {},
     }
-    if headline and answered:
+    if headline and answered and len(answered) < min_answered:
+        report["headline_withheld"] = (
+            f"answered {len(answered)} of {len(pairs)} sessions, fewer than {min_answered}"
+        )
+    elif headline and answered:
         report["accuracy"] = round(accuracy(answered), 4)
         report["accuracy_ci95"] = bootstrap_interval(answered, accuracy, resamples)
         report["macro_f1"] = round(macro_f1(answered), 4)
@@ -244,7 +251,10 @@ async def evaluate(
             "llm": chimera.model_name if llm_enabled else None,
         },
         "attack_catalog": catalog.describe(),
-        "layers": {name: layer_report(values, headline, resamples) for name, values in pairs.items()},
+        "layers": {
+            name: layer_report(values, headline, resamples, 0 if allow_small else min_sessions)
+            for name, values in pairs.items()
+        },
         "technique_id_validity": {
             source: {
                 protocol: {status: counts.get(status, 0) for status in STATUSES}

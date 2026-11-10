@@ -186,6 +186,40 @@ How it looks to a client:
   signing out in one tab signs out the others; downloading a captured
   sample asks first.
 
+### Found by an independent review of this release, and fixed in it
+
+- Planted secrets and the canary token were derived from the host identity
+  seed, which was 31 bits and could be recovered offline from one value the
+  decoy prints. They now derive from a separate 256-bit secret
+  (`HONEYPOT_DECOY_SECRET`); new identity seeds are 63 bits.
+- The engine's cap on events could discard the canary, honeytoken and
+  download events that alerts depend on; they now have their own allowance,
+  and a planted login is noticed past the login-attempt cap.
+- An engine that had not yet registered, or whose token was refused, sent
+  its sessions to the dead-letter directory. They are now kept until it has
+  registered again.
+- One command line could hold the engine's event loop for seconds. A line
+  now has a bounded share of it and yields between pipeline stages.
+- Stored commands, transcripts and credentials were not bound to their row
+  and column, so a blob moved to another column still opened. They are bound
+  at ingest; `ENCRYPTION_REQUIRE_CONTEXT` refuses the unbound ones once
+  older rows have been re-sealed.
+- Payload analysis ran inside the ingest workers, next to a process holding
+  every secret. It now runs only in the single-process dashboard API, which
+  polls the queue; ingest mounts the models read-only.
+- Model files are unpickled, and the analysis child could have replaced one.
+  They are now signed with a key the child does not have and nothing unsigned
+  is loaded (`python -m app.ai.provenance sign` for a model trained
+  elsewhere).
+- Alert folding under concurrent ingest workers could lose a count; list
+  fingerprints were dropped at ingest; what the engine truncated was not
+  stored; the evaluation tool could print a headline for a layer that
+  answered few sessions.
+
+The review did not reach everything: the firewall rules under a live Docker,
+backup and restore, key rotation, and the SSH, Telnet and FTP emulators in
+depth were not examined.
+
 ### Evaluation tools
 
 - `tools/fingerprint_audit`: sends the same probes to a decoy and to the

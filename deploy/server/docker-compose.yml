@@ -260,7 +260,9 @@ services:
       TRUST_PROXY_HEADERS: "false"
     command: ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${INGEST_WORKERS:-4}"]
     volumes:
-      - models:/app/models
+      # Read-only here: ingest loads the models and never writes one. The
+      # dashboard API fits and signs them (see app/ai/provenance.py).
+      - models:/app/models:ro
       - ./state/geoip:/app/geoip:ro
     tmpfs:
       - /tmp:noexec,nosuid,nodev,size=512m
@@ -395,6 +397,8 @@ services:
       HONEYPOT_CONTAINER: "true"
       HONEYPOT_NODE_NAME: ${HONEYPOT_NODE_NAME:-honeysentinel-debian}
       HONEYPOT_IDENTITY_SEED: ${HONEYPOT_IDENTITY_SEED:-}
+      # Honeytokens and the canary token derive from this, not from the seed.
+      HONEYPOT_DECOY_SECRET: ${HONEYPOT_DECOY_SECRET:-}
       HONEYPOT_BIND_ADDRESS: 0.0.0.0
       # The control API listens only on hs-control (and loopback, for the
       # health check), so it is not reachable through the decoy bridge, a

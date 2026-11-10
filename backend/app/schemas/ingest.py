@@ -58,7 +58,8 @@ MAX_HEADER_COUNT = 100
 MAX_HEADER_NAME_CHARS = 256
 MAX_HEADER_VALUE_CHARS = 8192
 MAX_FINGERPRINTS = 64
-MAX_FINGERPRINT_CHARS = 512
+#: The engine allows this much for the algorithm lists behind HASSH and JA3.
+MAX_FINGERPRINT_CHARS = 2048
 
 # Bounds for values this model passes through without knowing their shape.
 _PASSTHROUGH_TEXT_CHARS = 8192
@@ -469,7 +470,11 @@ class SessionIngest(_Passthrough):
         for index, (name, item) in enumerate(value.items()):
             if index >= MAX_FINGERPRINTS:
                 break
-            if isinstance(item, (dict, list)) or item is None:
+            if isinstance(item, list):
+                # The Telnet option sequence arrives as a list. Kept as one
+                # comma-separated string, so every fingerprint is a string.
+                item = ",".join(str(part)[:64] for part in item[:128] if not isinstance(part, (dict, list)))
+            if isinstance(item, dict) or item is None or item == "":
                 continue
             fingerprints[str(name)[:64]] = str(item)[:MAX_FINGERPRINT_CHARS]
         return fingerprints

@@ -150,12 +150,28 @@ def _decode_payload(payload: str) -> tuple:
     return raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
 
 
+def _require_context() -> bool:
+    """Whether an unbound blob is refused where a binding is expected.
+
+    Off by default, because rows written before binding existed are unbound
+    and must stay readable until `python -m app.core.rotate_key` has re-sealed
+    them. Until it is on, an unbound blob still opens anywhere; new rows are
+    bound at ingest either way.
+    """
+    return bool(getattr(get_settings(), "ENCRYPTION_REQUIRE_CONTEXT", False))
+
+
 def _open_v3(blob: str, context: Optional[str]) -> bytes:
     key_id, field, payload = _split_v3(blob)
     stored_context = _context_from_field(field)
     if context is not None and stored_context is not None and stored_context != context:
         raise ContextMismatch(
             "Stored data was sealed for a different record and was not opened"
+        )
+    if context is not None and stored_context is None and _require_context():
+        raise ContextMismatch(
+            "Stored data is not bound to a record; run `python -m app.core.rotate_key` "
+            "to bind what was written before binding existed"
         )
     nonce, sealed = _decode_payload(payload)
     for candidate_id, key in _keyring():
@@ -194,6 +210,12 @@ def _open_fernet(blob: str) -> bytes:
 def _open(blob: str, context: Optional[str], allow_fernet: bool) -> bytes:
     if blob.startswith(_PREFIX):
         return _open_v3(blob, context)
+    if context is not None and _require_context():
+        # The older formats cannot carry a binding at all.
+        raise ContextMismatch(
+            "Stored data is not bound to a record; run `python -m app.core.rotate_key` "
+            "to bind what was written before binding existed"
+        )
     if blob.startswith(_PREFIX_V2):
         return _open_v2(blob)
     if allow_fernet:

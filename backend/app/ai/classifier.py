@@ -1,9 +1,10 @@
 from __future__ import annotations
 import logging
 import os
-import pickle
 import threading
 import numpy as np
+
+from app.ai.provenance import dump_pickle, load_pickle
 from typing import Dict, Optional
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
@@ -126,10 +127,17 @@ class AttackClassifier:
     def _load(self):
         model_path = settings.MODEL_PATH_RF
         if os.path.exists(model_path):
-            # pickle executes arbitrary code on load, so only ever read the
-            # operator-controlled path from configuration, never user input.
-            with open(model_path, "rb") as f:
-                data = pickle.load(f)
+            try:
+                data = load_pickle(model_path)
+            except Exception as exc:
+                # Unsigned, altered or unreadable. The file is left exactly
+                # as it is (it may be a trained model waiting to be signed)
+                # and this process answers with a bootstrap held in memory.
+                logger.error("Flow model at %s was not loaded: %s", model_path, exc)
+                self._train_default_model(persist=False)
+                self.model_source = "synthetic"
+                self._loaded = True
+                return
             if data.get("features") == FeatureExtractor.FEATURES:
                 self.model = data["model"]
                 self.label_encoder = data["label_encoder"]
@@ -151,7 +159,7 @@ class AttackClassifier:
         self.model_source = "synthetic"
         self._loaded = True
 
-    def _train_default_model(self):
+    def _train_default_model(self, persist: bool = True):
         """Fit a bootstrap model on synthetic traffic.
 
         This exists so a fresh deployment has *something* to classify with;
@@ -198,17 +206,21 @@ class AttackClassifier:
         )
         self.model.fit(X, y_encoded)
 
-        os.makedirs(os.path.dirname(settings.MODEL_PATH_RF) or ".", exist_ok=True)
-        with open(settings.MODEL_PATH_RF, "wb") as f:
-            pickle.dump(
-                {
-                    "model": self.model,
-                    "label_encoder": self.label_encoder,
-                    "source": "synthetic",
-                    "features": FeatureExtractor.FEATURES,
-                },
-                f,
-            )
+        if persist:
+            try:
+                dump_pickle(
+                    settings.MODEL_PATH_RF,
+                    {
+                        "model": self.model,
+                        "label_encoder": self.label_encoder,
+                        "source": "synthetic",
+                        "features": FeatureExtractor.FEATURES,
+                    },
+                )
+            except OSError as exc:
+                # The ingest service mounts the models read-only; the
+                # bootstrap is still usable from memory.
+                logger.info("Bootstrap flow model kept in memory only (%s)", exc)
 
     def _predict(self, features: np.ndarray) -> Dict:
         # One pass over the forest: predict() is the argmax of predict_proba(),

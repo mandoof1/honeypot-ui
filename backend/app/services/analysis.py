@@ -29,7 +29,7 @@ from app.services import alerts as alert_service
 from app.services import enrichment
 from app.services.scanners import scanner_registry
 from app.services.thresholds import AlertDecision
-from app.core.encryption import encrypt_data
+from app.core.encryption import decrypt_data, encrypt_data, session_context
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,11 @@ ANALYSIS_BUDGET_MS = 200
 #: A single session's command list is attacker-controlled; cap what we store.
 MAX_COMMANDS = 5000
 MAX_PAYLOAD_CHARS = 1_000_000
+#: Columns of a session that hold sealed text. Each is bound to its row and
+#: column when the row is stored.
+_SEALED_COLUMNS = (
+    "raw_commands_encrypted", "raw_payloads_encrypted", "transcript_encrypted", "credentials_encrypted",
+)
 
 #: Protocols whose "commands" are requests: the request line first, then the
 #: body on the following lines.
@@ -360,6 +365,23 @@ class AnalysisPipeline:
             }
         if refusal:
             signals["refusal"] = True
+        # What the engine had to cut to stay within its caps. Without this a
+        # session that was cut looked complete.
+        cut = {
+            str(name)[:40]: int(count)
+            for name, count in list((session_data.get("truncated") or {}).items())[:16]
+            if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0
+        } if isinstance(session_data.get("truncated"), dict) else {}
+        if cut:
+            signals["truncated"] = cut
+        profile = session_data.get("threat_profile")
+        if isinstance(profile, str) and profile:
+            signals["engine_profile"] = profile[:64]
+        elif isinstance(profile, dict) and profile:
+            signals["engine_profile"] = {
+                str(k)[:40]: (v if isinstance(v, (int, float, bool)) else str(v)[:120])
+                for k, v in list(profile.items())[:12]
+            }
 
         payload = str(session_data.get("payload") or "")[:MAX_PAYLOAD_CHARS]
         # Transcript and credentials are encrypted with the same AES-256-GCM
@@ -505,6 +527,18 @@ class AnalysisPipeline:
         )
         db.add(db_session)
         await db.flush()
+
+        # Sealed again now that the row has an id, bound to this session and
+        # this column. Before, the four blobs carried no binding, and an
+        # unbound blob opens wherever it is put: a credentials blob copied
+        # into the transcript column was served to anyone allowed to read
+        # transcripts.
+        for column in _SEALED_COLUMNS:
+            blob = getattr(db_session, column)
+            if blob:
+                setattr(db_session, column, encrypt_data(
+                    decrypt_data(blob), session_context(db_session.id, column),
+                ))
 
         for ioc in result["iocs"]:
             db.add(IndicatorOfCompromise(

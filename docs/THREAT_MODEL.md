@@ -182,6 +182,25 @@ Ordered by how much they should worry an operator.
     an adversary in this model.
 11. **IPv6 is not served.** The plan is IPv4 only and the rules drop IPv6
     from every bridge; an IPv6-only attacker is not captured.
+12. **The decoy can be recognised by anyone who reads its source.** The
+    host's public facts (hostname, kernel, file sizes) are derived from an
+    identity seed by code that is public. Deployments created before 1.0.0
+    have a 31-bit seed, which can be recovered from one of those facts and
+    then confirmed against the rest. Planted secrets and the canary token no
+    longer follow from the seed (they use a separate 256-bit secret), so
+    recovering it reveals that the host is this honeypot and nothing more.
+    A new seed changes the host's identity; set one deliberately
+    (`HONEYPOT_IDENTITY_SEED`) if that matters more than continuity.
+13. **A payload-analysis child that is taken over can still read and delete
+    files its user owns**, including the model directory. It cannot make the
+    API load a model (files are signed with a key it does not have), and it
+    has no network a firewall rule allows; it is not confined to a separate
+    user or namespace.
+14. **Rows written before 1.0.0 are not bound to their row and column** until
+    `python -m app.core.rotate_key` has re-sealed them and
+    `ENCRYPTION_REQUIRE_CONTEXT` is on. Until then someone able to write to
+    the database could move one of those blobs to a column with a lower
+    read permission.
 
 ## Out of scope
 

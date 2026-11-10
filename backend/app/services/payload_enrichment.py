@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 #: already; this bounds how many run at once under a burst of new samples.
 _semaphore = asyncio.Semaphore(1)
 _pending: set[asyncio.Task] = set()
+#: Samples queued or being analysed in this process, so the queue poll does
+#: not start a second analysis of one that is already running.
+_in_flight: set[int] = set()
 
 #: Indicator kinds the analyser produces, mapped to how they are stored, with
 #: the confidence and tags each carries into the shared feed.
@@ -59,9 +62,22 @@ _VERSION_CHARS = 16
 
 def schedule(sample_ids: list[int]) -> None:
     """Queue analysis for newly stored samples, if payload analysis is on."""
-    if not sample_ids or not get_settings().PAYLOAD_ANALYSIS_ENABLED:
+    settings = get_settings()
+    if not sample_ids or not settings.PAYLOAD_ANALYSIS_ENABLED:
         return
-    task = asyncio.create_task(_run_batch(sample_ids))
+    if settings.api_role == "ingest":
+        # Not here. The ingest service runs several workers under a
+        # supervisor process that holds every secret in its environment and
+        # cannot be made unreadable to its children's siblings, and the
+        # analysis child parses attacker bytes. The samples stay "pending"
+        # and the dashboard API, one process that has made itself
+        # non-dumpable, picks them up within PAYLOAD_QUEUE_INTERVAL seconds.
+        return
+    fresh = [sample_id for sample_id in sample_ids if sample_id not in _in_flight]
+    if not fresh:
+        return
+    _in_flight.update(fresh)
+    task = asyncio.create_task(_run_batch(fresh))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
 
@@ -76,6 +92,8 @@ async def _run_batch(sample_ids: list[int]) -> None:
             raise
         except Exception as exc:  # detached: a failure here must reach nothing
             logger.warning("Payload analysis failed for sample %s: %s", sample_id, exc)
+        finally:
+            _in_flight.discard(sample_id)
 
 
 async def analyse_sample(db: AsyncSession, sample_id: int) -> None:

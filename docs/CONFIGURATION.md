@@ -26,13 +26,15 @@ Generate a secret with
 | `SECRET_KEY` | API | none; required outside development | Signs access and refresh tokens. |
 | `ENCRYPTION_KEY` | API | none; required | Key material for AES-256-GCM over transcripts, credentials, payload bytes and authenticator secrets. Losing it makes them unreadable. |
 | `ENCRYPTION_KEY_PREVIOUS` | API | empty | Old key(s), newest first, while rotating; see [rotating the key](../deploy/server/README.md#rotating-the-encryption-key). |
+| `ENCRYPTION_REQUIRE_CONTEXT` | Backend | `false` | Refuse stored data that is not bound to its row and column. New sessions are bound at ingest; turn this on after `python -m app.core.rotate_key` has re-sealed the rows written before binding existed. |
 | `HONEYPOT_NODE_TOKENS` | API | empty | JSON object, node name → ingest token. A token is accepted only for its own node (403 otherwise). Assembled by `install.sh` / `node_tokens.py`; do not edit by hand. |
 | `HONEYPOT_NODE_TOKEN_SHELL`, `_WEB`, `_TEST` | Host | generated | The local engines' and the test engine's tokens, from which the map above is built. Each engine receives its own as `HONEYPOT_INGEST_TOKEN`. |
 | `HONEYPOT_INGEST_TOKEN` | API, Engine | none | Engine side: the engine's own token. The engine exits (code 78) if it is the published default, unless `HONEYPOT_ALLOW_DEFAULT_TOKEN=true`. API side: the single shared token used before per-node tokens; still required at start, and what development uses. |
 | `HONEYPOT_CONTROL_TOKEN` | API, Engine | generated | Authenticates the backend's calls to an engine's control API. Must be set whenever node tokens are used. A sensor generates its own. |
 | `POSTGRES_PASSWORD` | compose | generated | Database password. |
 | `IOC_FEED_TOKEN` | API | empty | Static token (`X-Feed-Token`) for the plain-text indicator feed; empty leaves it session-only. |
-| `HONEYPOT_IDENTITY_SEED` | Engine | generated | Both local engines derive hostname, OS and banners from it, so they describe one host. |
+| `HONEYPOT_IDENTITY_SEED` | Engine | generated | Both local engines derive hostname, OS and banners from it, so they describe one host. It decides public facts only. |
+| `HONEYPOT_DECOY_SECRET` | Engine | generated (32+ characters) | The planted secrets (honeytokens) and the AI-agent canary token derive from it, so two engines given the same value plant the same secrets. Unset, each engine creates and keeps its own. Never shown to a client. |
 
 ## API
 
