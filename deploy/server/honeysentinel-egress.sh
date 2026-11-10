@@ -153,7 +153,10 @@ table inet $TABLE {
 
 	chain blocked {
 		limit rate 6/minute burst 10 packets log prefix "hs egress blocked: "
-		counter drop
+		# The fingerprint again, on a rule: nftables 1.0.x drops a table's
+		# comment when the same file declares the table twice (as the atomic
+		# swap in render does), and the check must find it on any release.
+		counter drop comment "honeysentinel-egress ${fingerprint}"
 	}
 
 	# A container addressing the host: its bridge gateway, or any other
@@ -195,7 +198,7 @@ table bridge $TABLE {
 
 	chain blocked {
 		limit rate 6/minute burst 10 packets log prefix "hs bridge blocked: "
-		counter drop
+		counter drop comment "honeysentinel-egress ${fingerprint}"
 	}
 
 	# Who may talk to whom inside one bridge. Stateless on purpose (no
