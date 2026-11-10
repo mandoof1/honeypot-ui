@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -184,13 +185,14 @@ async def _user_state(user_id: int, db) -> Optional[dict]:
         )
     ).first()
     if row is None:
-        state = None
-    else:
-        state = {
-            "token_version": int(row.token_version or 0),
-            "is_active": bool(row.is_active),
-            "role": row.role.value if hasattr(row.role, "value") else str(row.role),
-        }
+        # Not cached: a missing row is refused outright by the caller, and
+        # remembering "missing" would outlive the account being created.
+        return None
+    state = {
+        "token_version": int(row.token_version or 0),
+        "is_active": bool(row.is_active),
+        "role": row.role.value if hasattr(row.role, "value") else str(row.role),
+    }
     _user_state_cache[user_id] = (now + USER_STATE_TTL_SECONDS, state)
     return state
 
@@ -211,38 +213,126 @@ async def get_current_user(
         raise _CREDENTIALS_ERROR
 
     state = await _user_state(user_id, db)
-    if state is not None:
-        # A missing row means the database is not the one this token came
-        # from (tests build tokens for synthetic ids); a present row is
-        # authoritative for revocation, deactivation and the current role.
-        if not state["is_active"]:
-            raise _CREDENTIALS_ERROR
-        if int(payload.get("ver", 0)) != state["token_version"]:
-            raise _CREDENTIALS_ERROR
-        role = state["role"]
+    if state is None:
+        # The account behind the token no longer exists. A missing row used
+        # to be waved through with whatever role the token claimed, so a
+        # deleted administrator kept administrator access until expiry.
+        raise _CREDENTIALS_ERROR
+    # The row is authoritative for revocation, deactivation and the current
+    # role; the role claim inside the token is only a hint.
+    if not state["is_active"]:
+        raise _CREDENTIALS_ERROR
+    if int(payload.get("ver", 0)) != state["token_version"]:
+        raise _CREDENTIALS_ERROR
+    role = state["role"]
 
     return {"id": user_id, "email": payload.get("email"), "role": role}
 
 
-async def verify_honeypot_token(request: Request) -> bool:
-    """Authenticate the honeypot engine on service-to-service routes.
+# --------------------------------------------------------------------------
+# Engine (service-to-service) authentication
 
-    Uses a constant-time comparison: a plain `!=` on a shared secret leaks it
-    through response timing one byte at a time.
+
+@dataclass(frozen=True)
+class EngineCredential:
+    """Which engine secret a request presented.
+
+    ``node_name`` is the node the token is bound to in HONEYPOT_NODE_TOKENS,
+    or None when the request used the shared HONEYPOT_INGEST_TOKEN.
     """
-    settings = get_settings()
-    supplied = request.headers.get("X-Honeypot-Token", "")
+
+    node_name: Optional[str] = None
+
+
+def _same_secret(supplied: str, expected: str) -> bool:
+    """Constant-time comparison that never treats an empty secret as a match.
+
+    A plain ``!=`` on a shared secret leaks it through response timing one
+    byte at a time. An unset token compared with a missing header would be
+    ``"" == ""``, so both sides must be non-empty.
+    """
+    if not supplied or not expected:
+        return False
     try:
-        ok = secrets.compare_digest(supplied, settings.HONEYPOT_INGEST_TOKEN)
+        return secrets.compare_digest(supplied, expected)
     except TypeError:
         # A non-ASCII header value used to raise here and surface as a 500.
-        ok = False
-    if not ok:
+        return False
+
+
+def match_engine_token(supplied: str) -> Optional[EngineCredential]:
+    """The credential ``supplied`` corresponds to, or None for no match.
+
+    Every configured token is compared, whether or not an earlier one
+    matched, so the time taken does not say which node a guess came close to.
+    """
+    settings = get_settings()
+    matched: Optional[EngineCredential] = None
+    for name, token in settings.node_tokens.items():
+        if _same_secret(supplied, token):
+            matched = EngineCredential(node_name=name)
+    shared = _same_secret(supplied, settings.HONEYPOT_INGEST_TOKEN)
+    if matched is None and shared:
+        matched = EngineCredential(node_name=None)
+    return matched
+
+
+def engine_token_in_headers(headers) -> bool:
+    """Whether raw ASGI headers carry any valid engine token.
+
+    Used by the body-size middleware to refuse an unauthenticated request to
+    an ``-internal`` route before its body is read. The per-node binding is
+    still enforced by the route, which is the only place the node is known.
+    """
+    for name, value in headers or ():
+        if name == b"x-honeypot-token":
+            try:
+                supplied = value.decode("latin-1")
+            except (AttributeError, UnicodeDecodeError):
+                return False
+            return match_engine_token(supplied) is not None
+    return False
+
+
+async def verify_honeypot_token(request: Request) -> EngineCredential:
+    """Authenticate the honeypot engine on service-to-service routes.
+
+    Returns which credential was used; routes then call
+    ``authorize_engine_for_node`` with the node the request is about.
+    """
+    credential = match_engine_token(request.headers.get("X-Honeypot-Token", ""))
+    if credential is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid honeypot token",
         )
-    return True
+    return credential
+
+
+def authorize_engine_for_node(credential: EngineCredential, node_name: str) -> None:
+    """Refuse an engine token used for a node it does not belong to.
+
+    * A node listed in HONEYPOT_NODE_TOKENS accepts only its own token; the
+      shared token and every other node's token are refused for it.
+    * A node not listed there accepts only the shared token; a token bound to
+      some other node is refused for it.
+    """
+    settings = get_settings()
+    has_own_token = node_name in settings.node_tokens
+    if has_own_token and credential.node_name == node_name:
+        return
+    if not has_own_token and credential.node_name is None:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="This engine token is not valid for that node",
+    )
+
+
+def engine_control_token() -> str:
+    """The secret sent to an engine's control API."""
+    settings = get_settings()
+    return settings.HONEYPOT_CONTROL_TOKEN or settings.HONEYPOT_INGEST_TOKEN
 
 
 def require_role(required_role: str):

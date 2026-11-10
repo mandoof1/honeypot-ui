@@ -162,8 +162,11 @@ def build_control_api(service) -> ControlAPI:
     from honeypot.security.breakout import breakout_prevention
     from honeypot.security.rate_limiter import rate_limiter
 
+    # HONEYPOT_CONTROL_TOKEN when it is set, and then only that; otherwise the
+    # ingest token, as before. The control API can block addresses and change
+    # the engine's mode, which is more than the ingest token should open.
     api = ControlAPI(
-        config.control_bind_address, config.control_port, config.ingest_token
+        config.control_bind_address, config.control_port, config.effective_control_token
     )
 
     @api.route("GET", "/healthz")

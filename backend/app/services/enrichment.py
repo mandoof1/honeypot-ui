@@ -43,6 +43,7 @@ from app.ai.llm import ModelUnavailable, chimera
 from app.core.config import get_settings
 from app.core.database import async_session_factory
 from app.core.encryption import decrypt_data
+from app.core.model_slot import model_slot
 from app.models import HoneypotSession, IndicatorOfCompromise
 
 logger = logging.getLogger(__name__)
@@ -416,7 +417,10 @@ async def process(db: AsyncSession, session: HoneypotSession) -> str:
         return session.enrichment_status
 
     try:
-        analysis = await chimera.analyse(commands, protocol=session.protocol or "ssh")
+        # One caller on the language model at a time, shared with
+        # investigation reports (app/core/model_slot.py).
+        async with model_slot.hold("enrichment"):
+            analysis = await chimera.analyse(commands, protocol=session.protocol or "ssh")
     except ModelUnavailable as exc:
         # Not the session's fault: leave it queued and let the worker back off.
         session.enrichment_status = "pending"
