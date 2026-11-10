@@ -308,13 +308,16 @@ apply() {
 # --- check -----------------------------------------------------------------
 
 check_rules() {
-  local fp live applied family
+  local fp live applied family listing
   fp="sha256:$(fingerprint)"
   for family in inet bridge; do
-    if ! nft list table "$family" "$TABLE" >/dev/null 2>&1; then
+    if ! listing=$(nft list table "$family" "$TABLE" 2>/dev/null); then
       echo "table $family $TABLE is not loaded"; return 1
     fi
-    if ! nft list table "$family" "$TABLE" | grep -qF "$fp"; then
+    # Matched in the shell, not with `nft ... | grep -q`: grep -q exits at the
+    # first match, nft is then killed by SIGPIPE while still writing, and
+    # under pipefail that reads as "not found" exactly when it was found.
+    if [[ "$listing" != *"$fp"* ]]; then
       echo "table $family $TABLE was loaded from a different version of the rules"; return 1
     fi
   done

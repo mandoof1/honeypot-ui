@@ -85,7 +85,10 @@ retire_node() {
 trap retire_node EXIT
 
 for _ in $(seq 1 30); do
-  docker logs hs-test 2>&1 | grep -q "All honeypot services started" && break
+  # Captured first: `docker logs | grep -q` fails under pipefail when grep
+  # exits at its match while docker is still writing.
+  started=$(docker logs hs-test 2>&1 || true)
+  [[ "$started" == *"All honeypot services started"* ]] && break
   sleep 1
 done
 

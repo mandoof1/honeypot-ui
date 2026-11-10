@@ -45,7 +45,7 @@ installed=$(sed -n 's/^release=//p' "$SOURCE" 2>/dev/null || true)
 
 # A MaxMind GeoLite2 file put there by hand reads through the same API; it is
 # the operator's to maintain, and is never overwritten.
-if [[ -f "$DB" && ! -f "$SOURCE" ]] && tail -c 131072 "$DB" | grep -qa 'GeoLite2'; then
+if [[ -f "$DB" && ! -f "$SOURCE" ]] && grep -qa 'GeoLite2' <(tail -c 131072 "$DB"); then
   echo "city.mmdb is a GeoLite2 database installed by hand; left alone"
   exit 0
 fi

@@ -79,7 +79,10 @@ docker run -d --name hs-stress --network "$NET" \
 docker network connect "$TEST_NET" hs-stress
 trap 'docker rm -f hs-stress >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 30); do
-  docker logs hs-stress 2>&1 | grep -q "All honeypot services started" && break
+  # Captured first: `docker logs | grep -q` fails under pipefail when grep
+  # exits at its match while docker is still writing.
+  started=$(docker logs hs-stress 2>&1 || true)
+  [[ "$started" == *"All honeypot services started"* ]] && break
   sleep 1
 done
 
