@@ -24,6 +24,10 @@ def manager(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "file_capture_dir", str(tmp_path / "uploads"))
     monkeypatch.setattr(config, "backend_api_url", "http://backend.test/api/v1")
     manager = SessionManager()
+    # An engine the backend has already given a node id: the state every
+    # delivery test below is about. Delivery before registration has its own
+    # tests at the end of the file.
+    manager._registered = True
     yield manager
 
 
@@ -191,6 +195,7 @@ async def test_persist_failure_does_not_block_delivery(manager, monkeypatch):
 # -- heartbeat ---------------------------------------------------------------
 
 async def test_heartbeat_payload_and_mode_adoption(manager, monkeypatch):
+    manager._registered = False  # this test is about how an engine becomes registered
     from honeypot.core.config import OperationalMode
     from honeypot.core.modes import mode_handler
 
@@ -221,6 +226,7 @@ async def test_heartbeat_payload_and_mode_adoption(manager, monkeypatch):
 
 
 async def test_heartbeat_404_reregisters(manager):
+    manager._registered = False  # this test is about how an engine becomes registered
     calls = {"register": 0, "heartbeat": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -375,6 +381,7 @@ async def test_shutdown_mid_post_keeps_the_session_for_the_next_start(manager, t
         return httpx.Response(200, json={})
 
     restarted = SessionManager()
+    restarted._registered = True  # registration is not what this test is about
     _backend(restarted, handler)
     assert await restarted.replay_spool() == 1
     assert received == [session_id]
@@ -570,3 +577,46 @@ async def test_new_event_types_and_fingerprints_reach_the_payload(manager):
     assert all("at" in e for e in payload["events"])
     # Empty values and keys outside the contract are left out.
     assert payload["fingerprints"] == {"ssh_client_version": "SSH-2.0-Go", "hassh": "a" * 32}
+
+
+# -- registration and delivery (independent review) ---------------------------
+
+async def test_a_session_is_kept_while_the_engine_is_not_registered(manager):
+    """An unregistered engine used to post under node id 1. With tokens bound
+    to a node that is a 403, and a 4xx sent the session to failed/."""
+    manager._registered = False
+    posts = []
+
+    def backend(request):
+        posts.append(request.url.path)
+        return httpx.Response(503)  # registration is refused: the backend is starting
+
+    _backend(manager, backend)
+    session_id = await _finished_session(manager)
+    await manager.end_session(session_id)
+    await manager.drain()
+
+    assert not any(path.endswith("/sessions/ingest-internal") for path in posts)
+    assert manager.spool.pending == 1 and manager.ingest_stats["dead_lettered"] == 0
+
+
+async def test_a_refused_token_makes_the_engine_register_again_and_keep_the_session(manager):
+    seen = []
+
+    def backend(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("/nodes/register-internal"):
+            return httpx.Response(200, json={"id": 7, "mode": "active"})
+        if request.url.params.get("node_id") != "7":
+            return httpx.Response(403, json={"detail": "token is bound to another node"})
+        return httpx.Response(200, json={"session_id": 1, "ai_classification": {"category": "benign"}})
+
+    _backend(manager, backend)
+    session_id = await _finished_session(manager)
+    await manager.end_session(session_id)
+    await manager.drain()
+    assert manager.spool.pending == 1, "the refused session was not kept"
+    assert manager.ingest_stats["dead_lettered"] == 0
+
+    await manager.replay_spool()
+    assert manager.node_id == 7 and manager.spool.pending == 0

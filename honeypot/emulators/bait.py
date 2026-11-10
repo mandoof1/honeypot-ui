@@ -19,7 +19,7 @@ import hmac
 import time
 from typing import Optional
 
-from honeypot.core.identity import get_identity
+from honeypot.core.identity import decoy_digest, get_identity
 
 #: PHP's session id alphabet at its packaged setting (5 bits per character).
 _PHP_SID_ALPHABET = "0123456789abcdefghijklmnopqrstuv"
@@ -27,7 +27,7 @@ _PHP_SID_ALPHABET = "0123456789abcdefghijklmnopqrstuv"
 
 def _digest(label: str) -> bytes:
     """Bytes that are stable for this deployment and this label only."""
-    return hashlib.sha256(f"{get_identity().seed}:{label}".encode()).digest()
+    return decoy_digest(f"bait:{label}")
 
 
 def uname_line() -> str:

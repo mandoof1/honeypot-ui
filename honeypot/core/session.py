@@ -37,6 +37,8 @@ class SessionRecord:
     authentication_attempts: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     keystroke_total: int = 0
+    #: How many of network_events are of a type the backend acts on.
+    significant_events: int = 0
     threat_profile: Optional[str] = None
     anomaly_score: float = 0.0
     #: Socket-level traffic statistics; the classifier's input.
@@ -630,7 +632,18 @@ class SessionManager:
     ):
         session = await self.get_session(session_id)
         if session:
-            if len(session.network_events) >= session.MAX_NETWORK_EVENTS:
+            # The events the backend acts on (a canary, a honeytoken, a
+            # download, a diversion) have their own allowance. Under one
+            # shared cap a web scan's five hundred request events filled it,
+            # and the canary request that followed was dropped: the alert
+            # the whole mechanism exists for never left the engine.
+            significant = event_type in session.BACKEND_EVENT_TYPES
+            if significant:
+                if session.significant_events >= session.MAX_EVENTS:
+                    session._count_drop("events")
+                    return
+                session.significant_events += 1
+            elif len(session.network_events) - session.significant_events >= session.MAX_NETWORK_EVENTS:
                 session._count_drop("events")
                 return
             session.network_events.append(
@@ -658,6 +671,9 @@ class SessionManager:
         if session:
             if len(session.authentication_attempts) >= session.MAX_AUTH_ATTEMPTS:
                 session._count_drop("credentials")
+                # Still checked: a planted login presented as attempt 201 is
+                # as much a finding as one presented first.
+                await self._check_honeytoken(session, username or "", password or "")
                 return
             # Attacker-chosen strings, bounded where they enter: an SSH
             # password may be as long as a packet.
@@ -804,6 +820,14 @@ class SessionManager:
         ``retry`` means a backend was there and failed it (5xx, 429, or it
         stopped answering mid-request), which may be the payload's fault.
         """
+        # Until the backend has told this engine its node id, the id is a
+        # placeholder, and with a token bound to this engine's node the
+        # backend answers a session posted under it with 403 or 404. That is
+        # not the session's fault, so it must wait, not be dead-lettered.
+        if not self._registered:
+            await self.register_node()
+            if not self._registered:
+                return "unreachable", "not registered with the backend yet"
         try:
             response = await self._http().post(
                 f"{config.backend_api_url}/sessions/ingest-internal",
@@ -829,6 +853,13 @@ class SessionManager:
             return "ok", body.get("ai_classification", {}).get("category", "unknown")
         if response.status_code == 429 or response.status_code >= 500:
             return "retry", f"HTTP {response.status_code}"
+        if response.status_code in (401, 403, 404):
+            # The token or the node id was refused (a restarted backend that
+            # no longer knows the node, a token for another node). Register
+            # again and keep the session: refusing the engine says nothing
+            # about what the engine was carrying.
+            self._registered = False
+            return "unreachable", f"HTTP {response.status_code}: registration or token refused; will register again"
         return "drop", f"HTTP {response.status_code} - {response.text[:200]}"
 
     def _note_backend_ok(self) -> None:

@@ -22,11 +22,10 @@ difference between having seen an instruction and having obeyed it.
 
 from __future__ import annotations
 
-import hashlib
 import posixpath
 from typing import Optional
 
-from honeypot.core.identity import HostIdentity
+from honeypot.core.identity import HostIdentity, decoy_digest
 
 #: The marker program. Chosen to look like local tooling, not like a test.
 MARKER_PROGRAM = "ops-session"
@@ -42,7 +41,11 @@ def enabled() -> bool:
 
 def token(identity: HostIdentity) -> str:
     """This deployment's canary token."""
-    digest = hashlib.sha256(f"{identity.seed}:ai-canary".encode()).hexdigest()
+    # From the decoy secret, not the identity seed: the token is printed
+    # (in the note, and in robots.txt on the web decoy), and a value derived
+    # from the seed would let anyone who saw it work the seed out.
+    del identity  # the same token for every identity this deployment shows
+    digest = decoy_digest("ai-canary").hex()
     return f"ops-{digest[:4]}-{digest[4:12]}"
 
 

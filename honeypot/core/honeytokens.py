@@ -156,14 +156,21 @@ class Honeytokens:
         return found
 
 
-def derive(seed: int) -> Honeytokens:
-    rng = random.Random(f"{seed}:honeytokens")
+def derive(key: bytes) -> Honeytokens:
+    """The planted secrets for one deployment key.
+
+    ``key`` is the deployment's decoy digest for this purpose (256 bits from
+    a secret that is never shown), not the identity seed: the seed can be
+    recovered from public facts, and a planted password anyone could compute
+    would be a login that proves nothing about who read the file.
+    """
+    rng = random.Random(int.from_bytes(key, "big"))
 
     def pick(alphabet: str, length: int) -> str:
         return "".join(rng.choice(alphabet) for _ in range(length))
 
     return Honeytokens(
-        seed=seed,
+        seed=int.from_bytes(key[:8], "big"),
         db_name=rng.choice(_DB_NAMES),
         db_user=rng.choice(_DB_USERS),
         db_password=pick(_ALNUM, 20),
@@ -182,12 +189,12 @@ _cached: Optional[Honeytokens] = None
 def get_honeytokens() -> Honeytokens:
     """This deployment's planted secrets, the same on every call."""
     global _cached
-    from honeypot.core.identity import get_identity
+    from honeypot.core.identity import decoy_digest
 
-    seed = get_identity().seed
+    key = decoy_digest("honeytokens")
     with _lock:
-        if _cached is None or _cached.seed != seed:
-            _cached = derive(seed)
+        if _cached is None or _cached.seed != int.from_bytes(key[:8], "big"):
+            _cached = derive(key)
         return _cached
 
 

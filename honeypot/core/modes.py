@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -88,6 +89,8 @@ class _Line:
     expander: Optional[Expander] = None
     printed: int = 0
     sleep_left: float = MAX_SLEEP_PER_LINE
+    #: Seconds of emulation this line may still spend; see LINE_WORK_SECONDS.
+    work_left: float = 0.25
     #: The fetch feeding the current pipeline, if any: ``curl … | sh``.
     fetch: Optional[dropper.Download] = None
     pipes_to_shell: bool = False
@@ -321,9 +324,23 @@ class ModeHandler:
         out_parts: list[str] = []
         last_status = shell.last_status
         while True:
+            # Expansion (including command substitution) happens in next(),
+            # synchronously, so it is charged to the line's allowance.
+            started = time.perf_counter()
             step = walker.next(last_status)
+            line.work_left -= time.perf_counter() - started
             if step is None:
                 break
+            if line.work_left <= 0:
+                # One line has had its share. A real shell would keep going;
+                # this one shares a single event loop with every other
+                # session, the heartbeat and the health check, and a loop
+                # over a large variable through a long pipeline held it for
+                # seconds. What was produced so far is returned.
+                last_status = 130
+                break
+            # Let other sessions run between pipelines.
+            await asyncio.sleep(0)
             connector, pipeline = step
             if connector == "&&" and last_status != 0:
                 continue
@@ -338,6 +355,22 @@ class ModeHandler:
         shell.last_status = last_status
         data["exit_status"] = last_status
         return "".join(out_parts)
+
+    @staticmethod
+    def _emulate(line: _Line, *args) -> tuple[str, int]:
+        """Run one emulated command, charged to the line's work allowance.
+
+        Past the allowance a command produces nothing and reports the status
+        of one that was interrupted, so a pipeline of thirty filters over
+        64 KiB stops costing the loop anything after the first few.
+        """
+        if line.work_left <= 0:
+            return "", 130
+        started = time.perf_counter()
+        try:
+            return line.emulator.run(*args)
+        finally:
+            line.work_left -= time.perf_counter() - started
 
     @staticmethod
     def _assign(shell: ShellState, name: str, value: str) -> None:
@@ -360,6 +393,8 @@ class ModeHandler:
             for s in pipeline[1:]
         )
         for index, stage in enumerate(pipeline):
+            if index:
+                await asyncio.sleep(0)
             redirects = getattr(stage, "redirects", [])
             is_last = index == len(pipeline) - 1
             stdin = piped
@@ -446,7 +481,7 @@ class ModeHandler:
                 takes_value = rest[0] in ("-u", "-g", "-h", "-p", "-C", "-U")
                 rest = rest[2:] if takes_value else rest[1:]
             if not rest or words[1:2] and words[1] in ("-l", "-v", "-k", "-K", "-n", "-i", "-s", "-V"):
-                text, status = line.emulator.run(["sudo"] + words[1:], shell, username, is_root, stdin, to_terminal)
+                text, status = self._emulate(line, ["sudo"] + words[1:], shell, username, is_root, stdin, to_terminal)
                 return text, status
             # A passwordless sudoer: the command runs as root.
             return await self._dispatch(line, rest, stdin, to_terminal, "root", True)
@@ -464,9 +499,9 @@ class ModeHandler:
                 while rest and rest[0].startswith("-"):
                     rest = rest[2:] if rest[0] in ("-n", "-c") else rest[1:]
             elif base == "command" and rest and rest[0] in ("-v", "-V"):
-                return line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+                return self._emulate(line, words, shell, username, is_root, stdin, to_terminal)
             if not rest:
-                return line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+                return self._emulate(line, words, shell, username, is_root, stdin, to_terminal)
             return await self._dispatch(line, rest, stdin, to_terminal, username, is_root)
 
         if base in FETCH_TOOLS:
@@ -502,7 +537,7 @@ class ModeHandler:
             # it is inside a compound line or a script, where it ends that.
             return "", 0
 
-        text, status = line.emulator.run(words, shell, username, is_root, stdin, to_terminal)
+        text, status = self._emulate(line, words, shell, username, is_root, stdin, to_terminal)
         if line.emulator.canary_hit is not None:
             await session_manager.record_network_event(
                 line.session_id, "ai_canary_triggered", line.emulator.canary_hit
@@ -600,7 +635,7 @@ class ModeHandler:
         shell = line.shell
         is_shell = base in _SHELLS
         if not is_shell and not line.emulator.can_run(base) and base not in ("python", "php", "ruby"):
-            return line.emulator.run([base] + args, shell, username, is_root, stdin)
+            return self._emulate(line, [base] + args, shell, username, is_root, stdin)
         if base in ("python", "python2", "php", "ruby"):
             # Not installed on a stock Ubuntu 20.04 server.
             return f"{base}: command not found\n", 127
@@ -654,7 +689,7 @@ class ModeHandler:
             # A nested interactive shell: the next `exit` leaves it.
             shell.subshells = min(shell.subshells + 1, 8)
             return "", 0
-        return line.emulator.run([base] + args, shell, username, is_root, stdin)
+        return self._emulate(line, [base] + args, shell, username, is_root, stdin)
 
     # -- fetches -----------------------------------------------------------
 

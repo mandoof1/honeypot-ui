@@ -441,7 +441,7 @@ async def test_planted_secrets_are_in_the_files_and_are_this_deployments(session
     assert tokens.aws_secret_access_key in (await run(session, "cat ~/.aws/credentials"))[0]
     assert tokens.password in (await run(session, "cat /var/backups/config.bak"))[0]
     assert tokens.db_password in (await run(session, "cat /root/.bash_history"))[0]
-    assert honeytokens.derive(1).db_password != honeytokens.derive(2).db_password
+    assert honeytokens.derive(b"a" * 32).db_password != honeytokens.derive(b"b" * 32).db_password
     # Reading them is not using them.
     assert await events(session, "honeytoken_used") == []
 
@@ -496,3 +496,83 @@ async def test_the_canary_can_be_switched_off(session, monkeypatch):
     out, data = await run(session, canary.marker_command(get_identity()))
     assert "command not found" in out and data["exit_status"] == 127
     assert await events(session, "ai_canary_triggered") == []
+
+
+# -- Findings of the independent review ---------------------------------------
+
+async def test_one_line_cannot_hold_the_event_loop(session):
+    """A loop over a large variable through a long pipeline used to run to
+    completion on the event loop: 1.8 s during which no other session, the
+    heartbeat or the health check ran."""
+    import asyncio
+    import time
+
+    longest_stall = 0.0
+
+    async def ticker():
+        # What every other session experiences: how long this task, which
+        # wants to run every 5 ms, was kept waiting.
+        nonlocal longest_stall
+        while True:
+            before = time.perf_counter()
+            await asyncio.sleep(0.005)
+            longest_stall = max(longest_stall, time.perf_counter() - before - 0.005)
+
+    from honeypot.core.shell_state import shell_states
+
+    # 63 KiB of short lines in a variable, as the reviewer's reproduction had.
+    shell_states.get(session).variables["V"] = "\n".join(f"line {n % 977}" for n in range(7000))
+    filters = " | ".join(["sort", "uniq", "sort -r", "grep line", "tr a-z A-Z", "tr A-Z a-z"] * 5)
+    rounds = " ".join(str(n) for n in range(1, 25))
+    task = asyncio.create_task(ticker())
+    await asyncio.sleep(0.02)  # the ticker is running before the line starts
+    started = time.perf_counter()
+    await run(session, f'for i in {rounds}; do echo "$V" | {filters}; done')
+    elapsed = time.perf_counter() - started
+    await asyncio.sleep(0.01)
+    task.cancel()
+    assert longest_stall < 0.15, f"other tasks were kept waiting {longest_stall:.2f}s"
+    assert elapsed < 0.8, f"one line took {elapsed:.2f}s of the loop's time"
+
+
+async def test_planted_secrets_do_not_follow_from_the_identity_seed(session, monkeypatch):
+    """The seed decides public facts and can be recovered from them; a planted
+    password derived from it could be computed by someone who never read the
+    file, and the canary token printed in robots.txt would give the seed away."""
+    import hashlib
+
+    from honeypot.core import canary, honeytokens
+    from honeypot.core.identity import decoy_digest, decoy_secret, get_identity
+
+    identity = get_identity()
+    old_style = hashlib.sha256(f"{identity.seed}:ai-canary".encode()).hexdigest()
+    assert old_style[:4] not in canary.token(identity).split("-")[1]
+    assert len(decoy_secret()) >= 32
+    assert decoy_digest("a") != decoy_digest("b")
+    tokens = honeytokens.get_honeytokens()
+    assert tokens.password != honeytokens.derive(hashlib.sha256(str(identity.seed).encode()).digest()).password
+
+
+async def test_alert_events_survive_a_flood_of_ordinary_ones(session):
+    """Five hundred request events used to fill the one shared cap, and the
+    canary or honeytoken event that followed never reached the backend."""
+    from honeypot.core.session import session_manager
+
+    record = await session_manager.get_session(session)
+    for index in range(record.MAX_NETWORK_EVENTS + 50):
+        await session_manager.record_network_event(session, "http_request", {"n": index})
+    await session_manager.record_network_event(session, "ai_canary_triggered", {"canary": "c", "channel": "http"})
+    sent = record.to_backend_payload(1)["events"]
+    assert [e["event_type"] for e in sent] == ["ai_canary_triggered"]
+
+
+async def test_a_planted_login_past_the_attempt_cap_is_still_noticed(session):
+    from honeypot.core import honeytokens
+    from honeypot.core.session import session_manager
+
+    record = await session_manager.get_session(session)
+    for index in range(record.MAX_AUTH_ATTEMPTS):
+        await session_manager.record_auth_attempt(session, "root", f"guess{index}", False)
+    tokens = honeytokens.get_honeytokens()
+    await session_manager.record_auth_attempt(session, tokens.username, tokens.password, True)
+    assert await events(session, "honeytoken_used")
