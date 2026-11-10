@@ -36,6 +36,10 @@ jobs:
       - run: pip install --require-hashes --no-deps -r honeypot/requirements.lock
       - run: pip install -r honeypot/requirements-test.txt
       - run: python -m pytest honeypot/tests -q
+      # The fingerprint self-audit tool shares the engine's interpreter and
+      # its one dependency (asyncssh); its probes run against in-process
+      # fake servers on loopback.
+      - run: python -m pytest tools/fingerprint_audit/tests -q
 
   backend:
     name: Backend tests (SQLite)
