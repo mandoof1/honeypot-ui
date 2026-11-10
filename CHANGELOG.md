@@ -5,24 +5,16 @@
 The hardening pass before the system's first exposure to the internet. Up to
 this release it has recorded only the team's own controlled test traffic.
 
-> **To complete after the final merge.** This entry was written while the
-> pass was still being merged. Before tagging:
->
-> - [ ] Engine section: confirm the list against the merged engine work
->       (fingerprints, canary, honeytokens, shell hardening).
-> - [ ] Analysis section: add the evaluation, labelling, export and
->       comparison tools and the scheduled model fits once that work is in,
->       with their final command names.
-> - [ ] Console section: add session replay, the ATT&CK matrix and Navigator
->       export, trends, the audit-log viewer, the block list and the light
->       theme once that work is in.
-> - [ ] Regenerate what is generated: `bash scripts/lock-requirements.sh`,
->       `python3 scripts/list_routes.py` (the table in
->       docs/TECHNICAL_REFERENCE.md), and check docs/CONFIGURATION.md
->       against `backend/app/core/config.py` and `honeypot/core/config.py`.
-> - [ ] Run `sudo bash deploy/server/install.sh` on the reference server and
->       record here that its verification passed, with the revision.
-> - [ ] Set the release date.
+Released 2026-11-10.
+
+**What was verified, and what was not.** The engine, backend and console
+test suites, the PostgreSQL-only tests, the migrations from an empty
+database, the compose files and the firewall rules (with real connections in
+network namespaces) run in CI on every push. Not verified: `install.sh`, the
+image builds, backup and restore have not been run end to end since these
+changes, because the reference server was offline when the release was cut;
+the fingerprint comparison against real daemons has not been run; and the
+system has still seen no traffic from the internet.
 
 ### Containment
 
@@ -88,12 +80,119 @@ this release it has recorded only the team's own controlled test traffic.
 
 ### Engine
 
-- The engine refuses to start on the published default token.
-- Isolation checks repeat periodically and travel in the heartbeat; the
-  network check passes only if the host drops what the engine sends.
-- An AI-agent canary; SSH client fingerprints; a dead-letter directory for
-  sessions the backend refuses; bounded pattern matching in the emulated
-  text tools.
+Safety of the engine itself:
+
+- A pattern an attacker gives to the emulated `grep` is matched with a time
+  budget instead of on the event loop without one; one command could freeze
+  every decoy.
+- What one session may hold in memory is bounded (stored output, transcript,
+  uploads), with counters for what was cut; Telnet sessions free their files.
+- A finished session is written to the spool before it is sent and removed
+  on success. A session the backend refuses goes to a dead-letter directory
+  after a few attempts instead of blocking every session behind it.
+- Retention deletes captures only; it used to delete the host's identity
+  file after seven days.
+- The engine refuses to start on the published default token. Isolation
+  checks test what they name, repeat, and travel in the heartbeat.
+
+What is captured:
+
+- `sh`, `bash`, pipe-to-shell and commands given by absolute path are run by
+  the emulator and recorded as executions; they used to answer "command not
+  found". Download URLs are parsed with their options.
+- A password that was accepted once is accepted again from the same source,
+  so a returning loader gets in. Commands are recorded before they are
+  emulated.
+- HTTP: refused requests (over-long lines, oversized bodies, bad chunking)
+  are recorded, chunked bodies are decoded, and every request keeps its
+  headers (credentials in them masked), so header-borne attacks are visible.
+- Client fingerprints: SSH client version, HASSH and hasshServer, the Telnet
+  option sequence, JA3 and JA4 from the TLS ClientHello, HTTP header order.
+- SSH forwarding requests and connections refused by the rate limits are
+  recorded.
+- Honeytokens: per-deployment fake secrets planted in the decoy's files and
+  its `/.env`; a login that uses one raises `honeytoken_used` on any protocol.
+- An AI-agent canary in the shell and on the web decoy: bait only an
+  automated assistant would act on; acting on it raises
+  `ai_canary_triggered`.
+
+How it looks to a client:
+
+- The shell understands variables, command substitution, simple loops and
+  the common forms of `awk`, `sed`, `grep`, `top`, `netstat` and `ss`. One
+  seeded filesystem is shared by `ls`, `cat`, `cd` and SFTP, so listings are
+  stable and listed files can be read. A terminal gets CRLF and control keys;
+  a non-interactive command gets no banner or prompt.
+- Values that were identical on every deployment now derive from the host
+  identity. The SSH host-key algorithm order follows the imitated release.
+- FTP speaks the dialect of the daemon its banner claims; listings, sizes
+  and downloads agree; a client sees its own changes.
+- HTTP answers `HEAD`, write methods and closes as the claimed server does,
+  with its header order and stock pages. Reply jitter defaults to 1–6 ms and
+  never changes a banner.
+- The stock texts were written from knowledge of the real daemons and have
+  not yet been compared with them; that comparison is what
+  `tools/fingerprint_audit` is for.
+
+### Analysis
+
+- The rule layer sets a session's category. The flow classifier is advisory:
+  it produced no attack verdict on any stored session, so its output is kept
+  for study and decides nothing.
+- Severity and alerts follow the evidence that set the category; they used
+  to take the flow classifier's confidence in "benign".
+- ATT&CK techniques are checked against a catalog built from the official
+  bundle (version 20.1). An id that is not in it is shown as unverified and
+  never counted; names and tactics come from the catalog.
+- Rules read what a command does, not what it mentions; web signatures see
+  URL-decoded input and request headers; matching is linear-time and the
+  input is bounded. De-obfuscation covers more encodings.
+- Both models read the same window of a transcript: its start, its end and
+  every line the rules flagged, with omissions marked and delimiter
+  look-alikes neutralised. Their findings can raise or escalate an alert,
+  and disagreement with the rules is recorded.
+- The anomaly detector flags nothing until it has been fitted on captured
+  sessions (`python -m ml.fit_anomaly`, also scheduled); before that the
+  console says "not calibrated". Clustering is fitted on a schedule, reloads
+  when refitted, and back-fills stored sessions.
+- Alerts group by source and category with every contributing session
+  listed, and a later, more serious session updates the alert. A scanner's
+  address quiets alerts only when the session also behaves like a scan.
+- An address that only appears in typed text is stored as `referenced_ip`
+  and never reaches the blocklist feed.
+- Models load at start-up and the unused language pass is off, so the
+  200 ms budget is no longer spent on loading.
+- Tools: `eval_pipeline` and `label_sessions` (per-layer confusion matrices
+  on labelled sessions), `eval_injection` (robustness of the model stages to
+  padding and steering text), `export_dataset` (anonymised research export),
+  `compare_cowrie` (comparison with a stock Cowrie log),
+  `build_attack_catalog`, and `reanalyze --attack-catalog`. Evaluation
+  outputs record the code revision.
+- Not built: a classifier trained on the honeypot's own sessions. It needs
+  labelled captured sessions, which do not exist yet.
+
+### Console
+
+- Session replay with timing, an ATT&CK matrix with a Navigator-layer
+  download, trends over 7, 30 and 90 days, an audit-log viewer, blocking and
+  unblocking an address, client fingerprints and signals on sessions and
+  attacker profiles, saved searches, a light high-contrast theme, a
+  presentation mode that masks secrets, and a UTC/local switch.
+- A failed load no longer looks like "nothing there"; the open session
+  refreshes; a stale response cannot overwrite a newer page.
+- Each verdict is labelled with the layer that produced it, tactics are
+  named, and nothing uncalibrated is shown as a probability.
+- Sign-up and password reset are offered only where mail can be sent;
+  signing out in one tab signs out the others; downloading a captured
+  sample asks first.
+
+### Evaluation tools
+
+- `tools/fingerprint_audit`: sends the same probes to a decoy and to the
+  real daemon it imitates and reports what differs, for SSH, FTP, HTTP and
+  Telnet. No comparison against real daemons has been run yet.
+- `tools/controlled_traffic`: produces labelled, controlled test traffic
+  against a throwaway engine on loopback, for `eval_pipeline`.
 
 ### Documentation
 

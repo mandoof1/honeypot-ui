@@ -126,8 +126,10 @@ Generate a secret with
 | `HONEYPOT_HTTP_SESSION_IDLE` | `30` | Seconds a web client's requests coalesce into one session. |
 | `HONEYPOT_HTTP_UPSTREAM`, `_UPSTREAM_OWNS`, `_DECOY_UPSTREAM`, `_SESSION_COOKIE` | empty | A real web application behind the decoys, the bait paths it serves itself, its decoy copy, and its session cookie. |
 | `HONEYPOT_HTTP_DIVERT_TTL`, `HONEYPOT_HTTP_DIVERT_FAILED_LOGINS` | `21600`, `10` | How long a diverted client stays diverted; failed logins in ten minutes that divert. |
-| `HONEYPOT_ANTI_FINGERPRINT`, `HONEYPOT_ADAPTIVE_RESPONSE` | `true`, `true` | Banner consistency and response shaping. |
+| `HONEYPOT_ANTI_FINGERPRINT`, `HONEYPOT_ADAPTIVE_RESPONSE` | `true`, `true` | Reply jitter, and response shaping. Banners always come from the host identity whatever these are set to. |
+| `HONEYPOT_RESPONSE_DELAY_MIN`, `HONEYPOT_RESPONSE_DELAY_MAX` | `0.001`, `0.006` | Bounds, in seconds, of the random delay added to HTTP and FTP replies. |
 | `HONEYPOT_AI_CANARY` | `true` | Plants a note addressed to automated assistants; a session acting on it raises `ai_canary_triggered`. |
+| `HONEYPOT_HTTP_AI_CANARY_UPSTREAM` | `false` | Also add the web canary's note to HTML pages served by the real application behind the decoys. |
 | `HONEYPOT_ACCEPTED_LOGIN_TTL` | `604800` | Seconds a source let in with a guessed password is let in again with it. |
 | `HONEYPOT_ENABLE_ISOLATION`, `HONEYPOT_DOCKER_NETWORK` | `true`, `honeypot_isolated` | The engine's self-checks, and the network they refer to. |
 | `HONEYPOT_ISOLATION_CHECK_INTERVAL` | `600` | Seconds between isolation re-checks reported in the heartbeat; 0 checks once. |
