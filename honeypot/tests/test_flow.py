@@ -105,3 +105,45 @@ async def test_http_flow_counts_request_and_response(capture):
     assert flow["fwd_bytes"] == len(request)
     assert flow["bwd_bytes"] == len(response)
     assert flow["fwd_max"] == len(request)
+
+
+def test_a_connection_joining_a_session_hands_over_what_it_counted():
+    first = FlowMeter(now=10.0)
+    first.inbound(100, now=10.2)
+    session = FlowMeter(now=first.start)
+    first.join(session)
+    first.outbound(400, now=10.3)        # counted on the session from here on
+    session.close(now=10.4)              # the first connection closed
+
+    # The client comes back two seconds later on a new connection.
+    second = FlowMeter(now=12.4)
+    second.inbound(50, now=12.5)
+    session.reopen()
+    second.join(session)
+    second.inbound(30, now=12.7)
+    second.outbound(900, now=12.8)
+    session.close(now=13.0)
+    # The session is delivered half a minute later; closing again then must
+    # not move the end or count the wait as a silence.
+    session.close(now=43.0)
+
+    s = session.summary()
+    assert (s["fwd_packets"], s["fwd_bytes"], s["fwd_max"]) == (3, 180, 100)
+    assert (s["bwd_packets"], s["bwd_bytes"], s["bwd_max"]) == (2, 1300, 900)
+    assert s["duration"] == pytest.approx(3.0)
+    # Forward gaps: 10.2 -> 12.5 across the two connections, then 12.5 -> 12.7.
+    assert s["fwd_iat_max"] == pytest.approx(2.3)
+    assert s["fwd_iat_mean"] == pytest.approx(1.25)
+    # Longest silence: from the first connection closing to the second's
+    # first data.
+    assert s["flow_iat_max"] == pytest.approx(2.1)
+
+
+def test_a_joined_meter_cannot_close_the_session_under_other_connections():
+    session = FlowMeter(now=0.0)
+    one, two = FlowMeter(now=0.0), FlowMeter(now=0.1)
+    one.join(session)
+    two.join(session)
+    one.close(now=1.0)
+    two.inbound(10, now=2.0)
+    assert session.summary()["fwd_bytes"] == 10
