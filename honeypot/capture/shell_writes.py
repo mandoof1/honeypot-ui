@@ -14,9 +14,16 @@ dispatch, which corrupts base64 beyond recovery, and answered ``echo "x" > f``
 by printing ``"x" > f`` back, which is both a fingerprint and the end of the
 session. Nothing here fixes that by running anything: this module is a
 deliberately small interpreter for the handful of shell constructs that
-*produce bytes*, evaluated over literal text. No command is executed, no
-variable or command substitution is expanded, and no path on the real
-filesystem is read or written.
+*produce bytes*, evaluated over literal text. No command is executed and no
+path on the real filesystem is read or written.
+
+Variables, ``for``/``while`` loops and the working directory are handled by
+``core/shell_syntax.py``, which the emulator uses too. They have to agree:
+this module decides which path a redirection writes, the emulator decides
+what ``ls`` and ``cat`` show afterwards, and a payload that one of them puts
+under ``/data/local/tmp`` while the other is in ``/tmp`` is a payload split
+in two. Run without a session — in tests, or on a bare string — nothing is
+expanded and every ``cd`` is assumed to work, as before.
 
 What it returns is the set of writes the command line would have performed,
 with paths resolved against the session's working directory, plus any content
@@ -33,6 +40,23 @@ import re
 import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from honeypot.core.shell_syntax import (
+    ASSIGNMENT,
+    CLOSE,
+    GLOB,
+    MAX_VARIABLE_CHARS,
+    OPEN,
+    AnyDirectory,
+    Directories,
+    Expander,
+    ProgramWalker,
+    change_directory,
+    compile_program,
+    resolve_path,
+    scrub,
+    strip_markers,
+)
 
 #: Largest single piece of content one operation may produce. Matches the
 #: engine's per-upload capture cap; anything larger is not a dropper stage.
@@ -53,7 +77,8 @@ INTERPRETERS = {
 }
 
 #: Wrappers that change nothing about what the wrapped command writes.
-_TRANSPARENT_PREFIXES = {"nohup", "exec", "command", "sudo", "time", "nice", "setsid"}
+TRANSPARENT_PREFIXES = {"nohup", "exec", "command", "sudo", "time", "nice", "setsid"}
+_TRANSPARENT_PREFIXES = TRANSPARENT_PREFIXES
 
 #: Writes to these are discarded by the kernel, not stored.
 _DISCARD_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero"}
@@ -61,6 +86,17 @@ _DISCARD_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _B64_JUNK = re.compile(rb"[^A-Za-z0-9+/=_-]")
 _HEX_JUNK = re.compile(rb"[^0-9A-Fa-f]")
+#: ``$NAME`` and the single-character parameters ``$?`` ``$$`` ``$#`` ``$1``…
+_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[?$#!@*0-9]")
+#: One printf conversion. The flags and the width may not both match a
+#: ``0``: when they could, ``%`` followed by a long run of zeros and no
+#: conversion letter was retried from every split point, quadratically, on
+#: the event loop.
+_PRINTF_SPEC = re.compile(rb"%[-+ #0]*(?:[1-9][0-9]*)?(?:\.[0-9]+)?([sbcdixXo%])")
+_PRINTF_SPECIAL = re.compile(rb"[%\\]")
+#: Characters that mean nothing to the lexer: not a separator, a quote, an
+#: escape, an expansion or a wildcard.
+_PLAIN_RUN = re.compile(r"[^ \t\r\n;|&<>\\'\"$`*?\[]+")
 
 
 @dataclass
@@ -128,8 +164,14 @@ class _Lexer:
     guessed at.
     """
 
-    def __init__(self, text: str) -> None:
-        self.text = text
+    def __init__(self, text: str, mark: bool = False) -> None:
+        #: With ``mark``, expansions found outside single quotes are wrapped
+        #: in markers for the evaluator to resolve when the statement runs
+        #: (see core/shell_syntax.py) instead of being kept as literal text.
+        #: Expanding here would be too early: ``X=1; echo $X`` is lexed
+        #: before the assignment has happened.
+        self.mark = mark
+        self.text = scrub(text) if mark else text
         self.pos = 0
         #: (connector, stages): how each statement joins the one before it.
         self.statements: list[tuple[str, list[_Stage]]] = []
@@ -275,7 +317,9 @@ class _Lexer:
             return True
 
         if op in ("<<", "<<-"):
-            self._pending_heredocs.append(_Pending(self._stage, target, op == "<<-"))
+            # A delimiter is compared with the lines that follow as text; it
+            # is never expanded.
+            self._pending_heredocs.append(_Pending(self._stage, strip_markers(target), op == "<<-"))
             return True
         if fd is None:
             fd = 0 if op in ("<", "<<<") else 1
@@ -314,10 +358,27 @@ class _Lexer:
         out: list[str] = []
         text = self.text
         started = self.pos
+        has_glob = False
         while self.pos < len(text):
+            # A run of ordinary characters is taken in one step. Character by
+            # character, a 256 KiB base64 argument was a quarter of a million
+            # trips round this loop, three times per command, on the event
+            # loop.
+            plain = _PLAIN_RUN.match(text, self.pos)
+            if plain:
+                out.append(plain.group(0))
+                self.pos = plain.end()
+                continue
             ch = text[self.pos]
             if ch in " \t\r\n;|&<>":
                 break
+            if self.mark and ch in "$`" and not text.startswith("$'", self.pos):
+                marker = self._read_expansion(quoted=False)
+                if marker is not None:
+                    out.append(marker)
+                    continue
+            if self.mark and ch in "*?[":
+                has_glob = True
             if ch == "\\":
                 if self.pos + 1 < len(text):
                     nxt = text[self.pos + 1]
@@ -347,6 +408,11 @@ class _Lexer:
                             out.append(text[self.pos + 1])
                         self.pos += 2
                         continue
+                    if self.mark and text[self.pos] in "$`":
+                        marker = self._read_expansion(quoted=True)
+                        if marker is not None:
+                            out.append(marker)
+                            continue
                     out.append(text[self.pos])
                     self.pos += 1
                 self.pos += 1
@@ -355,7 +421,69 @@ class _Lexer:
             self.pos += 1
         if self.pos == started:
             return None
-        return "".join(out)
+        word = "".join(out)
+        return GLOB + word if has_glob else word
+
+    def _read_expansion(self, quoted: bool) -> Optional[str]:
+        """Consume ``$NAME``, ``${…}``, ``$(…)``, ``$((…))`` or backticks.
+
+        Returns the marker that stands for it, or None — with the position
+        untouched — when what is here is just a dollar sign or a backtick.
+        """
+        text, pos = self.text, self.pos
+
+        def marker(kind: str, body: str, end: int) -> str:
+            self.pos = end
+            return OPEN + (kind.upper() if quoted else kind) + body + CLOSE
+
+        if text[pos] == "`":
+            end = text.find("`", pos + 1)
+            if end == -1:
+                return None
+            return marker("c", text[pos + 1:end], end + 1)
+        if text.startswith("$((", pos):
+            end = text.find("))", pos + 3)
+            if end != -1:
+                return marker("a", text[pos + 3:end], end + 2)
+        if text.startswith("$(", pos):
+            end = self._matching_paren(pos + 1)
+            if end == -1:
+                return None
+            return marker("c", text[pos + 2:end], end + 1)
+        if text.startswith("${", pos):
+            end = text.find("}", pos + 2)
+            if end == -1:
+                return None
+            return marker("v", text[pos + 2:end], end + 1)
+        name = _VARIABLE_NAME.match(text, pos + 1)
+        if name:
+            return marker("v", name.group(0), name.end())
+        return None
+
+    def _matching_paren(self, start: int) -> int:
+        """Index of the ``)`` closing the ``(`` at ``start``, or -1."""
+        text = self.text
+        depth = 0
+        pos = start
+        while pos < len(text):
+            ch = text[pos]
+            if ch == "\\":
+                pos += 2
+                continue
+            if ch in "'\"":
+                closing = text.find(ch, pos + 1)
+                if closing == -1:
+                    return -1
+                pos = closing + 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return pos
+            pos += 1
+        return -1
 
     def _find_ansi_c_end(self, start: int) -> int:
         pos = start
@@ -484,6 +612,17 @@ def _printf(args: list[str]) -> Optional[bytes]:
         consumed_any = False
         i = 0
         while i < len(fmt):
+            # Literal text between conversions is copied in one piece. Byte
+            # by byte, a 256 KiB format reused for 256 arguments was tens of
+            # millions of interpreter steps on the event loop.
+            special = _PRINTF_SPECIAL.search(fmt, i)
+            if special is None or special.start() > i:
+                end = len(fmt) if special is None else special.start()
+                out += fmt[i:end]
+                i = end
+                if len(out) > MAX_OUTPUT_BYTES:
+                    return None
+                continue
             byte = fmt[i]
             if byte == 0x5C:  # backslash
                 length = _escape_length(fmt, i)
@@ -494,7 +633,7 @@ def _printf(args: list[str]) -> Optional[bytes]:
                 i += length
                 continue
             if byte == 0x25 and i + 1 < len(fmt):  # %
-                spec = re.match(rb"%[-+ #0]*[0-9]*(?:\.[0-9]+)?([sbcdixXo%])", fmt[i:])
+                spec = _PRINTF_SPEC.match(fmt, i)
                 if not spec:
                     out.append(byte)
                     i += 1
@@ -522,11 +661,11 @@ def _printf(args: list[str]) -> Optional[bytes]:
                         number = 0
                     formatted = {b"d": "%d", b"i": "%d", b"x": "%x", b"X": "%X", b"o": "%o"}[conv]
                     out += (formatted % number).encode()
+                if len(out) > MAX_OUTPUT_BYTES:
+                    return None
                 continue
             out.append(byte)
             i += 1
-            if len(out) > MAX_OUTPUT_BYTES:
-                return None
         if not rest or not consumed_any:
             break
     return bytes(out)
@@ -597,41 +736,131 @@ def _gunzip(data: bytes) -> Optional[bytes]:
 ReadFile = Callable[[str], Optional[bytes]]
 
 
+class _LineDirectories:
+    """The session's directories plus the ones this line has made so far.
+
+    ``mkdir -p /tmp/.x && cd /tmp/.x`` has to work inside one line, before
+    the emulator has run the ``mkdir`` for real.
+    """
+
+    def __init__(self, base: Directories) -> None:
+        self._base = base
+        self.made: set[str] = set()
+
+    def exists(self, path: str) -> bool:
+        return path in self.made or self._base.exists(path)
+
+    def is_dir(self, path: str) -> bool:
+        return path in self.made or self._base.is_dir(path)
+
+    def can_enter(self, path: str) -> bool:
+        return path in self.made or self._base.can_enter(path)
+
+
 class _Evaluator:
-    def __init__(self, cwd: str, home: str, read_file: ReadFile, depth: int) -> None:
+    def __init__(
+        self,
+        cwd: str,
+        home: str,
+        read_file: ReadFile,
+        depth: int,
+        env: Optional[dict[str, str]] = None,
+        dirs: Optional[Directories] = None,
+        substitute: Optional[Callable[[str], str]] = None,
+    ) -> None:
         self.cwd = cwd
         self.home = home
         self.read_file = read_file
         self.depth = depth
         self.result = Interpretation()
         self.shadow = False
-        #: Files written earlier in this same line, visible to later stages.
-        self._local: dict[str, bytes] = {}
+        #: Exit status of the last statement that ran, for ``&&`` and ``||``.
+        #: Only what this module can know fails: a ``cd`` to somewhere that is
+        #: not there, and ``false``. Everything else is taken to succeed.
+        self.status = 0
+        self._stage_status = 0
+        self.previous_cwd: Optional[str] = None
+        #: A private copy of the session's variables. The emulator runs the
+        #: same line afterwards and makes the assignments for real; doing
+        #: them twice on the shared state would double ``X=$X:more``.
+        self.env = dict(env) if env is not None else None
+        self.dirs = _LineDirectories(dirs or AnyDirectory())
+        self.substitute = substitute
+        self.expander = (
+            Expander(self._lookup, substitute) if env is not None else None
+        )
+        #: Files written earlier in this same line, visible to later stages:
+        #: whole contents for a path this line (re)wrote, and for a path that
+        #: existed before the line only the bytes appended to it. Appending
+        #: used to copy the whole file each time, so an echoloader's N chunks
+        #: on one line cost N²/2 bytes of copying.
+        self._local: dict[str, bytearray] = {}
+        self._appended: dict[str, bytearray] = {}
+
+    # -- variables ---------------------------------------------------------
+
+    def _lookup(self, name: str) -> Optional[str]:
+        if name == "PWD":
+            return self.cwd
+        if name == "HOME":
+            return self.home
+        if name == "?":
+            return str(self.status)
+        return (self.env or {}).get(name)
+
+    def _set_variable(self, name: str, value: str) -> None:
+        if self.env is not None and not self.shadow:
+            self.env[name] = value[:MAX_VARIABLE_CHARS]
+
+    def _words(self, words: list[str]) -> list[str]:
+        if self.expander is None:
+            return list(words)
+        return self.expander.words(words, MAX_WORDS)
+
+    def _text(self, word: str) -> str:
+        return word if self.expander is None else self.expander.text(word)
+
+    # -- files -------------------------------------------------------------
 
     def resolve(self, path: str) -> str:
-        from honeypot.core.shell_state import resolve_path
-
         return resolve_path(self.cwd, path, self.home)
 
     def read(self, path: str) -> Optional[bytes]:
         resolved = self.resolve(path)
         if resolved in self._local:
-            return self._local[resolved]
+            return bytes(self._local[resolved])
+        if resolved in self._appended:
+            return (self.read_file(resolved) or b"") + bytes(self._appended[resolved])
         return self.read_file(resolved)
+
+    # -- control flow ------------------------------------------------------
 
     def run(self, statements: list[tuple[str, list[_Stage]]]) -> Interpretation:
         stdout = bytearray()
         known = True
-        for connector, pipeline in statements:
-            # In the emulated host everything the attacker tries succeeds, so
-            # the right-hand side of `||` is a branch that would not run. Its
-            # content is still captured — `wget … || echo -ne … > f` carries
-            # the payload in the fallback — but it must not move the working
-            # directory or print anything.
-            self.shadow = connector == "||"
+        if self.expander is not None:
+            ops = compile_program(statements)
+        else:
+            ops = [("run", connector, pipeline) for connector, pipeline in statements]
+        walker = ProgramWalker(ops, self._words, self._set_variable)
+        while True:
+            step = walker.next(self.status)
+            if step is None:
+                break
+            connector, pipeline = step
+            # A branch the shell would skip — the right of `||` after a
+            # success, the right of `&&` after a failure — is still read for
+            # what it carries: `wget … || echo -ne … > f` holds the payload
+            # in the fallback. But it must not move the working directory,
+            # set a variable or print anything.
+            self.shadow = (connector == "||" and self.status == 0) or (
+                connector == "&&" and self.status != 0
+            )
+            self._stage_status = 0
             printed = self._pipeline(pipeline)
             if self.shadow:
                 continue
+            self.status = self._stage_status
             if printed is None:
                 known = False
             elif known:
@@ -645,6 +874,7 @@ class _Evaluator:
         method = ""
         for index, stage in enumerate(stages):
             piped_in = data if index > 0 else None
+            self._stage_status = 0
             data, method = self._stage(stage, piped_in, method)
             data = self._apply_redirects(stage, data, method)
         return data
@@ -652,10 +882,18 @@ class _Evaluator:
     def _stage(
         self, stage: _Stage, piped_in: Optional[bytes], method: str
     ) -> tuple[Optional[bytes], str]:
-        words = list(stage.words)
-        while words and _ASSIGNMENT.match(words[0]):
-            words.pop(0)
-        while words and words[0] in _TRANSPARENT_PREFIXES:
+        words = self._words(stage.words)
+        assignments = []
+        while words and ASSIGNMENT.match(words[0]):
+            assignments.append(words.pop(0))
+        if assignments and not words:
+            # `NAME=value` on its own sets a shell variable; in front of a
+            # command it only applies to that command, which nothing here
+            # reads.
+            for assignment in assignments:
+                name, value = ASSIGNMENT.match(assignment).groups()
+                self._set_variable(name, value)
+        while words and words[0] in TRANSPARENT_PREFIXES:
             words.pop(0)
         if words and words[0] == "timeout" and len(words) > 2:
             words = words[2:]
@@ -667,9 +905,9 @@ class _Evaluator:
             stdin, method = stage.heredoc, "heredoc"
         for redirect in stage.redirects:
             if redirect.op == "<<<":
-                stdin, method = _to_bytes(redirect.target) + b"\n", "herestring"
+                stdin, method = _to_bytes(self._text(redirect.target)) + b"\n", "herestring"
             elif redirect.op == "<" and redirect.fd == 0:
-                stdin = self.read(redirect.target)
+                stdin = self.read(self._text(redirect.target))
 
         if not words:
             return stdin, method
@@ -678,8 +916,38 @@ class _Evaluator:
         args = words[1:]
 
         if name == "cd":
+            target, _error = change_directory(
+                args, self.cwd, self.home, self.previous_cwd, self.dirs
+            )
+            if target is None:
+                self._stage_status = 1
+            elif not self.shadow:
+                self.previous_cwd, self.cwd = self.cwd, target
+            return b"", method
+        if name == "mkdir":
             if not self.shadow:
-                self.cwd = self.resolve(args[0]) if args else self.home
+                parents = any(a.startswith("-") and "p" in a for a in args)
+                for arg in (a for a in args if not a.startswith("-")):
+                    path = self.resolve(arg)
+                    while path != "/" and len(self.dirs.made) < 256:
+                        self.dirs.made.add(path)
+                        if not parents:
+                            break
+                        path = posixpath.dirname(path)
+            return b"", method
+        if name in ("export", "declare", "local", "readonly"):
+            for arg in args:
+                match = ASSIGNMENT.match(arg)
+                if match:
+                    self._set_variable(match.group(1), match.group(2))
+            return b"", method
+        if name == "unset":
+            if self.env is not None and not self.shadow:
+                for arg in args:
+                    self.env.pop(arg, None)
+            return b"", method
+        if name == "false":
+            self._stage_status = 1
             return b"", method
         if name == "echo":
             return _echo(args), "echo"
@@ -690,9 +958,16 @@ class _Evaluator:
             if not files:
                 return stdin, method or "cat"
             parts = []
+            total = 0
             for f in files:
                 content = stdin if f == "-" else self.read(f)
                 if content is None:
+                    return None, method
+                # `cat f f f …` with thousands of arguments: stop as soon as
+                # the result is past anything that could be captured, rather
+                # than assembling hundreds of megabytes to throw away.
+                total += len(content)
+                if total > MAX_OUTPUT_BYTES:
                     return None, method
                 parts.append(content)
             return b"".join(parts), method or "cat"
@@ -735,7 +1010,8 @@ class _Evaluator:
             index = args.index("-c")
             if index + 1 < len(args) and self.depth < MAX_NESTING:
                 nested = interpret(
-                    args[index + 1], self.cwd, self.home, self.read, self.depth + 1
+                    args[index + 1], self.cwd, self.home, self.read, self.depth + 1,
+                    env=self.env, dirs=self.dirs, substitute=self.substitute,
                 )
                 self.result.writes.extend(nested.writes)
                 self.result.executions.extend(nested.executions)
@@ -755,7 +1031,7 @@ class _Evaluator:
         for redirect in stage.redirects:
             if redirect.fd != 1 or redirect.op not in (">", ">>"):
                 continue
-            self._write(redirect.target, data, redirect.op == ">>", method)
+            self._write(self._text(redirect.target), data, redirect.op == ">>", method)
             data = b""
         return data
 
@@ -769,10 +1045,17 @@ class _Evaluator:
             return
         if len(data) > MAX_OUTPUT_BYTES:
             return
-        previous = self._local.get(path, b"") if append else b""
-        if append and path not in self._local:
-            previous = self.read_file(path) or b""
-        self._local[path] = (previous + data)[:MAX_OUTPUT_BYTES]
+        # Appends extend a buffer in place; nothing here reads the file that
+        # is being appended to, let alone copies it.
+        if not append:
+            self._local[path] = bytearray(data)
+            self._appended.pop(path, None)
+        else:
+            buffer = self._local.get(path)
+            if buffer is None:
+                buffer = self._appended.setdefault(path, bytearray())
+            if len(buffer) + len(data) <= MAX_OUTPUT_BYTES:
+                buffer += data
         self.result.writes.append(
             Write(path=path, content=data, append=append, method=method or "redirect")
         )
@@ -784,10 +1067,24 @@ def interpret(
     home: str = "/home/user",
     read_file: Optional[ReadFile] = None,
     depth: int = 0,
+    env: Optional[dict[str, str]] = None,
+    dirs: Optional[Directories] = None,
+    substitute: Optional[Callable[[str], str]] = None,
 ) -> Interpretation:
-    """Work out what a command line writes, without running any of it."""
-    statements = _Lexer(command_line).run()
-    evaluator = _Evaluator(cwd, home, read_file or (lambda _path: None), depth)
+    """Work out what a command line writes, without running any of it.
+
+    ``env`` turns on variable expansion and loops, with those variables as
+    the starting values (it is copied, not modified). ``dirs`` says which
+    directories exist, so a ``cd`` fails here exactly when the emulator's
+    does. ``substitute`` evaluates ``$(…)``; without it the text is kept as
+    typed. With none of the three the line is read literally and every
+    ``cd`` works.
+    """
+    statements = _Lexer(command_line, mark=env is not None).run()
+    evaluator = _Evaluator(
+        cwd, home, read_file or (lambda _path: None), depth,
+        env=env, dirs=dirs, substitute=substitute,
+    )
     return evaluator.run(statements)
 
 

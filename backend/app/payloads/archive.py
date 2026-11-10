@@ -20,6 +20,7 @@ import io
 import lzma
 import tarfile
 import zipfile
+import zlib
 
 MAX_MEMBERS = 500
 MAX_TOTAL_UNCOMPRESSED = 128 * 1024 * 1024
@@ -101,13 +102,44 @@ def _tar(archive: tarfile.TarFile) -> dict:
     return {"container": "tar", "member_count": len(members), "members": members, "_extracted": extracted}
 
 
+#: How much is asked of a decompressor at a time.
+_CHUNK = 1024 * 1024
+
+
+def _read_capped(stream, limit: int) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes of decompressed output.
+
+    Returns the data and whether the stream held more than the limit. The
+    decompressor only ever produces one chunk beyond what is kept, so a few
+    kilobytes that expand to gigabytes cost a megabyte, not the gigabytes.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while total <= limit:
+        chunk = stream.read(_CHUNK)
+        if not chunk:
+            return b"".join(chunks), False
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)[:limit], True
+
+
 def _single_stream(data: bytes, container: str) -> dict:
-    decompressor = {"gzip": gzip.decompress, "bzip2": bz2.decompress, "xz": lzma.decompress}[container]
+    # The file-object forms decompress as they are read, and follow
+    # concatenated members the way the one-shot functions do. The one-shot
+    # functions were the problem: they inflated the whole stream into memory
+    # and only then compared its size with the budget.
+    opener = {"gzip": gzip.GzipFile, "bzip2": bz2.BZ2File, "xz": lzma.LZMAFile}[container]
     try:
-        raw = decompressor(data)
-    except (OSError, EOFError, lzma.LZMAError) as exc:
+        if container == "gzip":
+            stream = opener(fileobj=io.BytesIO(data))
+        else:
+            stream = opener(io.BytesIO(data))
+        with stream:
+            raw, over_budget = _read_capped(stream, MAX_TOTAL_UNCOMPRESSED)
+    except (OSError, EOFError, lzma.LZMAError, zlib.error) as exc:
         return {"container": container, "error": f"Could not decompress: {exc}"[:200], "members": []}
-    if len(raw) > MAX_TOTAL_UNCOMPRESSED:
+    if over_budget:
         return {"container": container, "error": "decompressed size exceeds budget", "members": []}
     # A .tar.gz decompresses to a tar; recurse so its members are listed.
     if raw[257:262] == b"ustar":

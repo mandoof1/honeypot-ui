@@ -14,6 +14,20 @@ received before the response was lost is harmless to send again.
 The queue is bounded in files and bytes; past either, the oldest entries are
 dropped and the loss is logged. Permanent rejections (a 4xx other than 429)
 are kept separately under ``failed/`` for inspection, bounded the same way.
+
+It is also the write-ahead log: every finished session is written here
+*before* the first delivery attempt and removed when the backend confirms it,
+so an engine that is killed, restarted or stopped mid-POST still owes the
+session and sends it on the next start.
+
+Each queued file carries the number of delivery attempts the backend has
+failed in its name (``….a3.json``), so the count survives a restart. A payload
+the backend keeps choking on is moved to ``failed/`` after a bounded number of
+attempts instead of being retried for ever at the head of the queue.
+
+Every method here does blocking file I/O and is called through
+``asyncio.to_thread``; the lock keeps the running totals right when two
+worker threads touch the queue at once.
 """
 
 from __future__ import annotations
@@ -21,6 +35,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import threading
 import time
 from typing import Optional
 
@@ -29,6 +45,10 @@ logger = logging.getLogger(__name__)
 SPOOL_DIR = "spool"
 FAILED_DIR = "failed"
 MAX_FAILED_FILES = 200
+
+#: ``<clock>-<session id>.json`` on first write, ``….a<N>.json`` once the
+#: backend has failed it N times.
+_ATTEMPT_SUFFIX = re.compile(r"\.a(\d+)\.json$")
 
 
 class Spool:
@@ -39,6 +59,7 @@ class Spool:
         self.max_bytes = max_bytes
         self._count: Optional[int] = None
         self._bytes = 0
+        self._lock = threading.RLock()
 
     # -- bookkeeping -------------------------------------------------------
 
@@ -60,9 +81,10 @@ class Spool:
         self._count, self._bytes = count, total
 
     def _ensure(self) -> None:
-        if self._count is None:
-            os.makedirs(self._dir, exist_ok=True)
-            self._scan()
+        with self._lock:
+            if self._count is None:
+                os.makedirs(self._dir, exist_ok=True)
+                self._scan()
 
     @property
     def pending(self) -> int:
@@ -83,23 +105,24 @@ class Spool:
         if len(data) > self.max_bytes:
             logger.error("Session %s (%d bytes) is larger than the whole spool; dropped", session_id, len(data))
             return None
-        self._make_room(len(data))
-        path = os.path.join(self._dir, f"{time.time_ns():020d}-{session_id}.json")
-        tmp = path + ".part"
-        try:
-            with open(tmp, "wb") as handle:
-                handle.write(data)
-            os.replace(tmp, path)
-        except OSError as exc:
-            logger.error("Could not spool session %s: %s", session_id, exc)
+        with self._lock:
+            self._make_room(len(data))
+            path = os.path.join(self._dir, f"{time.time_ns():020d}-{session_id}.json")
+            tmp = path + ".part"
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            return None
-        self._count = (self._count or 0) + 1
-        self._bytes += len(data)
-        return path
+                with open(tmp, "wb") as handle:
+                    handle.write(data)
+                os.replace(tmp, path)
+            except OSError as exc:
+                logger.error("Could not spool session %s: %s", session_id, exc)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return None
+            self._count = (self._count or 0) + 1
+            self._bytes += len(data)
+            return path
 
     def put_failed(self, session_id: str, payload: dict, reason: str) -> None:
         """Keep a permanently rejected payload for inspection."""
@@ -114,6 +137,21 @@ class Spool:
         except OSError as exc:
             logger.warning("Could not keep rejected session %s: %s", session_id, exc)
 
+    def dead_letter(self, path: str, reason: str) -> bool:
+        """Move a queued payload to ``failed/`` so the queue can move on.
+
+        The payload is kept, with the reason, for an operator to look at;
+        nothing retries it again. Returns False when the entry had already
+        gone (delivered or evicted in the meantime).
+        """
+        payload = self.load(path)
+        if payload is None:
+            return False
+        session_id = payload.get("session_id") or self.session_id_of(path)
+        self.put_failed(session_id, payload, reason)
+        self.remove(path)
+        return True
+
     def _make_room(self, incoming: int) -> None:
         if (self._count or 0) < self.max_files and self._bytes + incoming <= self.max_bytes:
             return
@@ -125,6 +163,36 @@ class Spool:
             dropped += 1
         if dropped:
             logger.error("Spool full: dropped the %d oldest queued session(s)", dropped)
+
+    # -- attempts ----------------------------------------------------------
+
+    @staticmethod
+    def attempts_of(path: str) -> int:
+        """Delivery attempts the backend has failed for this entry."""
+        match = _ATTEMPT_SUFFIX.search(os.path.basename(path))
+        return int(match.group(1)) if match else 0
+
+    def note_attempt(self, path: str) -> Optional[str]:
+        """Record one more failed attempt; returns the entry's new path.
+
+        The count lives in the file name: a rename is atomic, costs nothing
+        for a payload of any size, and is still there after a restart.
+        """
+        attempts = self.attempts_of(path) + 1
+        directory, name = os.path.split(path)
+        stem = _ATTEMPT_SUFFIX.sub("", name)
+        if stem == name:
+            stem = name[: -len(".json")]
+        renamed = os.path.join(directory, f"{stem}.a{attempts}.json")
+        with self._lock:
+            try:
+                os.replace(path, renamed)
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                logger.warning("Could not record a delivery attempt on %s: %s", path, exc)
+                return path
+        return renamed
 
     # -- reading -----------------------------------------------------------
 
@@ -141,25 +209,28 @@ class Spool:
         try:
             with open(path, "rb") as handle:
                 return json.loads(handle.read())
+        except FileNotFoundError:
+            return None
         except (OSError, ValueError) as exc:
             logger.warning("Dropping unreadable spool entry %s: %s", path, exc)
             self.remove(path)
             return None
 
     def remove(self, path: str) -> None:
-        try:
-            size = os.path.getsize(path)
-            os.unlink(path)
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            logger.warning("Could not remove spool entry %s: %s", path, exc)
-            return
-        if self._count:
-            self._count -= 1
-        self._bytes = max(0, self._bytes - size)
+        with self._lock:
+            try:
+                size = os.path.getsize(path)
+                os.unlink(path)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                logger.warning("Could not remove spool entry %s: %s", path, exc)
+                return
+            if self._count:
+                self._count -= 1
+            self._bytes = max(0, self._bytes - size)
 
     @staticmethod
     def session_id_of(path: str) -> str:
-        name = os.path.basename(path)[: -len(".json")]
+        name = _ATTEMPT_SUFFIX.sub(".json", os.path.basename(path))[: -len(".json")]
         return name.split("-", 1)[1] if "-" in name else name

@@ -52,7 +52,7 @@ class TestTokenTypes:
 
 
 class TestRegistration:
-    async def test_cannot_self_assign_admin_role(self, client, db_session):
+    async def test_cannot_self_assign_admin_role(self, client, db_session, mail_outbox):
         """Registration must never honour a client-supplied role."""
         response = await client.post(
             "/api/v1/auth/register",
@@ -83,7 +83,7 @@ class TestRegistration:
         )
         assert response.status_code == 422
 
-    async def test_duplicate_email_does_not_leak(self, client, make_user):
+    async def test_duplicate_email_does_not_leak(self, client, make_user, mail_outbox):
         await make_user(email="taken@example.com")
         response = await client.post(
             "/api/v1/auth/register",

@@ -92,19 +92,14 @@ class TestHoneypotIngest:
 
 
 class TestOTP:
-    async def test_codes_are_not_stored_in_plaintext(self, db_session, make_user):
+    async def test_codes_are_not_stored_in_plaintext(self, db_session, make_user, mail_outbox):
         from sqlalchemy import select
 
         from app.models import OTPVerification
         from app.services.otp import otp_service
 
         user = await make_user(email="otp@example.com")
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "app.services.email.email_service.send_otp_email",
-                lambda *a, **k: True,
-            )
-            await otp_service.generate_and_send(db_session, user)
+        await otp_service.generate_and_send(db_session, user)
 
         record = (
             await db_session.execute(
@@ -114,25 +109,28 @@ class TestOTP:
         assert len(record.otp_code) == 64
         assert not record.otp_code.isdigit()
 
-    async def test_attempts_are_limited(self, db_session, make_user):
+    async def test_attempts_are_limited(self, db_session, make_user, mail_outbox):
         from app.services.otp import OTP_MAX_ATTEMPTS, otp_service
 
         user = await make_user(email="brute@example.com")
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "app.services.email.email_service.send_otp_email",
-                lambda *a, **k: True,
-            )
-            await otp_service.generate_and_send(db_session, user)
+        await otp_service.generate_and_send(db_session, user)
+        real_code = mail_outbox[-1][2]
+        wrong = "000000" if real_code != "000000" else "111111"
 
+        reasons = set()
         for _ in range(OTP_MAX_ATTEMPTS):
-            result = await otp_service.verify(db_session, user.id, "000000")
+            result = await otp_service.verify(db_session, user.id, wrong)
             assert result["valid"] is False
+            reasons.add(result["reason"])
 
         # OTP_MAX_ATTEMPTS was defined but never enforced, so codes could be
-        # brute-forced indefinitely.
-        final = await otp_service.verify(db_session, user.id, "000000")
-        assert "Too many" in final["reason"]
+        # brute-forced indefinitely. Once the guesses are used up, the code
+        # is dead: even the right one is refused.
+        final = await otp_service.verify(db_session, user.id, real_code)
+        assert final["valid"] is False
+        # One message throughout. The old ones counted down the attempts,
+        # and only ever did so for an address that had an account.
+        assert reasons | {final["reason"]} == {"Invalid or expired code."}
 
     def test_codes_use_a_cryptographic_rng(self):
         from app.services.otp import OTPService

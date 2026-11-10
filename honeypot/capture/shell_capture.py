@@ -16,11 +16,31 @@ from honeypot.core.session import session_manager
 from honeypot.core.shell_state import ShellState, shell_states
 
 
-async def capture_command(session_id: str, command: str, home: str) -> Interpretation:
-    """Record what one command line writes. Never raises into the shell."""
+async def capture_command(
+    session_id: str, command: str, home: str,
+    username: str | None = None, is_root: bool | None = None,
+) -> Interpretation:
+    """Record what one command line writes. Never raises into the shell.
+
+    Given who the shell belongs to, the line is read with the session's
+    variables and against the session's directories, the same way the
+    emulator is about to run it, so a write lands on the path the emulator
+    will later list. Without that it is read literally.
+    """
     shell = shell_states.get(session_id)
+    context: dict = {}
+    if username is not None or is_root is not None:
+        try:
+            # Imported here: core.modes imports this package's lexer.
+            from honeypot.core.modes import capture_context
+
+            context = capture_context(session_id, username or "", bool(is_root))
+        except Exception:  # pragma: no cover - defensive, as below
+            context = {}
     try:
-        result = interpret(command, cwd=shell.cwd, home=home, read_file=shell.read_content)
+        result = interpret(
+            command, cwd=shell.cwd, home=home, read_file=shell.read_content, **context
+        )
     except Exception:  # pragma: no cover - defensive: capture must not break the session
         return Interpretation(stdout=None)
 

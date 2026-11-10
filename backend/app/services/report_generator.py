@@ -60,6 +60,92 @@ def _valid_technique_id(value) -> bool:
     return bool(re.fullmatch(r"T\d{4}(?:\.\d{3})?", str(value or "")))
 
 
+#: Hash lengths in hex characters, and the name STIX gives each algorithm.
+_HASH_NAMES = {32: "MD5", 40: "SHA-1", 64: "SHA-256"}
+
+_HOSTNAME = re.compile(
+    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,24}"
+)
+
+
+def _stix_pattern(ioc_type: str, value: str):
+    """A STIX pattern for one stored indicator, or None if it has no form.
+
+    Each value is checked for the shape its type claims before it is put in
+    a pattern: the rows are attacker-influenced, and a consumer acts on what
+    the pattern says. Types STIX has no observable for (wallets, SSH key
+    fingerprints, operator channels) are left out rather than forced into
+    one.
+    """
+    import ipaddress
+
+    if ioc_type in ("ip", "referenced_ip"):
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return None
+        kind = "ipv4-addr" if address.version == 4 else "ipv6-addr"
+        return f"[{kind}:value = '{address}']"
+    if ioc_type in ("domain", "host"):
+        if not _HOSTNAME.fullmatch(value):
+            return None
+        return f"[domain-name:value = '{_stix_literal(value.lower())}']"
+    if ioc_type == "url":
+        if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://\S+$", value):
+            return None
+        return f"[url:value = '{_stix_literal(value)}']"
+    if ioc_type == "file_hash":
+        digest = value.lower()
+        name = _HASH_NAMES.get(len(digest))
+        if name is None or not re.fullmatch(r"[0-9a-f]+", digest):
+            return None
+        return f"[file:hashes.'{name}' = '{digest}']"
+    if ioc_type in ("filename", "file"):
+        if any(ord(ch) < 0x20 for ch in value):
+            return None
+        return f"[file:name = '{_stix_literal(value)}']"
+    return None
+
+
+def _indicator_from_row(row, session_uuid: str):
+    """A STIX Indicator for one stored indicator row, or None."""
+    if not isinstance(row, dict):
+        return None
+    ioc_type = str(row.get("type") or "")
+    value = str(row.get("value") or "").strip()
+    if not value or len(value) > 500:
+        return None
+    pattern = _stix_pattern(ioc_type, value)
+    if pattern is None:
+        return None
+
+    tags = [str(tag)[:64] for tag in (row.get("tags") or []) if isinstance(tag, str)][:10]
+    # An address or host that was only mentioned is context, not something
+    # this system saw behave maliciously; the type says which it is.
+    observed = ioc_type != "referenced_ip" and "referenced_ip" not in tags
+    extra = {}
+    confidence = row.get("confidence")
+    if isinstance(confidence, (int, float)) and 0 <= confidence <= 1:
+        extra["confidence"] = int(round(confidence * 100))
+    if tags:
+        extra["labels"] = tags
+    try:
+        # stix2 parses the pattern and validates every property here; a row
+        # it will not accept is skipped, not exported in a looser form.
+        return STIXIndicator(
+            indicator_types=["malicious-activity" if observed else "anomalous-activity"],
+            pattern=pattern,
+            pattern_type="stix",
+            name=f"{ioc_type}: {value}"[:200],
+            description=(
+                f"{'Observed' if observed else 'Referenced'} in honeypot session {session_uuid}"
+            ),
+            **extra,
+        )
+    except Exception:
+        return None
+
+
 class ReportGenerator:
     def generate_json_report(self, session_data: Dict, analysis: Dict) -> str:
         report = {
@@ -189,6 +275,18 @@ class ReportGenerator:
                     description=f"Tool detected during session {session_uuid}",
                 )
             )
+
+        # The session's stored indicator rows: hosts and URLs its droppers
+        # reached for, hashes of what it uploaded, what its payloads named.
+        # The export loaded them and this function never looked at them, so
+        # a STIX consumer received the source address and nothing else.
+        seen_patterns = {indicator.pattern for indicator in indicator_patterns}
+        for row in analysis.get("iocs") or []:
+            indicator = _indicator_from_row(row, session_uuid)
+            if indicator is None or indicator.pattern in seen_patterns:
+                continue
+            seen_patterns.add(indicator.pattern)
+            indicator_patterns.append(indicator)
 
         mitre_techniques = analysis.get("mitre", {}).get("techniques", [])
         attack_patterns = []

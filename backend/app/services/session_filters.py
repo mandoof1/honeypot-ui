@@ -4,8 +4,51 @@ from typing import Annotated, Optional
 
 from fastapi import HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 from app.core.sql import LIKE_ESCAPE, escape_like
 from app.models import HoneypotSession, SessionStatus, AttackCategory, AttackerProfile
+
+#: The encrypted columns of a session. Each can run to megabytes (a captured
+#: payload, a long transcript) and no list, search or export-by-summary ever
+#: reads them, yet ``select(HoneypotSession)`` fetched all four for every row:
+#: a page of a hundred sessions could pull hundreds of megabytes through the
+#: API process to show a table.
+SESSION_BLOB_COLUMNS = (
+    HoneypotSession.raw_commands_encrypted,
+    HoneypotSession.raw_payloads_encrypted,
+    HoneypotSession.transcript_encrypted,
+    HoneypotSession.credentials_encrypted,
+)
+
+
+def without_blobs(query, keep=()):
+    """Leave the encrypted columns out of a session query.
+
+    ``keep`` names any that the caller does need. The others raise if they
+    are touched instead of loading lazily, which an async session cannot do
+    anyway; the error then names the column rather than the event loop.
+    """
+    kept = {column.key for column in keep}
+    options = [
+        defer(column, raiseload=True)
+        for column in SESSION_BLOB_COLUMNS
+        if column.key not in kept
+    ]
+    return query.options(*options)
+
+
+def presence_flags():
+    """has_transcript / has_credentials, computed by the database.
+
+    The session response says whether a transcript and credentials exist.
+    With the blobs deferred that cannot be read off the row, so the query
+    asks for the two booleans directly.
+    """
+    return (
+        HoneypotSession.transcript_encrypted.isnot(None).label("has_transcript"),
+        HoneypotSession.credentials_encrypted.isnot(None).label("has_credentials"),
+    )
+
 
 def _parse_enum(enum_cls, value: str, field: str):
     """Map a query-string value onto an enum, or raise 400.
