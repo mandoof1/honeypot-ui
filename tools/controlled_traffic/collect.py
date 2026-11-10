@@ -108,6 +108,9 @@ def main() -> None:
         "by_label": dict(sorted(by_label.items())),
         "by_scenario": dict(sorted(by_scenario.items())),
         "by_protocol": dict(sorted(by_protocol.items())),
+        # A scenario that ran and left no session record: the engine kept
+        # nothing for it, which is a finding about capture, not about labels.
+        "scenarios_without_sessions": sorted({w["scenario"] for w in windows} - set(by_scenario)),
         "left_out": dict(left_out),
         "generator_notes": footer.get("notes", []),
         "limits": [

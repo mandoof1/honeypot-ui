@@ -223,22 +223,29 @@ def exploitation(run: Run) -> None:
     if a.ssh:
         t = time.time()
 
-        async def guess() -> None:
+        async def guess(passwords: list[str]) -> None:
             import asyncssh
-            # One connection, several passwords: what a guessing tool does.
+
+            class Guesser(asyncssh.SSHClient):
+                """Offers the next password each time the server asks again."""
+
+                def password_auth_requested(self):
+                    return passwords.pop(0) if passwords else None
+
             try:
-                options = asyncssh.SSHClientConnectionOptions(
-                    username="root", known_hosts=None, client_keys=None,
-                    password=None, preferred_auth="password", login_timeout=20,
+                connection, _ = await asyncssh.create_connection(
+                    Guesser, HOST, a.ssh, username="root", known_hosts=None,
+                    client_keys=None, preferred_auth="password", login_timeout=20,
                 )
-                connection = await asyncssh.connect(HOST, a.ssh, options=options, password=run.rng.choice(GUESSES))
                 connection.close()
             except (OSError, asyncssh.Error, asyncio.TimeoutError):
                 pass
 
-        for _ in range(8):  # eight connections, one wrong password each, inside one window
-            asyncio.run(guess())
-        run.record("ssh-password-guessing", "exploitation", ["ssh"], t, note="eight single-attempt connections")
+        # Two connections, each trying several passwords until the server
+        # hangs up or lets it in: what a guessing tool does.
+        for _ in range(2):
+            asyncio.run(guess(run.rng.sample(GUESSES, k=6)))
+        run.record("ssh-password-guessing", "exploitation", ["ssh"], t, note="two connections, up to six passwords each")
     if a.http:
         t = time.time()
         agent = f"python-requests/2.{run.rng.randint(25, 32)}.0"
@@ -268,9 +275,11 @@ def tools(run: Run) -> None:
                    [n for n, p in (("ssh", a.ssh), ("telnet", a.telnet), ("ftp", a.ftp), ("http", a.http)) if p], t, tool="nmap -sV")
         if a.http:
             t = time.time()
-            subprocess.run([nmap, "-Pn", "-p", str(a.http), "--script", "http-enum", HOST],
+            # -sV as well: on a non-standard port the script only runs once
+            # the service has been identified as HTTP.
+            subprocess.run([nmap, "-Pn", "-sV", "-p", str(a.http), "--script", "http-enum", HOST],
                            capture_output=True, timeout=300, check=False)
-            run.record("nmap-http-enum", "reconnaissance", ["http"], t, tool="nmap --script http-enum")
+            run.record("nmap-http-enum", "reconnaissance", ["http"], t, tool="nmap -sV --script http-enum")
     else:
         run.notes.append("nmap not installed: version-scan scenarios skipped")
     sqlmap = shutil.which("sqlmap")

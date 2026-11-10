@@ -420,8 +420,13 @@ test('a report is a job with progress, and original credentials are an explicit 
   // Leaving the page stops the status poll.
   const before = api.calls.filter((c) => c.path.startsWith('/export/reports/')).length
   await page.getByRole('link', { name: 'Overview' }).click()
+  // Wait for the page to have changed before running the clock: until the
+  // sessions page has unmounted, its poll timer is rightly still armed.
+  await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible()
+  const afterLeaving = api.calls.filter((c) => c.path.startsWith('/export/reports/')).length
+  expect(afterLeaving - before).toBeLessThanOrEqual(1)
   await page.clock.runFor(20_000)
-  expect(api.calls.filter((c) => c.path.startsWith('/export/reports/')).length).toBe(before)
+  expect(api.calls.filter((c) => c.path.startsWith('/export/reports/')).length).toBe(afterLeaving)
 })
 
 test('an analyst has no credential option and their reports never ask for originals', async ({ page }) => {
