@@ -212,7 +212,11 @@ cmd_versions() {
     case "$service" in
     sshd)
         echo "reports: $(ssh -V 2>&1)"
-        echo "host_keys: $(ls /etc/ssh/ssh_host_*_key.pub 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
+        keys=""
+        for key in /etc/ssh/ssh_host_*_key.pub; do
+            [ -e "$key" ] && keys="$keys${key##*/} "
+        done
+        echo "host_keys: $keys"
         ;;
     apache) echo "reports: $(apache2 -v 2>&1 | head -n1)" ;;
     nginx) echo "reports: $(nginx -v 2>&1)" ;;
