@@ -4,21 +4,44 @@ import {
   api,
   clearTokens,
   getAccessToken,
+  onTokenChange,
   setTokens,
   setUnauthorizedHandler,
 } from '../services/api'
 
 const ROLE_RANK = { viewer: 0, analyst: 1, admin: 2 }
 
+/** The fields the interface reads; a refetch that changes none of them keeps the same object. */
+function sameUser(a, b) {
+  if (!a || !b) return a === b
+  return a.id === b.id && a.email === b.email && a.role === b.role
+    && a.name === b.name && Boolean(a.totp_enabled) === Boolean(b.totp_enabled)
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  // Why the sign-in page is showing, when the user did not choose to be there.
+  const [notice, setNotice] = useState(null)
   const mounted = useRef(true)
 
-  const logout = useCallback(() => {
+  const logout = useCallback((reason = null) => {
     // Tell the server first (it reads the token from storage), then clear.
+    // Clearing storage is also what signs the other tabs out.
     api.auth.logout?.()
     clearTokens()
+    setNotice(typeof reason === 'string' ? reason : null)
+    setUser(null)
+  }, [])
+
+  /**
+   * Leave a session the server has already ended, such as after a password
+   * change, which revokes every token. Nothing is sent: presenting a revoked
+   * refresh token would be recorded as a reuse attempt.
+   */
+  const endSession = useCallback((reason = null) => {
+    clearTokens()
+    setNotice(reason)
     setUser(null)
   }, [])
 
@@ -32,7 +55,7 @@ export function AuthProvider({ children }) {
     }
     try {
       const me = await api.auth.me()
-      if (mounted.current) setUser(me)
+      if (mounted.current) setUser((current) => (sameUser(current, me) ? current : me))
     } catch (err) {
       // Only a rejected token ends the session. A network blip at startup
       // used to clear both tokens and send the user back to the login page,
@@ -49,13 +72,26 @@ export function AuthProvider({ children }) {
     // Let the API layer return us to the login screen through React state
     // rather than a full-page window.location reload.
     setUnauthorizedHandler(() => {
-      if (mounted.current) setUser(null)
+      if (!mounted.current) return
+      setNotice('Your session has expired. Sign in again.')
+      setUser(null)
+    })
+    // Another tab signed out, signed in, or rotated the tokens.
+    const unsubscribe = onTokenChange(({ signedIn }) => {
+      if (!mounted.current) return
+      if (signedIn) {
+        fetchUser()
+        return
+      }
+      setNotice('You signed out in another tab.')
+      setUser(null)
     })
     const timer = setTimeout(fetchUser, 0)
 
     return () => {
       mounted.current = false
       clearTimeout(timer)
+      unsubscribe()
       setUnauthorizedHandler(() => {})
     }
   }, [fetchUser])
@@ -64,6 +100,7 @@ export function AuthProvider({ children }) {
     async (email, password, totpCode) => {
       const data = await api.auth.login(email, password, totpCode)
       setTokens(data)
+      setNotice(null)
       await fetchUser()
       return data
     },
@@ -74,8 +111,10 @@ export function AuthProvider({ children }) {
     () => ({
       user,
       loading,
+      notice,
       login,
       logout,
+      endSession,
       register: api.auth.register,
       /** Re-read the signed-in user, e.g. after enrolling an authenticator. */
       refreshUser: fetchUser,
@@ -83,7 +122,7 @@ export function AuthProvider({ children }) {
       hasRole: (role) =>
         (ROLE_RANK[user?.role] ?? -1) >= (ROLE_RANK[role] ?? Infinity),
     }),
-    [user, loading, login, logout, fetchUser],
+    [user, loading, notice, login, logout, endSession, fetchUser],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
