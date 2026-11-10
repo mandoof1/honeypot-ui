@@ -25,13 +25,119 @@ Return one JSON object:
 Write 2-4 findings when evidence supports them; one is enough for a single simple case. Every finding must name the exact supplied evidence-line identifiers supporting it. Never paraphrase a line identifier; select from the provided E1.L1-style keys. The report will insert the original quoted text itself. Explain only the cases supplied; the scope describes any unreviewed groups. No invented confidence scores. Keep the total answer under 750 words."""
 
 
+_REDACTED = "[REDACTED]"
+
+#: A value: quoted, or a run of anything that does not end a shell word or a
+#: form field.
+_VALUE = r"""("[^"\n]*"|'[^'\n]*'|[^\s&;,"'|<>]+)"""
+
+#: Words that make a name's value a secret, wherever they sit in the name:
+#: AWS_SECRET_ACCESS_KEY, db_password and X-Auth-Token are all caught.
+#: "pass" and "auth" must end there, so "passive" and "author" are not.
+_SECRET_WORD = re.compile(
+    r"(?i)passw(?:or)?d|passwd|passphrase|pwd|pass(?![a-z])|secret|token|"
+    r"api[_-]?key|access[_-]?key|private[_-]?key|credential|auth(?:orization)?(?![a-z])"
+)
+
+#: The left-hand side of name=value or name: value, as found in a shell
+#: assignment, a query string, a form body or JSON ("password": "x"). The
+#: name is taken whole and then tested, rather than searched for a secret
+#: word by the pattern itself: that keeps the scan linear on a long unbroken
+#: run such as a base64 blob.
+_ASSIGNMENT_NAME = re.compile(
+    r"""(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{1,64})["']?\s*[:=]\s*"""
+)
+_ASSIGNED_VALUE = re.compile(_VALUE)
+
+
+def _redact_assignments(text: str) -> str:
+    """Mask the value of every assignment whose name says it is a secret.
+
+    Only the name is consumed while scanning, never the value: in
+    ``http://host/?token=abc`` the first "assignment" is ``http:`` and its
+    value runs to the end of the URL, and consuming that would step over the
+    token inside it.
+    """
+    pieces = []
+    position = 0
+    for match in _ASSIGNMENT_NAME.finditer(text):
+        if match.start() < position or not _SECRET_WORD.search(match.group(1)):
+            continue
+        value = _ASSIGNED_VALUE.match(text, match.end())
+        if value is None:
+            continue
+        pieces.append(text[position:match.end()])
+        pieces.append(_REDACTED)
+        position = value.end()
+    pieces.append(text[position:])
+    return "".join(pieces)
+
+
+_REDACTIONS = [
+    # A private key, whole: header to footer.
+    (
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)",
+            re.DOTALL,
+        ),
+        "[REDACTED PRIVATE KEY]",
+    ),
+    # Header lines that carry a credential, to the end of the line.
+    (
+        re.compile(
+            r"(?i)\b(Proxy-Authorization|Authorization|Set-Cookie|Cookie|X-Api-Key|X-Auth-Token)\s*:[^\n]*"
+        ),
+        r"\1: " + _REDACTED,
+    ),
+    # A bearer or basic credential quoted outside a header line.
+    (re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _REDACTED),
+    # scheme://user:password@host
+    (
+        re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s/:@]+):[^\s/@]+@"),
+        r"\1:" + _REDACTED + "@",
+    ),
+    # Long options: --password x, --token=x
+    (
+        re.compile(
+            r"(?i)(--?(?:password|passwd|pass|pwd|token|secret|api-?key)(?:\s+|=))" + _VALUE
+        ),
+        r"\1" + _REDACTED,
+    ),
+    # sshpass -p secret
+    (re.compile(r"(?i)\b(sshpass\s+-p\s*)" + _VALUE), r"\1" + _REDACTED),
+    # mysql -uroot -psecret (the password is glued to the flag)
+    (
+        re.compile(r"(?i)\b((?:mysql|mysqldump|mysqladmin|mariadb)\b[^\n|;&]*?\s-p)([^\s|;&]+)"),
+        r"\1" + _REDACTED,
+    ),
+    # curl -u user:password
+    (re.compile(r"(?i)(\s(?:-u|--user)\s+[^\s:]+:)([^\s|;&]+)"), r"\1" + _REDACTED),
+    # echo user:password | chpasswd
+    (
+        re.compile(
+            r"""(?i)(\becho\s+["']?[A-Za-z0-9_.-]+:)([^"'\s|]+)(["']?\s*\|\s*(?:sudo\s+)?chpasswd)"""
+        ),
+        r"\1" + _REDACTED + r"\3",
+    ),
+]
+
+
 def redact(value):
-    value = re.sub(
-        r"(?i)\b(password|passwd|pwd|token|secret|api_key)\s*[:=]\s*[^\s&;]+",
-        r"\1=[REDACTED]",
-        str(value),
-    )
-    return re.sub(r"(?im)Authorization:[^\n]+", "Authorization: [REDACTED]", value)
+    """Mask the secrets in captured text before a non-administrator sees it.
+
+    Captured activity is full of credentials: the ones attackers try, and the
+    ones they bring with them. The first version masked ``password=...`` and
+    an Authorization header and nothing else, so a quoted JSON password, a
+    ``pass=`` form field, ``mysql -psecret``, a URL with a password in it or
+    a pasted private key went into an analyst's report as typed.
+
+    This is pattern matching and will not catch everything; the original is
+    in the administrator's export and the audited credentials view.
+    """
+    text = str(value)
+    for pattern, replacement in _REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return _redact_assignments(text)
 
 
 def evidence_groups(records):

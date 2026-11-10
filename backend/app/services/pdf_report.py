@@ -425,14 +425,12 @@ def generate_pdf_report(
         summary = str(
             a.get("command_summary") or "No command/activity summary was recorded."
         )
-        summary = re.sub(
-            r"(?i)\b(password|passwd|pwd|token|secret|api_key)\s*[:=]\s*[^\s&;]+",
-            r"\1=[REDACTED]",
-            summary,
-        )
-        summary = re.sub(
-            r"(?im)Authorization:[^\n]+", "Authorization: [REDACTED]", summary
-        )
+        # The one redaction routine, not a second copy of an older pattern:
+        # this page is produced without a narrative and is never the
+        # administrator's "include original evidence" export.
+        from app.services.investigation_narrative import redact
+
+        summary = redact(summary)
         all_lines = summary.splitlines()
         lines = all_lines[:20]
         table(
