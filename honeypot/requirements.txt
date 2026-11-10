@@ -10,7 +10,7 @@ cryptography==50.0.1
 # Real SSH transport for the SSH emulator. There is no way to speak the
 # protocol without one, and hand-rolling key exchange on the internet-facing
 # component would be a far worse trade than a maintained library.
-asyncssh==2.24.0
+asyncssh==2.24.1
 
 # Pattern matching for the emulated grep/sed/awk. The standard library's re
 # has no way to stop a backtracking pattern, and those patterns come from the
