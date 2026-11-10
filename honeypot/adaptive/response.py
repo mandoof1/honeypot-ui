@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
+from honeypot.core.config import config
 from honeypot.core.session import session_manager
 
 logger = logging.getLogger(__name__)
@@ -70,13 +71,28 @@ class AdaptiveEngine:
             "burp": ["burp", "intruder", "repeater"],
             "hydra": ["hydra", "brute force"],
             "mimikatz": ["mimikatz", "sekurlsa", "lsadump"],
-            "cobalt_strike": ["cobalt strike", "beacon", "c2"],
+            # Named, not guessed at. This list used to end with "c2": two
+            # characters that occur in base64, hex, hostnames and file names,
+            # so an ordinary dropper session was labelled Cobalt Strike and,
+            # from that, APT.
+            "cobalt_strike": ["cobalt strike", "cobaltstrike"],
             "masscan": ["masscan"],
             "gobuster": ["gobuster", "dirbuster"],
             "dirb": ["dirb", "dirbuster"],
         }
 
     async def profile_actor(self, session_id: str, ip: str, indicators: dict):
+        """Update a source's profile and label the session with it.
+
+        Governed by ``HONEYPOT_ADAPTIVE_RESPONSE``. The switch used to change
+        nothing: profiling ran either way and its result went nowhere. Now,
+        on, the label reaches the backend as the session's
+        ``threat_profile``; off, no profile is kept and none is sent. It is
+        a keyword heuristic and is reported as one — it does not alter what
+        the decoy answers.
+        """
+        if not config.adaptive_response:
+            return
         profile = await self._get_or_create_profile(ip)
         profile.last_seen = time.time()
 
@@ -111,9 +127,10 @@ class AdaptiveEngine:
             session_id, profile.actor_type.value
         )
 
-        logger.info(
-            f"Actor profile update: {ip} -> {profile.actor_type.value} "
-            f"(confidence: {profile.confidence:.2f})"
+        # Per command, so at debug: at info this was a log line a keystroke.
+        logger.debug(
+            "Actor profile update: %s -> %s (confidence: %.2f)",
+            ip, profile.actor_type.value, profile.confidence,
         )
 
     def _analyze_command(self, profile: ActorProfile, cmd: str):

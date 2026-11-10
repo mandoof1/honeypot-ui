@@ -63,7 +63,8 @@ class BaseEmulator(ABC):
         """
         peer_ip, _ = self._get_peer_info(writer)
         if not rate_limiter.admit(
-            peer_ip, self.max_connections_per_ip, self.rate_limit_per_minute
+            peer_ip, self.max_connections_per_ip, self.rate_limit_per_minute,
+            protocol=self.protocol,
         ):
             writer.close()
             try:
