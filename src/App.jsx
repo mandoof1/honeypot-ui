@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
+import { PreferencesProvider } from './context/PreferencesContext'
 import { useAuth } from './context/useAuth'
 import ErrorBoundary from './components/ErrorBoundary'
 import { Spinner } from './components/Loading'
@@ -80,10 +81,12 @@ function AuthRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ErrorBoundary>
-        <Suspense fallback={<Spinner label="Loading view" />}><AuthRoutes /></Suspense>
-      </ErrorBoundary>
-    </AuthProvider>
+    <PreferencesProvider>
+      <AuthProvider>
+        <ErrorBoundary>
+          <Suspense fallback={<Spinner label="Loading view" />}><AuthRoutes /></Suspense>
+        </ErrorBoundary>
+      </AuthProvider>
+    </PreferencesProvider>
   )
 }
