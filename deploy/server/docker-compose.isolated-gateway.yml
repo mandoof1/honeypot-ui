@@ -1,0 +1,36 @@
+# Optional second layer for the internal bridges: no host address on them at
+# all. Needs Docker Engine 28 or later.
+#
+# An internal Docker network has no route out, but the bridge still carries a
+# host address (the .1 of each subnet), and through it a container can reach
+# whatever the host listens on. honeysentinel-egress.sh drops that traffic on
+# every Docker version. With gateway mode "isolated" Docker does not assign
+# the address in the first place, so there is nothing to reach even if the
+# firewall rules were lost.
+#
+# install.sh adds this file when .env has HS_ISOLATED_GATEWAY=true and the
+# installed Docker is new enough; it does so by writing COMPOSE_FILE into
+# .env, so from then on re-run install.sh after adding or removing
+# docker-compose.override.yml (Compose stops picking that file up by itself
+# once COMPOSE_FILE is set).
+#
+# Not enabled by default: it has not been run on the reference server, and
+# changing the mode recreates the networks. The shop networks in the override
+# file take the same option; add it there if you use both.
+
+networks:
+  engine:
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  control:
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  app:
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  db:
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  llm:
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
