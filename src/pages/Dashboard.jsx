@@ -113,12 +113,12 @@ function FeedRow({ event }) {
           </Link>
           <Link
             to={`/sessions?session=${event.session_id}`}
-            className="shrink-0 text-[11px] text-paper-3 hover:text-paper"
+            className="shrink-0 text-[12px] text-paper-3 hover:text-paper"
             title="Open this session"
           >
             open
           </Link>
-          <span className="readout shrink-0 text-[11px] uppercase text-paper-3">
+          <span className="readout shrink-0 text-[12px] uppercase text-paper-3">
             {event.protocol || '—'}
           </span>
         </div>

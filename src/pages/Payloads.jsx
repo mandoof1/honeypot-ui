@@ -73,7 +73,7 @@ function PayloadRow({ sample, selected, onSelect }) {
               {sample.summary || sample.file_type || `${kind} sample`}
             </span>
           </span>
-          <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-paper-3">
+          <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-paper-3">
             <span className="tag" style={{ color: 'var(--color-paper-3)' }}>{kind}</span>
             {sample.family && (
               <span className="tag" style={{ color: 'var(--color-s3)' }}>{sample.family}</span>
@@ -93,7 +93,7 @@ function PayloadRow({ sample, selected, onSelect }) {
               </>
             )}
           </span>
-          <span className="readout mt-1 block truncate text-[10px] text-paper-3" title={sample.sha256}>
+          <span className="readout mt-1 block truncate text-[12px] text-paper-3" title={sample.sha256}>
             {sample.sha256}
           </span>
         </span>

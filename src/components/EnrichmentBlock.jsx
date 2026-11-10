@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { Loader2, Sparkles } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
-import { clean } from '../lib/text'
+import { scoreText } from '../lib/verdict'
+import { clean, cleanLine } from '../lib/text'
+import Timestamp from './Timestamp'
 
 /*
  * Language-model analysis.
  *
  * Stage 2 of the pipeline: after the flow model and the rules have had their
- * say, the stored transcript is read by the project's own model and its
- * reading of intent, objectives and sophistication is merged back onto the
- * session. It runs out of band, so a session can be on screen minutes before
- * the analysis lands — which is why the stage's status is shown rather than
- * an empty panel.
+ * say, the stored transcript is read by the project's own language model and
+ * its reading of intent, objectives and sophistication is merged back onto
+ * the session. It runs out of band, so a session can be on screen minutes
+ * before the analysis lands — which is why the stage's status is shown
+ * rather than an empty panel.
  */
 
 const SOPHISTICATION_LABEL = {
@@ -23,24 +25,38 @@ const SOPHISTICATION_LABEL = {
   unknown: 'Unknown',
 }
 
-const STATUS_TEXT = {
-  triage: 'Waiting for triage: the decision model reads the session first and decides whether the language model should.',
-  pending: 'Queued for analysis. The model reads one session at a time; this usually lands within a few minutes.',
-  running: 'The model is reading this transcript now.',
-  skipped: 'Not analysed: the pipeline only sends the model sessions with commands that the rules found worth reading.',
-  not_configured: 'No analysis model is configured on this deployment. Set CHIMERA_URL on the API to enable it.',
+const STATUS_LABEL = {
+  triage: 'waiting for triage',
+  pending: 'queued',
+  running: 'reading now',
+  skipped: 'not analysed',
+  failed: 'failed',
+  complete: 'complete',
+  not_configured: 'switched off',
 }
 
-function percent(value) {
-  return typeof value === 'number' ? `${Math.round(value * 100)}%` : null
+const STATUS_TEXT = {
+  triage: 'Waiting for triage: the decision model reads the session first and decides whether the language model should.',
+  pending: 'Queued for the language model. It reads one session at a time; this usually lands within a few minutes.',
+  running: 'The language model is reading this transcript now.',
+  skipped: 'Not analysed: the pipeline only sends the language model sessions with commands that the rules found worth reading.',
+  not_configured: 'The language-model stage is switched off on this deployment: the API has no model address configured (its CHIMERA_URL setting is empty).',
+}
+
+/** What the server last said about this stage, as one comparable value. */
+function serverSignature(session) {
+  return `${session.enrichment_status}|${session.enrichment?.analysed_at || ''}`
 }
 
 export default function EnrichmentBlock({ session, onQueued }) {
   const { hasRole } = useAuth()
   const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState(null)
   const [error, setError] = useState(null)
-  const [localStatus, setLocalStatus] = useState(null)
+  // What the queue request answered, and what the session said at that
+  // moment. It stands in only until the session itself says something new;
+  // it used to override the server's status until the panel was remounted, so
+  // a queued analysis never appeared to finish.
+  const [queued, setQueued] = useState(null)
 
   // Mounted with key={session.id} by the parent, so a different session on
   // screen remounts this and the queue state resets on its own.
@@ -50,18 +66,20 @@ export default function EnrichmentBlock({ session, onQueued }) {
   // misleading "not configured".
   if (session.enrichment_status === undefined && !session.enrichment) return null
 
-  const status = localStatus || session.enrichment_status || (session.enrichment ? 'complete' : 'not_configured')
+  const serverStatus = session.enrichment_status || (session.enrichment ? 'complete' : 'not_configured')
+  const awaitingServer = queued !== null && queued.signature === serverSignature(session)
+  const status = awaitingServer ? queued.status : serverStatus
   const result = session.enrichment
   const canQueue = hasRole('analyst') && status !== 'not_configured' && status !== 'pending' && status !== 'running'
   const hasCommands = (session.command_count ?? 0) > 0
+  const inProgress = status === 'pending' || status === 'running'
 
   const queue = async () => {
     setBusy(true)
     setError(null)
     try {
       const res = await api.sessions.enrich(session.id)
-      setLocalStatus(res?.enrichment_status || 'pending')
-      setNotice('Queued. The result appears here once the model has read the transcript.')
+      setQueued({ status: res?.enrichment_status || 'pending', signature: serverSignature(session) })
       onQueued?.(res)
     } catch (err) {
       setError(err.message || 'Could not queue the analysis')
@@ -70,18 +88,18 @@ export default function EnrichmentBlock({ session, onQueued }) {
     }
   }
 
-  const confidence = percent(result?.confidence)
   const dropped = result?.dropped_techniques || []
+  const modelName = result?.model ? cleanLine(result.model) : null
 
   return (
     <section className="border-t border-line px-4 py-3.5" data-testid="enrichment-block">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="eyebrow flex items-center gap-1.5">
           <Sparkles className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
-          Model analysis
+          Language-model analysis
         </h3>
-        <span className="text-[12px] text-paper-3">
-          {status === 'complete' && result?.model ? clean(result.model) : status.replace(/_/g, ' ')}
+        <span className="text-[12px] text-paper-3" data-testid="enrichment-status">
+          {STATUS_LABEL[status] || status.replace(/_/g, ' ')}
         </span>
       </div>
 
@@ -109,22 +127,35 @@ export default function EnrichmentBlock({ session, onQueued }) {
                 </dd>
               </div>
               <div>
-                <dt className="eyebrow">Model confidence</dt>
-                <dd className="readout mt-1 text-[13px] text-paper">{confidence || '—'}</dd>
+                <dt className="eyebrow">Self-reported confidence</dt>
+                <dd className="readout mt-1 text-[13px] text-paper">{scoreText(result.confidence)}</dd>
               </div>
             </dl>
+            {typeof result.confidence === 'number' && (
+              <p className="text-[12px] leading-relaxed text-paper-3">
+                The confidence is the language model&rsquo;s own statement about its reading, on a
+                scale of 0 to 1. It is self-reported, not a measured probability.
+              </p>
+            )}
             {dropped.length > 0 && (
               <p className="text-[12px] leading-relaxed text-paper-3">
                 Removed {dropped.length === 1 ? 'one technique' : `${dropped.length} techniques`} the transcript
-                does not support: {dropped.map((t) => t.id).join(', ')}.
+                does not support: {dropped.map((t) => cleanLine(t.id)).join(', ')}.
               </p>
             )}
-            {result.analysed_at && (
-              <p className="readout text-[11px] text-paper-3">
-                analysed {new Date(result.analysed_at).toLocaleString()}
-                {result.checked_by && ` · techniques checked by ${clean(result.checked_by)}`}
-              </p>
-            )}
+            <p className="text-[12px] leading-relaxed text-paper-3">
+              {modelName
+                ? <>Written by the language model <span className="readout text-paper-2">{modelName}</span></>
+                : 'Written by the language model'}
+              {result.analysed_at && <>, <Timestamp value={result.analysed_at} /></>}
+              {result.checked_by && (
+                <>
+                  ; techniques checked by the decision model{' '}
+                  <span className="readout text-paper-2">{cleanLine(result.checked_by)}</span>
+                </>
+              )}
+              .
+            </p>
           </>
         ) : status === 'failed' ? (
           <p className="text-[13px] leading-relaxed" style={{ color: 'var(--color-s4)' }}>
@@ -132,7 +163,7 @@ export default function EnrichmentBlock({ session, onQueued }) {
           </p>
         ) : (
           <p className="flex items-start gap-2 text-[13px] leading-relaxed text-paper-3">
-            {(status === 'pending' || status === 'running') && (
+            {inProgress && (
               <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" strokeWidth={2} aria-hidden="true" />
             )}
             <span>
@@ -143,8 +174,12 @@ export default function EnrichmentBlock({ session, onQueued }) {
           </p>
         )}
 
-        {notice && <p className="text-[12px] text-paper-3">{notice}</p>}
-        {error && <p className="text-[12px]" style={{ color: 'var(--color-s4)' }}>{error}</p>}
+        {inProgress && (
+          <p className="text-[12px] text-paper-3" aria-live="polite">
+            {queued ? 'Queued. ' : ''}This panel checks for the result every few seconds and updates by itself.
+          </p>
+        )}
+        {error && <p className="text-[12px]" style={{ color: 'var(--color-s4)' }} role="alert">{error}</p>}
 
         {canQueue && hasCommands && (
           <button type="button" onClick={queue} disabled={busy} className="control gap-1.5">

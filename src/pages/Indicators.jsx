@@ -263,7 +263,7 @@ export default function Indicators() {
                         <Copy className="h-3.5 w-3.5" strokeWidth={2} />
                       </button>
                       {copied === row.value && (
-                        <span className="ml-1 text-[11px] text-paper-3">copied</span>
+                        <span className="ml-1 text-[12px] text-paper-3">copied</span>
                       )}
                     </td>
                   </tr>

@@ -52,7 +52,7 @@ function Hash({ label, value }) {
       <button type="button" onClick={copy} aria-label={`Copy ${label}`} className="shrink-0 rounded-[3px] p-1 text-paper-3 hover:text-paper">
         <Copy className="h-3.5 w-3.5" strokeWidth={2} />
       </button>
-      {copied && <span className="text-[11px] text-paper-3">copied</span>}
+      {copied && <span className="text-[12px] text-paper-3">copied</span>}
     </div>
   )
 }
@@ -69,7 +69,7 @@ function Techniques({ items }) {
             {t?.id && (
               <a href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`}
                 target="_blank" rel="noreferrer noopener"
-                className="readout shrink-0 text-[11px] text-paper-3 hover:text-paper">
+                className="readout shrink-0 text-[12px] text-paper-3 hover:text-paper">
                 {t.id}
               </a>
             )}
@@ -102,9 +102,9 @@ function IndicatorGroup({ label, items, render }) {
         {shown.map((item, i) => (
           <li key={i} className="readout flex items-baseline gap-2 break-all text-[12px] text-paper-2">
             <span className="min-w-0 flex-1">{clean(render(item))}</span>
-            {item.scope === 'private' && <span className="shrink-0 text-[10px] text-paper-3">private</span>}
+            {item.scope === 'private' && <span className="shrink-0 text-[12px] text-paper-3">private</span>}
             {item.origin && item.origin !== 'strings' && (
-              <span className="shrink-0 text-[10px] text-paper-3" title="Where in the file this was found">{clean(item.origin)}</span>
+              <span className="shrink-0 text-[12px] text-paper-3" title="Where in the file this was found">{clean(item.origin)}</span>
             )}
           </li>
         ))}
@@ -282,7 +282,7 @@ export default function PayloadDetail({ detail, canDownload, onClose }) {
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {(a.family.evidence || []).map((e, i) => (
-              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[11px] text-paper-3">{clean(e)}</span>
+              <span key={i} className="readout rounded-[3px] bg-ink-2 px-1.5 py-0.5 text-[12px] text-paper-3">{clean(e)}</span>
             ))}
           </div>
         </Block>

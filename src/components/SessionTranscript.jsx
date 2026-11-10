@@ -2,13 +2,17 @@ import { useCallback, useState } from 'react'
 import { AlertTriangle, ChevronDown, Download, Eye, Loader2, Play, Shuffle } from 'lucide-react'
 import { api } from '../services/api'
 import { useAuth } from '../context/useAuth'
+import { SECRET_MASK, useSecretsHidden } from '../hooks/useSecretsHidden'
 import { diversionOf } from '../lib/diversion'
-import { clean } from '../lib/text'
+import { clean, cleanLine } from '../lib/text'
 import { plural } from '../lib/format'
+import { LINE_STEP, WINDOW_LINE_BUDGET, windowTranscript } from '../lib/transcript'
+import SessionReplay from './SessionReplay'
+import Timestamp from './Timestamp'
+import TranscriptEntry from './TranscriptEntry'
 
-/** Output lines rendered before the reader has to ask for the rest. One
-    oversized output used to become thousands of nodes and freeze the tab. */
-const OUTPUT_LINE_CAP = 400
+/** Protocols whose transcript is an interactive shell, and so worth replaying on a clock. */
+const SHELL_PROTOCOLS = new Set(['ssh', 'telnet'])
 
 /*
  * The transcript.
@@ -22,68 +26,50 @@ const OUTPUT_LINE_CAP = 400
  * before someone asks to read one.
  */
 
-/** Lines that reveal infrastructure, marked so the eye finds them first. */
-function classifyLine(text) {
-  if (/^--\d{4}-\d{2}-\d{2}/.test(text) || /\bHTTP request sent\b/.test(text)) {
-    return 'fetch'
-  }
-  if (/No such file|command not found|Permission denied|denied/i.test(text)) {
-    return 'refused'
-  }
-  return 'plain'
-}
+/** The transcript as a window of commands, extended on request. */
+function TranscriptWindow({ entries, truncated }) {
+  const [budget, setBudget] = useState(WINDOW_LINE_BUDGET)
+  const [allowances, setAllowances] = useState({})
 
-const LINE_COLOR = {
-  fetch: 'var(--color-s3)',
-  refused: 'var(--color-s4)',
-  plain: 'var(--color-paper-2)',
-}
+  const { rows, hiddenEntries } = windowTranscript(entries, { budget, allowances })
 
-function Entry({ entry, index }) {
-  const [expanded, setExpanded] = useState(false)
-  const allLines = clean(entry.output || '').replace(/\n+$/, '').split('\n')
-  const lines = expanded ? allLines : allLines.slice(0, OUTPUT_LINE_CAP)
-  const hidden = allLines.length - lines.length
+  const moreOf = (index, shown) => {
+    setAllowances((current) => ({ ...current, [index]: shown + LINE_STEP }))
+    // An output the reader asked for must not be cut off by the total.
+    setBudget((current) => current + LINE_STEP)
+  }
+
   return (
-    <div className="group">
-      <div className="flex items-baseline gap-2">
-        <span
-          aria-hidden
-          className="select-none text-[11px] tabular-nums text-paper-3"
-          style={{ minWidth: '2ch', textAlign: 'right' }}
-        >
-          {index + 1}
-        </span>
-        <span aria-hidden className="select-none" style={{ color: 'var(--color-s1)' }}>
-          $
-        </span>
-        <span className="min-w-0 flex-1 whitespace-pre-wrap break-all text-paper">
-          {clean(entry.command)}
-        </span>
-      </div>
-      {entry.output ? (
-        <div className="mt-0.5 pl-[calc(2ch+1.25rem)]">
-          {lines.map((line, i) => (
-            <div
-              key={i}
-              className="whitespace-pre-wrap break-all"
-              style={{ color: LINE_COLOR[classifyLine(line)] }}
-            >
-              {line || ' '}
-            </div>
+    <>
+      <div className="readout max-h-[26rem] overflow-y-auto rounded-[4px] border border-line bg-ink-0 p-3 text-[12px] leading-[1.6]">
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <TranscriptEntry
+              key={row.index}
+              entry={row.entry}
+              index={row.index}
+              lines={row.lines}
+              hiddenLines={row.hiddenLines}
+              onMore={() => moreOf(row.index, row.lines.length)}
+            />
           ))}
-          {hidden > 0 && (
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="mt-1 text-[12px] font-medium text-paper-2 transition-colors hover:text-paper"
-            >
-              Show all {allLines.length.toLocaleString()} lines ({hidden.toLocaleString()} more)
-            </button>
-          )}
         </div>
-      ) : null}
-    </div>
+        {hiddenEntries > 0 && (
+          <button
+            type="button"
+            onClick={() => setBudget((current) => current + LINE_STEP)}
+            className="control mt-3"
+          >
+            Show more commands ({hiddenEntries.toLocaleString()} of {entries.length.toLocaleString()} not shown)
+          </button>
+        )}
+      </div>
+      {truncated && (
+        <p className="mt-2 text-[12px] text-paper-3">
+          The API returned the first {entries.length} commands; the session recorded more.
+        </p>
+      )}
+    </>
   )
 }
 
@@ -96,10 +82,11 @@ function Entry({ entry, index }) {
 export default function SessionTranscript({ session }) {
   const sessionId = session?.id
   const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState('read')
   const [state, setState] = useState({ status: 'idle', data: null, error: null })
 
   const load = useCallback(async () => {
-    setState((prev) => (prev.status === 'idle' ? { status: 'loading', data: null, error: null } : prev))
+    setState({ status: 'loading', data: null, error: null })
     try {
       const data = await api.sessions.transcript(sessionId)
       setState({ status: 'ready', data, error: null })
@@ -121,9 +108,10 @@ export default function SessionTranscript({ session }) {
   }
 
   const entries = state.data?.entries || []
+  const canReplay = SHELL_PROTOCOLS.has(String(session.protocol || '').toLowerCase())
 
   return (
-    <section className="border-t border-line">
+    <section className="border-t border-line" data-testid="transcript-block">
       <button
         type="button"
         onClick={toggle}
@@ -143,16 +131,19 @@ export default function SessionTranscript({ session }) {
       {open && (
         <div className="px-4 pb-4">
           {state.status === 'loading' && (
-            <p className="flex items-center gap-2 py-3 text-[13px] text-paper-3">
+            <p className="flex items-center gap-2 py-3 text-[13px] text-paper-3" aria-live="polite">
               <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
               Decrypting…
             </p>
           )}
 
           {state.status === 'error' && (
-            <p className="py-3 text-[13px]" style={{ color: 'var(--color-s4)' }}>
-              {state.error}
-            </p>
+            <div className="py-3" role="alert">
+              <p className="text-[13px]" style={{ color: 'var(--color-s4)' }}>
+                The transcript could not be loaded: {state.error}
+              </p>
+              <button type="button" className="control mt-2" onClick={load}>Try again</button>
+            </div>
           )}
 
           {state.status === 'ready' && !state.data.available && (
@@ -163,18 +154,27 @@ export default function SessionTranscript({ session }) {
 
           {state.status === 'ready' && state.data.available && (
             <>
-              <div className="readout max-h-[26rem] overflow-y-auto rounded-[4px] bg-ink-0 p-3 text-[12px] leading-[1.6]">
-                <div className="space-y-2">
-                  {entries.map((entry, i) => (
-                    <Entry key={i} entry={entry} index={i} />
+              {canReplay && (
+                <div className="mb-2.5 inline-flex overflow-hidden rounded-[3px] border border-line" role="group" aria-label="Transcript view">
+                  {[['read', 'Read'], ['replay', 'Replay']].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={mode === id}
+                      onClick={() => setMode(id)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                        mode === id ? 'bg-paper text-ink-0' : 'bg-ink-2 text-paper-2 hover:text-paper'
+                      }`}
+                    >
+                      {id === 'replay' && <Play className="h-3 w-3" strokeWidth={2} aria-hidden="true" />}
+                      {label}
+                    </button>
                   ))}
                 </div>
-              </div>
-              {state.data.truncated && (
-                <p className="mt-2 text-[12px] text-paper-3">
-                  Showing the first {entries.length} commands; the session recorded more.
-                </p>
               )}
+              {canReplay && mode === 'replay'
+                ? <SessionReplay entries={entries} />
+                : <TranscriptWindow entries={entries} truncated={state.data.truncated} />}
             </>
           )}
         </div>
@@ -215,13 +215,13 @@ export function RetrievalBlock({ session }) {
                 strokeWidth={2}
                 style={{ color: 'var(--color-s3)' }}
               />
-              <span className="readout min-w-0 flex-1 break-all text-[12px] text-paper">
-                {clean(event.url)}
+              <span className="readout bidi-isolate min-w-0 flex-1 break-all text-[12px] text-paper">
+                {cleanLine(event.url)}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-5 text-[12px] text-paper-3">
-              <span className="readout">{clean(event.tool) || 'fetch'}</span>
-              {event.filename && <span className="readout">{clean(event.filename)}</span>}
+              <span className="readout">{cleanLine(event.tool) || 'fetch'}</span>
+              {event.filename && <span className="readout">{cleanLine(event.filename)}</span>}
               {event.piped_to_shell && (
                 <span className="tag" style={{ color: 'var(--color-s4)' }}>
                   piped to shell
@@ -238,8 +238,8 @@ export function RetrievalBlock({ session }) {
               strokeWidth={2}
               style={{ color: 'var(--color-s4)' }}
             />
-            <span className="readout min-w-0 flex-1 break-all text-[12px] text-paper">
-              {clean(event.path)}
+            <span className="readout bidi-isolate min-w-0 flex-1 break-all text-[12px] text-paper">
+              {cleanLine(event.path)}
             </span>
             <span className="shrink-0 text-[12px] text-paper-3">attempted</span>
           </li>
@@ -278,10 +278,10 @@ export function DiversionBlock({ session }) {
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 pl-5 text-[12px] text-paper-3">
-        {event.path && <span className="readout break-all">{clean(event.path)}</span>}
+        {event.path && <span className="readout bidi-isolate break-all">{cleanLine(event.path)}</span>}
         {event.since && (
           <span className="readout">
-            since {new Date(event.since * 1000).toLocaleString()}
+            since <Timestamp value={event.since * 1000} />
           </span>
         )}
       </div>
@@ -297,10 +297,12 @@ export function DiversionBlock({ session }) {
  *
  * Admin-only, and hidden until asked for. These are passwords in active
  * circulation against real hosts; the server records every read, and putting
- * them on screen by default would mean a shoulder-surf is a breach.
+ * them on screen by default would mean a shoulder-surf is a breach. In
+ * presentation mode the passwords stay masked even after Reveal.
  */
 export function CredentialsBlock({ session }) {
   const { hasRole } = useAuth()
+  const masked = useSecretsHidden()
   const sessionId = session?.id
   const [state, setState] = useState({ status: 'idle', rows: [], error: null })
 
@@ -317,7 +319,7 @@ export function CredentialsBlock({ session }) {
   }
 
   return (
-    <section className="border-t border-line px-4 py-3.5">
+    <section className="border-t border-line px-4 py-3.5" data-testid="credentials-block">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="eyebrow">Credentials tried</h3>
         <span className="flex items-center gap-1 text-[12px] text-paper-3">
@@ -327,10 +329,17 @@ export function CredentialsBlock({ session }) {
       </div>
 
       {state.status === 'idle' && (
-        <button type="button" onClick={reveal} className="control mt-2.5 gap-1.5">
-          <Eye className="h-3.5 w-3.5" strokeWidth={2} />
-          Reveal
-        </button>
+        <>
+          <button type="button" onClick={reveal} className="control mt-2.5 gap-1.5">
+            <Eye className="h-3.5 w-3.5" strokeWidth={2} />
+            Reveal
+          </button>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-paper-3">
+            {masked
+              ? 'Presentation mode is on: the usernames will be shown and the passwords kept masked. The read is still recorded in the audit log.'
+              : 'Shows the usernames and passwords this session tried. The read is recorded in the audit log.'}
+          </p>
+        </>
       )}
 
       {state.status === 'loading' && (
@@ -338,37 +347,50 @@ export function CredentialsBlock({ session }) {
       )}
 
       {state.status === 'error' && (
-        <p className="mt-2.5 text-[13px]" style={{ color: 'var(--color-s4)' }}>
-          {state.error}
+        <p className="mt-2.5 text-[13px]" style={{ color: 'var(--color-s4)' }} role="alert">
+          The credentials could not be loaded: {state.error}
         </p>
       )}
 
-      {state.status === 'ready' && (
-        <ul className="readout mt-2.5 space-y-1 text-[12px]">
-          {state.rows.map((row, i) => (
-            <li key={i} className="flex items-baseline gap-2">
-              <span
-                aria-hidden
-                className="h-1 w-1 shrink-0 rounded-full"
-                style={{
-                  background: row.success
-                    ? 'var(--color-s4)'
-                    : 'var(--color-paper-3)',
-                }}
-              />
-              <span className="min-w-0 flex-1 break-all text-paper">
-                {clean(row.username)}
-                <span className="text-paper-3"> : </span>
-                {clean(row.password)}
-              </span>
-              {row.success && (
-                <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-s4)' }}>
-                  accepted
+      {state.status === 'ready' && state.rows.length === 0 && (
+        <p className="mt-2.5 text-[13px] text-paper-3">No credentials are stored for this session.</p>
+      )}
+
+      {state.status === 'ready' && state.rows.length > 0 && (
+        <>
+          {masked && (
+            <p className="mt-2.5 text-[12px] text-paper-2">
+              Passwords are masked while presentation mode is on.
+            </p>
+          )}
+          <ul className="readout mt-2.5 space-y-1 text-[12px]">
+            {state.rows.map((row, i) => (
+              <li key={i} className="flex items-baseline gap-2">
+                <span
+                  aria-hidden
+                  className="h-1 w-1 shrink-0 rounded-full"
+                  style={{
+                    background: row.success
+                      ? 'var(--color-s4)'
+                      : 'var(--color-paper-3)',
+                  }}
+                />
+                <span className="bidi-isolate min-w-0 flex-1 break-all text-paper">
+                  {cleanLine(row.username)}
+                  <span className="text-paper-3"> : </span>
+                  {masked
+                    ? <span aria-label="password hidden">{SECRET_MASK}</span>
+                    : cleanLine(row.password)}
                 </span>
-              )}
-            </li>
-          ))}
-        </ul>
+                {row.success && (
+                  <span className="shrink-0 text-[12px]" style={{ color: 'var(--color-s4)' }}>
+                    accepted
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   )

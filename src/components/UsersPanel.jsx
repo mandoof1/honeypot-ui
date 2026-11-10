@@ -151,7 +151,7 @@ function UserRow({ user, me, onAction }) {
         <div className="min-w-48 flex-1">
           <p className="text-sm font-semibold text-paper">
             {clean(user.email)}
-            {isMe && <span className="ml-2 text-[11px] font-normal text-paper-3">you</span>}
+            {isMe && <span className="ml-2 text-[12px] font-normal text-paper-3">you</span>}
           </p>
           <p className="mt-0.5 text-[12px] text-paper-3">
             {user.name ? `${clean(user.name)} · ` : ''}

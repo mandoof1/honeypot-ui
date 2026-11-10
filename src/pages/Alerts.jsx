@@ -160,7 +160,7 @@ function AlertRow({ alert, busy, onUpdate, onPatch, canAct, selected, onSelect, 
             </h3>
             {occurrences > 1 && (
               <span
-                className="readout shrink-0 text-[11px] text-paper-2"
+                className="readout shrink-0 text-[12px] text-paper-2"
                 title={`Seen ${occurrences} times; last ${alert.last_seen_at ? timeAgo(alert.last_seen_at) : 'recently'}`}
               >
                 ×{occurrences}

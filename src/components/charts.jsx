@@ -120,7 +120,7 @@ export function HourTrace({ byHour = {}, height = 132 }) {
       {/* Ticks at the quarters only; 24 labels would be noise. */}
       <div className="mt-1.5 flex justify-between">
         {['00:00', '06:00', '12:00', '18:00', '23:00'].map((t) => (
-          <span key={t} className="readout text-[10px] text-paper-3">{t}</span>
+          <span key={t} className="readout text-[12px] text-paper-3">{t}</span>
         ))}
       </div>
     </figure>
@@ -214,7 +214,7 @@ export function RankList({ items, emptyHint, mono = false }) {
                 {label}
               </span>
             )}
-            {sub && <span className="readout shrink-0 text-[11px] text-paper-3">{sub}</span>}
+            {sub && <span className="readout shrink-0 text-[12px] text-paper-3">{sub}</span>}
             <span className="readout shrink-0 text-[13px] text-paper-2">
               {value.toLocaleString()}
             </span>

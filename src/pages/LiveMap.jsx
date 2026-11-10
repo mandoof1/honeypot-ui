@@ -164,7 +164,7 @@ export default function LiveMap() {
                         <p className="text-xs capitalize" style={{ color }}>
                           {event.severity} severity
                         </p>
-                        <p className="readout text-[11px] opacity-70">
+                        <p className="readout text-[12px] opacity-70">
                           {new Date(event.timestamp).toLocaleString()}
                         </p>
                         <p className="text-xs">

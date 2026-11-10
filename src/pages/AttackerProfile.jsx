@@ -61,7 +61,7 @@ function SessionRow({ session }) {
         <span className="h-6 w-[3px] shrink-0 rounded-[1px]" style={{ background: color }} aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="readout shrink-0 text-[11px] uppercase text-paper-3">{session.protocol || '—'}</span>
+            <span className="readout shrink-0 text-[12px] uppercase text-paper-3">{session.protocol || '—'}</span>
             <span className="truncate text-[13px] text-paper">
               {CATEGORY_LABEL[session.attack_category] || CATEGORY_LABEL.unknown}
             </span>
