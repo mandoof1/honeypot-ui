@@ -9,7 +9,7 @@ from honeypot.core.identity import reset_identity
 from honeypot.core.session import session_manager
 from honeypot.emulators import ssh as ssh_module
 from honeypot.emulators.telnet import (
-    DO, DONT, IAC, OPT_ECHO, OPT_SGA, SB, SE, WILL, WONT,
+    DO, DONT, IAC, OPT_ECHO, SB, SE, WILL, WONT,
     TelnetHoneypot, TelnetLineReader,
 )
 
@@ -60,10 +60,35 @@ async def _read_until(reader, token: bytes, timeout=5) -> bytes:
     return data
 
 
+async def _connect():
+    """Open a connection and get to the login prompt.
+
+    telnetd sends nothing after its first four requests until they are
+    answered, so the client has to take part: this one refuses every option,
+    which is what a bot's hand-written telnet does. Returns the reader, the
+    writer and everything received up to the prompt.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
+    data, position = b"", 0
+    while not data.endswith(b"login: "):
+        chunk = await asyncio.wait_for(reader.read(4096), timeout=5)
+        if not chunk:
+            break
+        data += chunk
+        while True:
+            start = data.find(bytes([IAC]), position)
+            if start < 0 or start + 3 > len(data):
+                break
+            verb, option = data[start + 1], data[start + 2]
+            if verb == DO:
+                writer.write(bytes([IAC, WONT, option]))
+            elif verb == WILL:
+                writer.write(bytes([IAC, DONT, option]))
+            position = start + 3
+    return reader, writer, data
+
+
 async def _login(reader, writer, user=b"root", password=b"root"):
-    # Behave like a character-mode client: agree to the server's offers.
-    writer.write(bytes([IAC, DO, OPT_ECHO, IAC, DO, OPT_SGA, IAC, WILL, OPT_SGA]))
-    await _read_until(reader, b"login: ")
     writer.write(user + b"\r\n")
     await _read_until(reader, b"Password: ")
     writer.write(password + b"\r\n")
@@ -103,9 +128,7 @@ class TestLineReader:
 
 class TestLogin:
     async def test_failed_then_successful_attempts_are_recorded(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
-        writer.write(bytes([IAC, DO, OPT_ECHO, IAC, DO, OPT_SGA, IAC, WILL, OPT_SGA]))
-        banner = await _read_until(reader, b"login: ")
+        reader, writer, banner = await _connect()
         assert b"Ubuntu" in banner and bytes([IAC, WILL, OPT_ECHO]) in banner
         writer.write(b"root\r\n")
         await _read_until(reader, b"Password: ")
@@ -131,9 +154,7 @@ class TestLogin:
         assert payload["failed_logins"] == 1
 
     async def test_soft_accept_after_repeated_failures(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
-        writer.write(bytes([IAC, DO, OPT_ECHO, IAC, DO, OPT_SGA, IAC, WILL, OPT_SGA]))
-        await _read_until(reader, b"login: ")
+        reader, writer, _ = await _connect()
         for _ in range(3):
             writer.write(b"admin\r\n")
             await _read_until(reader, b"Password: ")
@@ -149,8 +170,7 @@ class TestLogin:
         assert [c["success"] for c in ingested[0]["credentials"]] == [False, False, False, True]
 
     async def test_eof_at_the_password_prompt_ends_the_session(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
-        await _read_until(reader, b"login: ")
+        reader, writer, _ = await _connect()
         writer.write(b"root\r\n")
         await _read_until(reader, b"Password: ")
         writer.close()
@@ -164,7 +184,7 @@ class TestLogin:
 
 class TestShell:
     async def test_busybox_probe_and_download_are_answered_and_recorded(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
+        reader, writer, _ = await _connect()
         await _login(reader, writer)
         writer.write(b"/bin/busybox ECCHI\r\n")
         out = await _read_until(reader, b"# ")
@@ -193,7 +213,7 @@ class TestShell:
         assert payload["keystroke_count"] > 0
 
     async def test_shell_written_file_is_captured(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
+        reader, writer, _ = await _connect()
         await _login(reader, writer)
         writer.write(b"echo IyEvYmluL3NoCmVjaG8gaGkK | base64 -d > /tmp/x.sh\r\n")
         await _read_until(reader, b"# ")
@@ -204,13 +224,15 @@ class TestShell:
         uploads = ingested[0]["uploads"]
         assert uploads and uploads[0]["filename"] == "x.sh"
 
-    async def test_line_mode_client_without_sga_is_not_double_echoed(self, telnet, ingested):
-        reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
-        # A client that refuses character mode sends whole lines itself.
-        writer.write(bytes([IAC, WONT, OPT_SGA, IAC, DONT, OPT_ECHO]))
-        await _read_until(reader, b"login: ")
+    async def test_a_client_that_refused_echo_is_echoed_all_the_same(self, telnet, ingested):
+        # This used to assert the opposite: no echo for a client that had
+        # not agreed to character mode. The real telnetd does echo — its
+        # reply to "root" from a client refusing every option was
+        # "root\r\nPassword: " (telnet.login.after_username in the
+        # fingerprint baseline) — so the decoy does too.
+        reader, writer, _ = await _connect()
         writer.write(b"root\r\n")
         data = await _read_until(reader, b"Password: ")
-        assert b"root" not in data
+        assert data == b"root\r\nPassword: "
         writer.close()
         await asyncio.sleep(0.2)
