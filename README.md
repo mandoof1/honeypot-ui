@@ -172,7 +172,7 @@ Stated plainly, because a honeypot's numbers are easy to overstate.
 
 | | Status |
 |---|---|
-| **Containment** | The firewall rules are tested with real connections in a model of the deployment's networks (`deploy/server/tests/egress-netns-test.sh`, 44 checks) and the installer probes the real thing on every run. This release's layout has **not yet been installed on the reference server**. |
+| **Containment** | The firewall rules are tested with real connections in a model of the deployment's networks (`deploy/server/tests/egress-netns-test.sh`, 44 checks) and the installer probes the real thing on every run. Installed on the reference server on 11 November 2026, where the installer's probe passed: from inside each engine, the ingest endpoint and nothing else. |
 | **Capture pipeline** | Exercised end to end by `controlled-test.sh`, with the team's own traffic. **No internet attack has been recorded.** |
 | **Flow classifier** | 0.9967 accuracy on a random per-flow split of CIC-IDS2017. On the deployment it labelled all five controlled attack sessions benign. **Not validated for honeypot traffic.** |
 | **Rules** | Carry the verdict where the flow model does not. Measured only on synthetic transcripts written around the same patterns. |

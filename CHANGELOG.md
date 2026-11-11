@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- 1.0.0 is deployed on the reference server: the installer, the image
+  builds, the migrations on the existing data and the firewall probe all
+  passed on the first run, and the controlled end-to-end test stores sessions
+  through the new ingest path.
+- The first fingerprint comparison with the real daemons is recorded in
+  `docs/evaluation/fingerprint/`. Checks that match: OpenSSH 26 of 38,
+  telnetd 3 of 10, vsftpd 24 of 29, ProFTPD 17 of 29, Apache 58 of 86,
+  nginx 82 of 86. The SSH algorithm lists match; the replies to a malformed
+  client identification, random padding in unencrypted packets and the
+  absence of a delay after a wrong password do not.
+- The Telnet reference image lacked `/etc/services` and listened on nothing;
+  the controlled test removed its engine before the web session was
+  delivered. Both fixed.
+
 ## 1.0.0
 
 The hardening pass before the system's first exposure to the internet. Up to
@@ -224,7 +240,7 @@ depth were not examined.
 
 - `tools/fingerprint_audit`: sends the same probes to a decoy and to the
   real daemon it imitates and reports what differs, for SSH, FTP, HTTP and
-  Telnet. No comparison against real daemons has been run yet.
+  Telnet.
 - `tools/controlled_traffic`: produces labelled, controlled test traffic
   against a throwaway engine on loopback, for `eval_pipeline`.
 - A first controlled check of the pipeline with it is recorded in

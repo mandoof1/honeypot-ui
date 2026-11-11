@@ -147,10 +147,14 @@ sensor reaches the ingest port only.
 
 Ordered by how much they should worry an operator.
 
-1. **This release's containment has not run on the reference server.** The
-   rules are tested in isolation; the installed combination is verified by
-   the installer's probe the first time it runs. Do not expose before that
-   passes ([EXPOSURE_RUNBOOK.md](EXPOSURE_RUNBOOK.md)).
+1. **Containment has been verified on the reference server once, from the
+   inside.** On 11 November 2026 the installer's probe passed there: from
+   inside each engine container, the ingest endpoint could be reached and
+   nothing else could. That is one machine, one Docker release (26.1) and
+   one moment; the five-minute check re-verifies the rules, not the probe.
+   Run the installer's probe again after any change to Docker or the host
+   firewall, and before exposing anything
+   ([EXPOSURE_RUNBOOK.md](EXPOSURE_RUNBOOK.md)).
 2. **A backend or ingest compromise exposes all captured data and the key.**
    Nothing inside the deployment limits that. Mitigations are indirect: the
    attack surface is the ingest routes and file parsers only, and there is
