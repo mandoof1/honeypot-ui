@@ -13,13 +13,20 @@ from honeypot.capture.flow import FlowMeter
 from honeypot.core.config import config
 from honeypot.core.honeytokens import get_honeytokens
 from honeypot.core.identity import get_identity
+from honeypot.core.login_delay import login_delay
 from honeypot.core.session import session_manager
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
-from honeypot.emulators.ftp_dialect import Dialect
+from honeypot.emulators.ftp_dialect import MAX_COMMAND_LINE, MAX_LOGIN_FAILS, Dialect
 from honeypot.adaptive.response import adaptive_engine
 
 logger = logging.getLogger(__name__)
+
+#: Wrong passwords for a named account, from one source, after which the
+#: next password is accepted whatever it is.
+SOFT_ACCEPT_AFTER = 3
+#: Sources remembered for that count; the table is emptied when it is full.
+MAX_TRACKED_SOURCES = 4096
 
 #: The files every client finds, before it changes anything.
 _BASE_FS = {
@@ -295,6 +302,7 @@ class FTPSessionState:
         self.username: Optional[str] = None
         self.password: Optional[str] = None
         self.authenticated = False
+        #: Failed PASS commands on this connection.
         self.auth_failures = 0
         self.cwd = "/"
         self.client_ip = ""
@@ -325,6 +333,9 @@ class FTPHoneypot(BaseEmulator):
             "user": "password",
             "test": "test",
         }
+        #: Failed passwords per (source address, account), across
+        #: connections. See _cmd_pass.
+        self._failures: dict[tuple[str, str], int] = {}
 
     def get_banner(self) -> str:
         # Straight from the identity. This went through a switch that, with
@@ -399,14 +410,23 @@ class FTPHoneypot(BaseEmulator):
                     await self._send_response(writer, dialect.reply("timeout"))
                     break
                 except ValueError:
-                    # A line past the stream's limit. It used to end the
-                    # session without a word or a record.
+                    # A line past the stream's limit of 64 KiB.
+                    data = None
+                if data is None or len(data) > MAX_COMMAND_LINE:
+                    # Longer than either server reads as a command. The line
+                    # used to be handled as one: a 5000-byte USER got "331".
+                    reply, closes = dialect.overlong_line(None if data is None else len(data))
+                    if data is None:
+                        shown = "(command line over 64 KiB)"
+                    else:
+                        shown = data.decode("utf-8", errors="replace").strip()[:2000]
                     await session_manager.record_command(
-                        session_id, "(command line over 64 KiB)",
-                        output=dialect.reply("line_too_long").strip(),
+                        session_id, shown, output=reply.strip() or "(no reply: line too long)"
                     )
-                    await self._send_response(writer, dialect.reply("line_too_long"))
-                    break
+                    await self._send_response(writer, reply)
+                    if closes:
+                        break
+                    continue
                 if not data:
                     break
 
@@ -435,6 +455,9 @@ class FTPHoneypot(BaseEmulator):
                 await self._send_response(writer, response)
 
                 if verb in ("QUIT", "BYE"):
+                    break
+                if verb == "PASS" and not state.authenticated and state.auth_failures >= MAX_LOGIN_FAILS:
+                    # The third refusal is the last thing either server says.
                     break
 
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
@@ -468,12 +491,6 @@ class FTPHoneypot(BaseEmulator):
         arg = parts[1] if len(parts) > 1 else ""
 
         await adaptive_engine.profile_actor(session_id, source_ip, {"ftp_command": cmd})
-
-        if not state.authenticated and cmd not in ("USER", "PASS", "QUIT", "BYE", "FEAT", "OPTS"):
-            if dialect.family == "proftpd" and cmd in ("AUTH", "PBSZ", "PROT"):
-                # No TLS module: to ProFTPD these are not commands at all.
-                return dialect.reply("unknown", command=cmd)
-            return dialect.reply("need_login")
 
         handlers = {
             "USER": lambda: self._cmd_user(arg, state),
@@ -532,6 +549,13 @@ class FTPHoneypot(BaseEmulator):
             handlers["MLST"] = lambda: self._cmd_mlst(arg, state)
 
         handler = handlers.get(cmd)
+        if not state.authenticated and cmd not in dialect.before_login:
+            if handler is None and dialect.refuses_unknown_before_login:
+                # ProFTPD looks a command up before it asks who is asking, so
+                # one it does not have is "not understood" even now. With no
+                # TLS module that includes AUTH, PBSZ and PROT.
+                return dialect.reply("unknown", command=cmd)
+            return dialect.reply("need_login")
         if handler is None:
             # Neither server answers "502 Command not implemented" here.
             return dialect.reply("unknown", command=cmd)
@@ -565,13 +589,20 @@ class FTPHoneypot(BaseEmulator):
         # failures, so a brute-forcer that never guesses the exact password
         # still gets in and reveals what it does next. Accepting every
         # password on the first try was its own fingerprint.
+        #
+        # The failures are counted per source and account, not per
+        # connection: both real servers hang up after the third wrong
+        # password, and so does the decoy now, which means the guess that is
+        # let in arrives on a later connection.
         anonymous = username in ("anonymous", "ftp")
+        expected = self._fake_users.get(username)
+        source = (state.client_ip, username)
+        earlier_failures = self._failures.get(source, 0)
         if anonymous:
             accepted = True
         else:
-            expected = self._fake_users.get(username)
             accepted = expected is not None and (
-                arg == expected or state.auth_failures >= 3
+                arg == expected or earlier_failures >= SOFT_ACCEPT_AFTER
             )
 
         # Also where a planted login is recognised: the session manager
@@ -581,10 +612,19 @@ class FTPHoneypot(BaseEmulator):
         )
 
         if accepted:
+            self._failures.pop(source, None)
             state.authenticated = True
             return dialect.reply("anonymous_login_ok" if anonymous else "login_ok", user=username)
 
         state.auth_failures += 1
+        if expected is not None:
+            # Only accounts that can be let in are worth remembering.
+            if len(self._failures) >= MAX_TRACKED_SOURCES:
+                self._failures.clear()
+            self._failures[source] = earlier_failures + 1
+        if dialect.delays_failed_login:
+            # The attempt is recorded already; only the answer waits.
+            await login_delay.pause(config.ftp_fail_delay)
         return dialect.reply("login_failed")
 
     # -- navigation ------------------------------------------------------------
@@ -959,11 +999,9 @@ class FTPHoneypot(BaseEmulator):
         return self._dialect().reply("rest", offset=state.restart_at)
 
     def _cmd_stat(self, state: FTPSessionState) -> str:
-        # The client's own address, as both servers report it. A server
-        # listening on the IPv6 wildcard shows an IPv4 client in mapped form.
+        # The client's own address, as both servers report it; each in its
+        # own form, which is the dialect's business.
         client = state.client_ip or get_identity().ip
-        if "." in client and ":" not in client:
-            client = f"::ffff:{client}"
         return self._dialect().stat(
             client, state.username or "anonymous", state.transfer_type == "I"
         )

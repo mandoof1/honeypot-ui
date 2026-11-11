@@ -11,11 +11,25 @@ or a failed SIZE, in what they say at all.
 Each dialect here is the reply texts of one server at its packaged defaults
 (vsftpd 3.0.3; ProFTPD 1.3.6 as Debian builds it), keyed by what happened.
 The emulator decides what happened; this only words it.
+
+Where a comment below says "reference", the text or behaviour was read off
+the real daemon in docs/evaluation/fingerprint/baseline/ftp-vsftpd-focal.json
+and ftp-proftpd-focal.json.
 """
 
 from __future__ import annotations
 
 import time
+from typing import Optional
+
+#: Longest command line, line ending included, that is treated as a command.
+#: The references bracket it: ordinary commands are read, a 5007-byte USER
+#: line is not, by either server. 4096 is vsftpd's own limit
+#: (VSFTP_MAX_COMMAND_LINE), and the same figure is used for ProFTPD.
+MAX_COMMAND_LINE = 4096
+#: Failed PASS commands after which both servers hang up: each reference
+#: answered the third "530 Login incorrect." and closed the connection.
+MAX_LOGIN_FAILS = 3
 
 _VSFTPD = {
     "user_ok": "331 Please specify the password.",
@@ -92,7 +106,6 @@ _PROFTPD = {
     "login_failed": "530 Login incorrect.",
     "need_login": "530 Please login with USER and PASS",
     "unknown": "500 {command} not understood",
-    "line_too_long": "500 Invalid command: try being more creative",
     "timeout": "421 Idle timeout (600 seconds): closing control connection",
     "syst": "215 UNIX Type: L8",
     "noop": "200 NOOP command successful",
@@ -170,6 +183,47 @@ class Dialect:
     def has(self, key: str) -> bool:
         return key in self._replies
 
+    @property
+    def before_login(self) -> frozenset[str]:
+        """Commands answered before a login, beyond the login itself.
+
+        Reference: vsftpd answers SYST, HELP and NOOP with "530 Please login
+        with USER and PASS."; ProFTPD answers them as it does afterwards
+        ("215 UNIX Type: L8", its HELP text, "200 NOOP command successful").
+        """
+        common = {"USER", "PASS", "QUIT", "BYE", "FEAT", "OPTS"}
+        if self.family == "proftpd":
+            return frozenset(common | {"SYST", "HELP", "NOOP"})
+        return frozenset(common)
+
+    @property
+    def refuses_unknown_before_login(self) -> bool:
+        """Whether a command the server has never heard of is told so even
+        before a login. Reference, for "FPAUDIT": ProFTPD "500 FPAUDIT not
+        understood", vsftpd "530 Please login with USER and PASS."."""
+        return self.family == "proftpd"
+
+    @property
+    def delays_failed_login(self) -> bool:
+        """Whether a wrong password is refused only after a pause. Reference:
+        vsftpd took 3.031 s, ProFTPD answered at once (0.0 s)."""
+        return self.family == "vsftpd"
+
+    def overlong_line(self, length: Optional[int]) -> tuple[str, bool]:
+        """What a command line over ``MAX_COMMAND_LINE`` gets: the reply, and
+        whether the connection closes. ``length`` is None for a line longer
+        than the engine reads at all (64 KiB).
+
+        Reference, for a 5007-byte USER line and a 70002-byte line: vsftpd
+        answered both "500 Input line too long." and closed. ProFTPD said
+        nothing to either; it kept the connection open after the first and
+        closed it after the second. Where between the two ProFTPD gives up
+        was not measured, and is drawn here at four buffers' worth.
+        """
+        if self.family == "vsftpd":
+            return self.reply("line_too_long"), True
+        return "", length is None or length > 4 * MAX_COMMAND_LINE
+
     def reply(self, key: str, **values) -> str:
         """One reply line. Values taken from the client are cut short."""
         values = {name: str(value)[:255] for name, value in values.items()}
@@ -188,21 +242,33 @@ class Dialect:
                 "SITE SYMLINK", "SITE UTIME", "SIZE", "TVFS", "UTF8",
             ]
         else:
-            features = ["EPRT", "EPSV", "MDTM", "PASV", "REST STREAM", "SIZE", "TVFS", "UTF8"]
-        lines = ["211-Features:"] + [f" {feature}" for feature in features] + ["211 End"]
+            # No UTF8: the reference's list ends at TVFS.
+            features = ["EPRT", "EPSV", "MDTM", "PASV", "REST STREAM", "SIZE", "TVFS"]
+        lines = ["211-Features:"] + [self._inner(211, feature) for feature in features] + ["211 End"]
         return "\r\n".join(lines) + "\r\n"
+
+    def _inner(self, code: int, text: str) -> str:
+        """A line between the first and last of a multi-line reply.
+
+        vsftpd indents them with a space. The reference ProFTPD starts every
+        one with the reply code and a hyphen instead ("211-CLNT",
+        "214-CWD     XCWD ...", "211-Logged in as test").
+        """
+        if self.family == "proftpd":
+            return f"{code}-{text}"
+        return f" {text}"
 
     def help(self) -> str:
         if self.family == "proftpd":
             lines = [
                 "214-The following commands are recognized (* =>'s unimplemented):",
-                " CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    ",
-                " EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     ",
-                " XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    ",
-                " NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   ",
-                " ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    ",
-                " STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   ",
-                " REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    ",
+                "214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    ",
+                "214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     ",
+                "214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    ",
+                "214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   ",
+                "214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    ",
+                "214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   ",
+                "214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    ",
                 f"214 Direct comments to root@{self.hostname}",
             ]
         else:
@@ -217,18 +283,22 @@ class Dialect:
         return "\r\n".join(lines) + "\r\n"
 
     def stat(self, client_ip: str, user: str, binary: bool) -> str:
-        """The server status. Both report the *client's* address."""
+        """The server status. Both report the *client's* address: vsftpd an
+        IPv4 client in IPv4-mapped form ("Connected to ::ffff:172.18.0.1"),
+        ProFTPD as it is ("Connected from 172.18.0.1 (172.18.0.1)")."""
         kind = "BINARY" if binary else "ASCII"
         if self.family == "proftpd":
             lines = [
                 "211-Status of 'Debian'",
-                f" Connected from {client_ip} ({client_ip})",
-                f" Logged in as {user}",
-                f" TYPE: {kind}, STRUcture: File, Mode: Stream",
-                " No data connection",
+                f"211-Connected from {client_ip} ({client_ip})",
+                f"211-Logged in as {user}",
+                f"211-TYPE: {kind}, STRUcture: File, Mode: Stream",
+                "211-No data connection",
                 "211 End of status",
             ]
         else:
+            if "." in client_ip and ":" not in client_ip:
+                client_ip = f"::ffff:{client_ip}"
             lines = [
                 "211-FTP server status:",
                 f"     Connected to {client_ip}",

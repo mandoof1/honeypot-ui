@@ -96,7 +96,11 @@ _HTTP_SERVERS = [
 _FTP_SERVERS = [
     ("vsftpd", "220 (vsFTPd 3.0.3)"),
     ("vsftpd", "220 (vsFTPd 3.0.3)"),
-    ("proftpd", "220 ProFTPD 1.3.6c Server (Debian) [::ffff:{ip}]"),
+    # No version: the packaged ProFTPD greets with "ProFTPD Server (Debian)".
+    # "ProFTPD 1.3.6c Server" was this file's guess, and the first comparison
+    # with the real daemon (docs/evaluation/fingerprint/baseline/
+    # ftp-proftpd-focal.json, ftp.greeting) showed it was wrong.
+    ("proftpd", "220 ProFTPD Server (Debian) [::ffff:{ip}]"),
 ]
 
 _TIMEZONES = ["Etc/UTC", "Etc/UTC", "Europe/London", "America/New_York", "Asia/Dubai"]
