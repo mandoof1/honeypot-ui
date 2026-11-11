@@ -200,6 +200,19 @@ class HoneypotConfig:
     #: capped throughput and was slower than any server it imitated.
     response_delay_min: float = _float_env("HONEYPOT_RESPONSE_DELAY_MIN", 0.001)
     response_delay_max: float = _float_env("HONEYPOT_RESPONSE_DELAY_MAX", 0.006)
+    #: Seconds each decoy waits before it refuses a wrong password, while
+    #: HONEYPOT_ANTI_FINGERPRINT is on. The defaults are what the daemons
+    #: they imitate took in the first fingerprint comparison (docs/
+    #: evaluation/fingerprint/baseline): OpenSSH 8.2p1 2.175 s, login(1)
+    #: behind telnetd 2.885 s, vsftpd 3.031 s. ProFTPD refused at once, so
+    #: the FTP value applies to the vsftpd identity only. See
+    #: honeypot/core/login_delay.py.
+    ssh_fail_delay: float = _float_env("HONEYPOT_SSH_FAIL_DELAY", 2.175)
+    telnet_fail_delay: float = _float_env("HONEYPOT_TELNET_FAIL_DELAY", 2.885)
+    ftp_fail_delay: float = _float_env("HONEYPOT_FTP_FAIL_DELAY", 3.031)
+    #: Refusals that may be waiting out that pause at one moment, across all
+    #: protocols. Past it a refusal is sent without the pause.
+    fail_delay_max_pending: int = _int_env("HONEYPOT_FAIL_DELAY_MAX_PENDING", 256)
     #: Also put the web canary comment (HONEYPOT_AI_CANARY) into HTML pages
     #: relayed from HONEYPOT_HTTP_UPSTREAM. Off: only the decoy's own pages
     #: carry it, and the application's responses pass through untouched.

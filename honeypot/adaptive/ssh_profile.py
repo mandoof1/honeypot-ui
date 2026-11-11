@@ -87,6 +87,29 @@ class SSHProfile:
         )
     )
 
+    #: ``server-sig-algs``, the public key signature algorithms the server
+    #: tells an RFC 8308 client it accepts, in the order sshd sends them in
+    #: SSH_MSG_EXT_INFO. Read off a real OpenSSH 8.2p1 (the
+    #: ssh.ext_info.server_sig_algs row of docs/evaluation/fingerprint/
+    #: baseline/ssh-sshd-focal.json). asyncssh's default was its whole
+    #: catalogue, twice over: 33 names, among them four ``@ssh.com`` ones,
+    #: ``ssh-ed448`` and ``webauthn-sk-ecdsa-sha2-nistp256@openssh.com``,
+    #: none of which the reference sent. Applied by :func:`server_sig_algs`.
+    server_sig_algs: tuple[str, ...] = field(
+        default=(
+            "ssh-ed25519",
+            "sk-ssh-ed25519@openssh.com",
+            "ssh-rsa",
+            "rsa-sha2-256",
+            "rsa-sha2-512",
+            "ssh-dss",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+        )
+    )
+
     @property
     def version_string(self) -> str:
         """The part after ``SSH-2.0-``, which is what asyncssh wants."""
@@ -280,3 +303,39 @@ def apply_host_key_algs(profile: SSHProfile) -> bool:
     __init__._honeypot_wrapped = True
     SSHServerConnection.__init__ = __init__
     return True
+
+
+def server_sig_algs(profile: SSHProfile) -> tuple[str, ...]:
+    """The profile's ``server-sig-algs`` list, as far as asyncssh knows it.
+
+    This is what ``asyncssh.listen(signature_algs=...)`` is given, and on a
+    server that option has one effect: it is the list sent in EXT_INFO.
+    asyncssh raises ValueError for a name it does not implement, which would
+    stop the decoy from starting, so names this build lacks are left out
+    with a warning. An empty result means "asyncssh's default".
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from asyncssh.public_key import get_public_key_algs
+
+        known = {alg.decode("ascii") for alg in get_public_key_algs()}
+    except Exception as exc:  # pragma: no cover - an asyncssh we have not seen
+        logger.warning(
+            "Could not read asyncssh's signature algorithms (%s); "
+            "server-sig-algs will carry its defaults",
+            exc,
+        )
+        return ()
+
+    missing = [alg for alg in profile.server_sig_algs if alg not in known]
+    if missing:
+        logger.warning(
+            "asyncssh cannot offer %s; server-sig-algs will not match the %s "
+            "banner exactly",
+            ", ".join(missing),
+            profile.name,
+        )
+    return tuple(alg for alg in profile.server_sig_algs if alg in known)
