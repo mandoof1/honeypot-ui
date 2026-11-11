@@ -633,13 +633,21 @@ class HTTPHoneypot(BaseEmulator):
         keep_alive: bool,
         requests_left: int = 0,
     ) -> None:
-        data = self._profile.serialise(
-            reply,
-            head_only=request.method == "HEAD",
-            keep_alive=keep_alive,
-            keepalive_token=request.keepalive_token,
-            requests_left=requests_left,
-        )
+        if request.version == "HTTP/0.9":
+            # A request line with no protocol version is HTTP/0.9, and its
+            # answer is the document and nothing else. Both Apache and nginx
+            # answered "GET /" that way in the first fingerprint comparison:
+            # the page, with no status line and no header before it. The
+            # decoy used to send a full HTTP/1.1 response.
+            data = reply.body
+        else:
+            data = self._profile.serialise(
+                reply,
+                head_only=request.method == "HEAD",
+                keep_alive=keep_alive,
+                keepalive_token=request.keepalive_token,
+                requests_left=requests_left,
+            )
         if reply.kind != "proxied":
             # An application's own answer took as long as it took; only the
             # decoy's instant ones need time added.
@@ -751,8 +759,19 @@ class HTTPHoneypot(BaseEmulator):
         self._parse_request_line(request, text)
         if overflow or len(text) > self.MAX_REQUEST_LINE:
             # Neither server reads further than this; the headers, if any
-            # follow, stay unread.
+            # follow, stay unread. The line was cut before its protocol
+            # version, which does not make it HTTP/0.9: the refusal is a full
+            # response, as both servers send for a 9000-byte URI.
+            if request.version == "HTTP/0.9":
+                request.version = _Request.version
             return "refused", request, _Refusal(414, "request_line_too_long")
+
+        if request.version == "HTTP/0.9":
+            # HTTP/0.9 has no headers and no body: the request is its line,
+            # and waiting for a blank line would leave a real 0.9 client
+            # hanging until the header timeout.
+            self._settle_keep_alive(request)
+            return "request", request, None
 
         refusal = await self._read_headers(reader, request, head_deadline)
         if refusal is not None:
@@ -1489,14 +1508,15 @@ class HTTPHoneypot(BaseEmulator):
     def _serve_file(self, request: _Request, name: str, content: bytes) -> Reply:
         """A static file, by the claimed server's rules for each method."""
         profile = self._profile
-        if request.method in ("GET", "HEAD"):
+        if request.method in profile.static_methods:
             # HEAD is the same reply without its body (see _send). It used
             # to be a bare 200 with a length of zero for every path.
             reply = profile.static(name, content)
             return profile.not_modified(reply, request.headers) or reply
         if request.method == "OPTIONS" and profile.family == "apache":
             return self._apache_options(profile.content_type(name))
-        # Neither server lets a file be posted to, put or deleted.
+        # Neither server lets a file be put or deleted, and nginx does not
+        # let one be posted to either.
         return self._error(request, 405)
 
     def _apache_options(self, content_type: Optional[str] = None) -> Reply:

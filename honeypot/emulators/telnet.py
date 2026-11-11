@@ -9,10 +9,13 @@ of the same login policy and the same command dispatcher as SSH, which means
 busybox probes, download events and shell-written files are captured the
 same way, and a session's transcript looks the same to the analyst.
 
-Negotiation is answered minimally and correctly. The server offers ECHO and
-SUPPRESS-GO-AHEAD (character-at-a-time mode, as every telnetd does), refuses
-every other option and swallows sub-negotiations. Anything else is a
-fingerprint: a server that never negotiates looks like a netcat listener.
+Negotiation follows the telnetd of Ubuntu 20.04, option for option, because
+the opening exchange is the first thing a scanner sees and it arrives before
+any login. The sequences are the ones recorded from the real daemon in
+docs/evaluation/fingerprint/baseline/telnet-telnetd-focal.json: four requests
+first, nothing more until the client has answered them, then five more, then
+ECHO and the banner. Options the server neither asked for nor offered are
+refused, and sub-negotiations are swallowed.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from honeypot.capture.shell_writes import HeredocBuffer, needs_continuation
 from honeypot.core import shell_dispatch
 from honeypot.core.config import config
 from honeypot.core.identity import get_identity
+from honeypot.core.login_delay import login_delay
 from honeypot.core.login_policy import login_policy
 from honeypot.core.modes import mode_handler
 from honeypot.core.session import session_manager
@@ -37,7 +41,6 @@ from honeypot.core.shell_state import shell_states
 from honeypot.emulators.base import BaseEmulator
 from honeypot.emulators.ssh import (
     FAKE_USERS,
-    MAX_AUTH_ATTEMPTS,
     MAX_COMMAND_LENGTH,
     SOFT_ACCEPT_AFTER,
     _failures_by_ip,
@@ -47,13 +50,32 @@ from honeypot.emulators.ssh import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_TIMEOUT = 300
-#: How long a client may sit at the login prompt.
+#: How long a client may sit at the login prompt, or leave the opening
+#: negotiation unanswered.
 LOGIN_TIMEOUT = 60
+#: Wrong passwords before login(1) hangs up. The reference closed after the
+#: fifth with "Maximum number of tries exceeded (5)".
+MAX_LOGIN_TRIES = 5
 
 # Telnet protocol bytes (RFC 854/855/857/858).
 IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 NOP, DM, BRK, IP, AO, AYT, EC, EL, GA = 241, 242, 243, 244, 245, 246, 247, 248, 249
-OPT_ECHO, OPT_SGA = 1, 3
+OPT_ECHO, OPT_SGA, OPT_STATUS = 1, 3, 5
+OPT_TTYPE, OPT_NAWS, OPT_TSPEED, OPT_LFLOW, OPT_XDISPLOC, OPT_NEW_ENVIRON = 24, 31, 32, 33, 35, 39
+#: What telnetd sends the moment a client connects, in this order. It sends
+#: nothing else, not even the banner, until every one has been answered: the
+#: reference's whole output to a client that says nothing is these four.
+OPENING_REQUESTS = (OPT_TTYPE, OPT_TSPEED, OPT_XDISPLOC, OPT_NEW_ENVIRON)
+#: What follows once they are answered, in the reference's order: WILL
+#: SUPPRESS-GO-AHEAD, DO ECHO, DO NAWS, WILL STATUS, DO REMOTE-FLOW-CONTROL.
+#: telnetd then waits for the answer about the window size.
+SECOND_REQUESTS = (
+    (WILL, OPT_SGA),
+    (DO, OPT_ECHO),
+    (DO, OPT_NAWS),
+    (WILL, OPT_STATUS),
+    (DO, OPT_LFLOW),
+)
 #: Options the server itself provides. Everything else is refused.
 SERVER_OPTIONS = {OPT_ECHO, OPT_SGA}
 #: Options the client is allowed to turn on at its end.
@@ -85,6 +107,20 @@ class TelnetLineReader:
         #: Options the client WILLs that we agreed to (currently only SGA).
         self.client_will: set[int] = set()
         self.negotiations: list[tuple[str, int]] = []
+        #: Options this side asked the client to turn on (DO) and offered to
+        #: turn on itself (WILL). What the client says about one of those is
+        #: an answer to us, not a request, and gets no reply.
+        self.asked: set[int] = set()
+        self.offered: set[int] = set()
+        #: The client's answer to each DO: True for WILL, False for WONT.
+        self.answers: dict[int, bool] = {}
+        self._sga_offered_again = False
+
+    def request(self, verb: int, option: int) -> bytes:
+        """The bytes of a DO or WILL this side sends, noted so that the
+        client's answer to it is recognised as one."""
+        (self.asked if verb == DO else self.offered).add(option)
+        return bytes([IAC, verb, option])
 
     def feed(self, data: bytes) -> bytes:
         """Return the data bytes with Telnet commands removed and CR
@@ -146,14 +182,27 @@ class TelnetLineReader:
         name = {WILL: "WILL", WONT: "WONT", DO: "DO", DONT: "DONT"}[verb]
         self.negotiations.append((name, option))
         if verb == DO:
-            # Client asks us to enable: agree only for what we provide. Our
-            # own WILLs for ECHO/SGA are sent at connect, so a DO for those
+            # Client asks us to enable: agree only for what we provide. A DO
+            # for something we offered with WILL is the client accepting, and
             # needs no further answer.
-            if option not in SERVER_OPTIONS:
+            if option not in SERVER_OPTIONS and option not in self.offered:
                 self.replies += bytes([IAC, WONT, option])
         elif verb == DONT:
-            if option not in SERVER_OPTIONS:
+            if option == OPT_SGA and option in self.offered:
+                # telnetd does not take the first no for SUPPRESS-GO-AHEAD:
+                # the reference offered it a second time to a client that
+                # refused it, and let the second refusal stand.
+                if not self._sga_offered_again:
+                    self._sga_offered_again = True
+                    self.replies += bytes([IAC, WILL, OPT_SGA])
+            elif option not in SERVER_OPTIONS and option not in self.offered:
                 self.replies += bytes([IAC, WONT, option])
+        elif verb == WILL and option in self.asked:
+            # The answer to our DO. Nothing to add: the reference sent no
+            # reply to any of them.
+            self.answers[option] = True
+        elif verb == WONT and option in self.asked:
+            self.answers[option] = False
         elif verb == WILL:
             if option in CLIENT_OPTIONS:
                 if option not in self.client_will:
@@ -182,8 +231,9 @@ class TelnetHoneypot(BaseEmulator):
 
     def get_banner(self) -> str:
         identity = get_identity()
+        # No blank line first: the reference's banner starts at "Ubuntu".
         return (
-            f"\r\nUbuntu {identity.os_version} LTS\r\n"
+            f"Ubuntu {identity.os_version} LTS\r\n"
             f"{identity.hostname} login: "
         )
 
@@ -246,10 +296,10 @@ class TelnetHoneypot(BaseEmulator):
                 for ch in text.decode("utf-8", "replace"):
                     await session_manager.record_keystroke(state.session_id, ch)
             if echo:
-                # Character-at-a-time clients show nothing unless we echo;
-                # a line-mode client sends whole lines, echoing those back
-                # produces a double line, so only echo when the client
-                # agreed to SGA (character mode) — the usual case.
+                # The terminal behind telnetd echoes what is typed whatever
+                # the client negotiated: the reference sent "root\r\n" back
+                # to a client that had refused every option, ECHO included.
+                # This used to depend on the client agreeing to SGA.
                 echoed = bytearray()
                 for b in text:
                     if b == 10:
@@ -258,11 +308,65 @@ class TelnetHoneypot(BaseEmulator):
                         echoed += b"\x08 \x08"
                     elif b >= 32:
                         echoed.append(b)
-                if echoed and OPT_SGA in parser.client_will:
+                if echoed:
                     await self._write(writer, bytes(echoed))
             buffer += text
             if len(buffer) > MAX_COMMAND_LENGTH:
                 del buffer[: len(buffer) - MAX_COMMAND_LENGTH]
+
+    async def _await_answers(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        parser: TelnetLineReader,
+        state: _TelnetState,
+        buffer: bytearray,
+        options: tuple[int, ...],
+        deadline: float,
+    ) -> bool:
+        """Read until the client has said WILL or WONT to every option in
+        ``options``. False when it closed or the deadline passed first.
+
+        telnetd waits here for as long as it takes, sending nothing. Text
+        that arrives meanwhile is recorded and kept for the login prompt.
+        """
+        while not all(option in parser.answers for option in options):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                data = await asyncio.wait_for(reader.read(1024), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+            if not data:
+                return False
+            text = _ESCAPE_SEQUENCE.sub(b"", parser.feed(data))
+            await self._flush_replies(writer, parser)
+            for ch in text.decode("utf-8", "replace"):
+                await session_manager.record_keystroke(state.session_id, ch)
+            buffer += text
+            if len(buffer) > MAX_COMMAND_LENGTH:
+                del buffer[: len(buffer) - MAX_COMMAND_LENGTH]
+        return True
+
+    async def _negotiate(self, reader, writer, parser, state, buffer) -> bool:
+        """The opening exchange, in telnetd's order. False when the client
+        never answered, in which case nothing more is sent, as with the
+        reference's silent client."""
+        deadline = time.monotonic() + LOGIN_TIMEOUT
+        opening = b"".join(parser.request(DO, option) for option in OPENING_REQUESTS)
+        await self._write(writer, opening)
+        if not await self._await_answers(reader, writer, parser, state, buffer, OPENING_REQUESTS, deadline):
+            return False
+
+        second = b"".join(parser.request(verb, option) for verb, option in SECOND_REQUESTS)
+        await self._write(writer, second)
+        if not await self._await_answers(reader, writer, parser, state, buffer, (OPT_NAWS,), deadline):
+            return False
+
+        # Last, the server turns its own echo on; the banner follows.
+        await self._write(writer, parser.request(WILL, OPT_ECHO))
+        return True
 
     @staticmethod
     def _apply_backspaces(raw: bytes) -> bytes:
@@ -284,7 +388,8 @@ class TelnetHoneypot(BaseEmulator):
 
     async def _login(self, reader, writer, parser, state, buffer, source_ip) -> bool:
         await self._write(writer, self.get_banner())
-        while state.auth_attempts < MAX_AUTH_ATTEMPTS:
+        hostname = get_identity().hostname
+        while state.auth_attempts < MAX_LOGIN_TRIES:
             username = await self._read_line(
                 reader, writer, parser, state, buffer, echo=True, timeout=LOGIN_TIMEOUT
             )
@@ -322,10 +427,17 @@ class TelnetHoneypot(BaseEmulator):
                     {"auth_success": True, "username": username, "protocol": "telnet"},
                 )
                 return True
-            # Real login(1) pauses before refusing.
-            await asyncio.sleep(1.0 if config.enable_anti_fingerprinting else 0)
-            await self._write(writer, f"\r\nLogin incorrect\r\n{get_identity().hostname} login: ")
-        await self._write(writer, "\r\nMaximum number of tries exceeded (6)\r\n")
+            # Real login(1) pauses before refusing: 2.5 to 3.3 seconds in the
+            # reference's ten refusals, 2.885 s in the row that times it.
+            await login_delay.pause(config.telnet_fail_delay)
+            if state.auth_attempts >= MAX_LOGIN_TRIES:
+                # The last refusal is not followed by another prompt.
+                await self._write(
+                    writer,
+                    f"\r\nLogin incorrect\r\nMaximum number of tries exceeded ({MAX_LOGIN_TRIES})\r\n",
+                )
+                return False
+            await self._write(writer, f"\r\nLogin incorrect\r\n{hostname} login: ")
         return False
 
     # ------------------------------------------------------------------
@@ -433,9 +545,8 @@ class TelnetHoneypot(BaseEmulator):
                 await self._observe_passively(session_id, reader)
                 return
 
-            # Offer character-at-a-time mode like every telnetd, and ask the
-            # client to suppress go-ahead too.
-            await self._write(writer, bytes([IAC, WILL, OPT_ECHO, IAC, WILL, OPT_SGA, IAC, DO, OPT_SGA]))
+            if not await self._negotiate(reader, writer, parser, state, buffer):
+                return
             await session_manager.record_network_event(
                 session_id, "telnet_banner_sent", {"banner": get_identity().hostname}
             )

@@ -48,3 +48,16 @@ def _short_web_session_idle(monkeypatch):
     from honeypot.core.config import config
 
     monkeypatch.setattr(config, "http_session_idle", 0.2)
+
+
+@pytest.fixture(autouse=True)
+def _no_failed_login_delay(monkeypatch):
+    """A refused login waits two to three seconds, as the real daemons do
+    (honeypot/core/login_delay.py). That is right for a deployment and would
+    add minutes to a suite that refuses passwords all the time; the tests of
+    the delay itself set the values they need."""
+    from honeypot.core.config import config
+
+    monkeypatch.setattr(config, "ssh_fail_delay", 0.0)
+    monkeypatch.setattr(config, "telnet_fail_delay", 0.0)
+    monkeypatch.setattr(config, "ftp_fail_delay", 0.0)

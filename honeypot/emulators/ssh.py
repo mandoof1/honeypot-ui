@@ -37,11 +37,18 @@ from honeypot.capture.shell_capture import flush_session_files
 from honeypot.capture.shell_writes import HeredocBuffer, needs_continuation
 from honeypot.core import shell_dispatch
 from honeypot.core.config import config
+from honeypot.core.login_delay import login_delay
 from honeypot.core.login_policy import FAKE_USERS, SOFT_ACCEPT_AFTER, login_policy  # noqa: F401 - re-exported
 from honeypot.core.session import session_manager
 from honeypot.core.shell_dispatch import LineEditor
 from honeypot.core.shell_state import shell_states
-from honeypot.adaptive.ssh_profile import apply_extra_kex_algs, apply_host_key_algs, get_profile
+from honeypot.adaptive.ssh_profile import (
+    apply_extra_kex_algs,
+    apply_host_key_algs,
+    get_profile,
+    server_sig_algs,
+)
+from honeypot.adaptive.ssh_transport import apply_transport_behaviour
 from honeypot.core.modes import mode_handler
 from honeypot.emulators.base import BaseEmulator
 from honeypot.adaptive.fingerprint import fingerprint_engine
@@ -329,6 +336,14 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
             )
             return True
 
+        # sshd takes about two seconds to refuse a password (measured: 2.175
+        # s, the ssh.auth.failed_password_delay row of the fingerprint
+        # baseline); answering in a millisecond is a tell that needs one
+        # guess. The attempt is already recorded, so a client that hangs up
+        # during the pause has still been captured. Only refusals wait: the
+        # reference's delay comes from the failed authentication.
+        await login_delay.pause(config.ssh_fail_delay)
+
         if state.auth_attempts >= MAX_AUTH_ATTEMPTS:
             raise asyncssh.DisconnectError(
                 asyncssh.DISC_NO_MORE_AUTH_METHODS_AVAILABLE, "Too many failures"
@@ -475,6 +490,9 @@ class SSHHoneypot(BaseEmulator):
         profile = get_profile(config.ssh_profile)
         apply_extra_kex_algs(profile)
         apply_host_key_algs(profile)
+        # What the transport does with padding, bad identifications and bad
+        # packets before any key exchange; see adaptive/ssh_transport.py.
+        apply_transport_behaviour()
 
         self._acceptor = await asyncssh.listen(
             config.bind_address,
@@ -492,6 +510,9 @@ class SSHHoneypot(BaseEmulator):
             encryption_algs=profile.encryption_algs,
             mac_algs=profile.mac_algs,
             compression_algs=profile.compression_algs,
+            # On a server this option is the server-sig-algs list sent in
+            # EXT_INFO and nothing else; empty leaves asyncssh's default.
+            signature_algs=server_sig_algs(profile),
             encoding=None,
         )
         self._running = True

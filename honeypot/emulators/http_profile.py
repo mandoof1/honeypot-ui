@@ -117,6 +117,8 @@ class ServerProfile:
     #: Whether the server sends a response to a request it timed out on.
     answers_timeouts = False
     error_content_type = "text/html"
+    #: Methods a static file is served for. Any other gets a 405.
+    static_methods: tuple[str, ...] = ("GET", "HEAD")
 
     _REASONS: dict[int, str] = {}
     _DROPS: frozenset[int] = frozenset()
@@ -225,6 +227,11 @@ class ApacheProfile(ServerProfile):
     max_requests = 101
     answers_timeouts = True
     error_content_type = "text/html; charset=iso-8859-1"
+    #: Apache's default handler answers a POST to a static file with the
+    #: file. Measured on Apache 2.4.41 (http.post_root.* in docs/evaluation/
+    #: fingerprint/baseline/http-apache-focal.json): "POST /" came back
+    #: "200 OK" with the page and the headers of a GET. nginx refuses it.
+    static_methods = ("GET", "HEAD", "POST")
 
     _REASONS = {
         200: "OK", 201: "Created", 204: "No Content", 206: "Partial Content",
@@ -334,7 +341,10 @@ class ApacheProfile(ServerProfile):
                 "limit for this server.<br />\n</p>\n"
             )
         if status == 501:
-            return f"<p>{method} not supported for current URL.<br />\n</p>\n"
+            # Two spaces after the method: that is what Apache 2.4.41 sends
+            # ("<p>FPAUDIT  not supported for current URL.<br />", the
+            # http.unknown_method.body row of the fingerprint baseline).
+            return f"<p>{method}  not supported for current URL.<br />\n</p>\n"
         if status == 502:
             return (
                 "<p>The proxy server received an invalid\r\n"
