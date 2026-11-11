@@ -32,6 +32,9 @@
   Apache error pages, the size of the decoy's own page, and the order of
   methods in Apache's `Allow` header. Both runs are in
   `docs/evaluation/fingerprint/`.
+- An SSH connection that leaves before trying to log in (a banner grab, a
+  scanner's probe) is now recorded as a session. It used to leave nothing,
+  which the controlled-traffic check showed.
 - Backup, restore and key rotation have now been run on the reference
   server: a fresh backup restored into a throwaway database with matching
   row counts, a transcript that decrypts with the key from the same set, and
