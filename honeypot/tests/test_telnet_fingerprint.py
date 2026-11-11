@@ -1,7 +1,7 @@
 """The Telnet decoy negotiates and logs in the way Ubuntu 20.04's telnetd did.
 
 Every expected sequence and text here is copied from the reference side of
-docs/evaluation/fingerprint/baseline/telnet-telnetd-focal.json, the first
+docs/evaluation/fingerprint/1-baseline/telnet-telnetd-focal.json, the first
 probe-by-probe comparison of the decoy with the real daemon; each test plays
 the client the named probe played (tools/fingerprint_audit/telnet_probes.py).
 The check id is in each test's docstring.

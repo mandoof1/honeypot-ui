@@ -3,7 +3,7 @@
 ``ssh_profile.py`` makes the KEXINIT proposal the one the banner's release
 sends. The proposal is not the only thing a scanner reads before it has
 authenticated. The first probe-by-probe comparison with a real sshd
-(docs/evaluation/fingerprint/baseline/ssh-sshd-focal.json) found five more
+(docs/evaluation/fingerprint/1-baseline/ssh-sshd-focal.json) found five more
 places where asyncssh answered as asyncssh:
 
 * packets sent before encryption starts were padded with random bytes, where

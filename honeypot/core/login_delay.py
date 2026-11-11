@@ -2,7 +2,7 @@
 
 sshd, login(1) behind telnetd and vsftpd do not answer a wrong password at
 once: the first comparison with the real daemons (docs/evaluation/
-fingerprint/baseline) timed them at 2.2, 2.9 and 3.0 seconds, and the decoys
+fingerprint/1-baseline) timed them at 2.2, 2.9 and 3.0 seconds, and the decoys
 at a millisecond. A client only has to time one refusal to tell them apart.
 
 The pause is a sleep on the task that serves the connection, so nothing else

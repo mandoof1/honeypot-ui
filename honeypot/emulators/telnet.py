@@ -12,7 +12,7 @@ same way, and a session's transcript looks the same to the analyst.
 Negotiation follows the telnetd of Ubuntu 20.04, option for option, because
 the opening exchange is the first thing a scanner sees and it arrives before
 any login. The sequences are the ones recorded from the real daemon in
-docs/evaluation/fingerprint/baseline/telnet-telnetd-focal.json: four requests
+docs/evaluation/fingerprint/1-baseline/telnet-telnetd-focal.json: four requests
 first, nothing more until the client has answered them, then five more, then
 ECHO and the banner. Options the server neither asked for nor offered are
 refused, and sub-negotiations are swallowed.

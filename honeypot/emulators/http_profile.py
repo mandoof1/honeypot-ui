@@ -229,7 +229,7 @@ class ApacheProfile(ServerProfile):
     error_content_type = "text/html; charset=iso-8859-1"
     #: Apache's default handler answers a POST to a static file with the
     #: file. Measured on Apache 2.4.41 (http.post_root.* in docs/evaluation/
-    #: fingerprint/baseline/http-apache-focal.json): "POST /" came back
+    #: fingerprint/1-baseline/http-apache-focal.json): "POST /" came back
     #: "200 OK" with the page and the headers of a GET. nginx refuses it.
     static_methods = ("GET", "HEAD", "POST")
 

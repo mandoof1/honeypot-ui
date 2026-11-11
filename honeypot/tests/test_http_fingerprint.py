@@ -1,7 +1,7 @@
 """The HTTP decoy answers the way Apache 2.4.41 and nginx 1.18.0 answered.
 
 Every expected status line, header list and body here is copied from the
-reference side of docs/evaluation/fingerprint/baseline/http-apache-focal.json
+reference side of docs/evaluation/fingerprint/1-baseline/http-apache-focal.json
 and http-nginx-focal.json, the first probe-by-probe comparison of the decoy
 with the real servers; each test sends the request the named probe sent
 (tools/fingerprint_audit/http_probes.py). The check id is in each test's

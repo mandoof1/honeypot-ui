@@ -1,7 +1,7 @@
 """The FTP decoy answers the way vsftpd 3.0.3 and ProFTPD 1.3.6 answered.
 
 Every expected reply here is copied from the reference side of
-docs/evaluation/fingerprint/baseline/ftp-vsftpd-focal.json and
+docs/evaluation/fingerprint/1-baseline/ftp-vsftpd-focal.json and
 ftp-proftpd-focal.json, the first probe-by-probe comparison of the decoy with
 the real daemons; each test sends what the named probe sent
 (tools/fingerprint_audit/ftp_probes.py). The check id is in each test's

@@ -13,7 +13,7 @@ Each dialect here is the reply texts of one server at its packaged defaults
 The emulator decides what happened; this only words it.
 
 Where a comment below says "reference", the text or behaviour was read off
-the real daemon in docs/evaluation/fingerprint/baseline/ftp-vsftpd-focal.json
+the real daemon in docs/evaluation/fingerprint/1-baseline/ftp-vsftpd-focal.json
 and ftp-proftpd-focal.json.
 """
 

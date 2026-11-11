@@ -1,0 +1,2343 @@
+{
+  "schema": "honeysentinel.fingerprint-audit/1",
+  "generated_at": "2026-11-11T12:01:00Z",
+  "tool": {
+    "name": "tools.fingerprint_audit",
+    "git_revision": "f250174",
+    "git_revision_source": "GIT_REVISION",
+    "uncommitted_changes": null,
+    "python": "3.12.15"
+  },
+  "environment": {
+    "network": "both targets were reached at loopback addresses from the process that ran the audit, so both ran on the same machine",
+    "kernel": "6.12.116+deb13-amd64"
+  },
+  "protocol": "http",
+  "decoy": {
+    "address": "127.0.0.1:48080",
+    "description": "engine f250174 in a throwaway container, identity seed 8, node controlled-test-node",
+    "probe_errors": {}
+  },
+  "reference": {
+    "address": "127.0.0.1:42080",
+    "description": "apache-focal: service: apache;os: Ubuntu 20.04.6 LTS;apt_archive: snapshot.ubuntu.com 20231115T000000Z (focal, focal-updates, focal-security);package: apache2 2.4.41-4ubuntu3.14;package: apache2-bin 2.4.41-4ubuntu3.14;package: libapache2-mod-php7.4 7.4.3-4ubuntu2.19;config_sha256: /etc/apache2/apache2.conf 312efde2815c23e529bdef9d8ab05f4729636962a7077a789377db56c56ab7e8;config_sha256: /etc/apache2/sites-enabled/000-default.conf fdd55ad7cf9b495bccdd8465f37bbfe1577068b24abae0f3d934b6a1d1d29331;config_sha256: /etc/apache2/conf-enabled/security.conf fc9c6ed5df6813f95b910e9040d79b40aec98617e57fe9f2b5ae21055b77e1",
+    "probe_errors": {}
+  },
+  "settings": {
+    "timeout": 10.0,
+    "delay": 1.1,
+    "quiet": 1.5,
+    "idle_cap": 15.0,
+    "login_attempts": 8,
+    "ftp_user": "test",
+    "ftp_password": "test"
+  },
+  "summary": {
+    "checks": 86,
+    "matches": 65,
+    "mismatches": 21,
+    "informational_timing_rows": 1,
+    "timing_rows_outside_tolerance": 0,
+    "rows_with_probe_errors": 0
+  },
+  "checks": [
+    {
+      "id": "http.get_root.status_line",
+      "description": "status line for GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 79,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:00 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Sat, 15 Aug 2026 08:13:28 GMT\\r\\nETag: \"2d0-659118314a469\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 720\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 79,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:19 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Wed, 11 Nov 2026 09:07:12 GMT\\r\\nETag: \"2aa6-65ffc85427956\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 10918\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.header_names",
+      "description": "header names, in the order sent, for GET /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.server",
+      "description": "Server header for GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.header_values",
+      "description": "other header values for GET / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.8571,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "720",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "10918",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.body",
+      "description": "body for GET /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9101,
+      "decoy": {
+        "value": {
+          "length": 720,
+          "sha256": "ba2f9bb29ac2dbe87a3152db7c2e0330bfaa189c9a27d52f5ed4bd18835a8fa5",
+          "text": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\\n      </div>\\n      <div class=\"content_section\">\\n        <h1>It works!</h1>\\n        <p>This is the default welcome page used to test the correct operation of the Apache2 server after installation on Ubuntu systems.</p>\\n      </div>\\n    </div>\\n  </body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 10918,
+          "sha256": "b663321ab439cc53a329ee352c1b855d9998d3af95524a05795a88b42a9acf07",
+          "text": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n    <style type=\"text/css\" media=\"screen\">\\n  * {\\n    margin: 0px 0px 0px 0px;\\n    padding: 0px 0px 0px 0px;\\n  }\\n\\n  body, html {\\n    padding: 3px 3px 3px 3px;\\n\\n    background-color: #D8DBE2;\\n\\n    font-family: Verdana, sans-serif;\\n    font-size: 11pt;\\n    text-align: center;\\n  }\\n\\n  div.main_page {\\n    position: relative;\\n    display: table;\\n\\n    width: 800px;\\n\\n    margin-bottom: 3px;\\n    margin-left: auto;\\n    margin-right: auto;\\n    padding: 0px 0px 0px 0px;\\n\\n    border-width: 2px;\\n    border-color: #212738;\\n    border-style: solid;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: center;\\n  }\\n\\n  div.page_header {\\n    height: 99px;\\n    width: 100%;\\n\\n    background-color: #F5F6F7;\\n  }\\n\\n  div.page_header span {\\n    margin: 15px 0px 0px 50px;\\n\\n    font-size: 180%;\\n    font-weight: bold;\\n  }\\n\\n  div.page_header img {\\n    margin: 3px 0px 0px 40px;\\n\\n    border: 0px 0px 0px;\\n  }\\n\\n  div.table_of_contents {\\n    clear: left;\\n\\n    min-width: 200px;\\n\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item {\\n    clear: left;\\n\\n    width: 100%;\\n\\n    margin: 4px 0px 0px 0px;\\n\\n    background-color: #FFFFFF;\\n\\n    color: #000000;\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item a {\\n    margin: 6px 0px 0px 6px;\\n  }\\n\\n  div.content_section {\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.content_section_text {\\n    padding: 4px 8px 4px 8px;\\n\\n    color: #000000;\\n    font-size: 100%;\\n  }\\n\\n  div.content_section_text pre {\\n    margin: 8px 0px 8px 0px;\\n    padding: 8px 8px 8px 8px;\\n\\n    border-width: 1px;\\n    border-style: dotted;\\n    border-color: #000000;\\n\\n    background-color: #F5F6F7;\\n\\n    font-style: italic;\\n  }\\n\\n  div.content_section_text p {\\n    margin-bottom: 6px;\\n  }\\n\\n  div.content_section_text ul, div.content_section_text li {\\n    padding: 4px 8px 4px 16px;\\n  }\\n\\n  div.section_header {\\n    padding: 3px 6px 3px 6px;\\n\\n    background-color: #8E9CB2;\\n\\n    color: #FFFFFF;\\n    font-weight: bold;\\n    font-size: 112%;\\n    text-align: center;\\n  }\\n\\n  div.section_header_red {\\n    background-color: #CD214F;\\n  }\\n\\n  div.section_header_grey {\\n    background-color: #9F9386;\\n  }\\n\\n  .floating_element {\\n    position: relative;\\n    float: left;\\n  }\\n\\n  div.table_of_contents_item a,\\n  div.content_section_text a {\\n    text-decoration: none;\\n    font-weight: bold;\\n  }\\n\\n  div.table_of_contents_item a:link,\\n  div.table_of_contents_item a:visited,\\n  div.table_of_contents_item a:active {\\n    color: #000000;\\n  }\\n\\n  div.table_of_contents_item a:hover {\\n    background-color: #000000;\\n\\n    color: #FFFFFF;\\n  }\\n\\n  div.content_section_text a:link,\\n  div.content_section_text a:visited,\\n   div.content_section_text a:active {\\n    background-color: #DCDFE6;\\n\\n    color: #000000;\\n  }\\n\\n  div.content_section_text a:hover {\\n    background-color: #000000;\\n\\n    color: #DCDFE6;\\n  }\\n\\n  div.validator {\\n  }\\n    </style>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header floating_element\">\\n        <img src=\"/icons/ubuntu-logo.png\" alt=\"Ubuntu Logo\" class=\"floating_element\"/>\\n        <span class=\"floating_element\">\\n          Apache2 Ubuntu Default Page\\n        </span>\\n      </div>\\n<!--      <div class=\"table_of_contents floating_element\">\\n        <div class=\"section_header section_header_grey\">\\n          TABLE OF CONTENTS\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#about\">About</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#changes\">Changes</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_elem",
+          "truncated": true
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.closes",
+      "description": "whether the server closes the connection after answering GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.status_line",
+      "description": "status line for GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 404 Not Found",
+        "evidence": {
+          "request": "GET /fpaudit-no-such-page HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 404 Not Found\\r\\nDate: Wed, 11 Nov 2026 12:01:02 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 271\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 404 Not Found",
+        "evidence": {
+          "request": "GET /fpaudit-no-such-page HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 404 Not Found\\r\\nDate: Wed, 11 Nov 2026 12:01:20 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 271\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.header_names",
+      "description": "header names, in the order sent, for GET of a path that does not exist",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.server",
+      "description": "Server header for GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.header_values",
+      "description": "other header values for GET of a path that does not exist (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "271",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "271",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.body",
+      "description": "body for GET of a path that does not exist",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 271,
+          "sha256": "a42bfc49cab1ec3cd6524a1e5dd49caa042a5cebcb13b4d867f3a6edd67668b6",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>404 Not Found</title>\\n</head><body>\\n<h1>Not Found</h1>\\n<p>The requested URL was not found on this server.</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 271,
+          "sha256": "a42bfc49cab1ec3cd6524a1e5dd49caa042a5cebcb13b4d867f3a6edd67668b6",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>404 Not Found</title>\\n</head><body>\\n<h1>Not Found</h1>\\n<p>The requested URL was not found on this server.</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.closes",
+      "description": "whether the server closes the connection after answering GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.status_line",
+      "description": "status line for HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "HEAD / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 80,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:03 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Sat, 15 Aug 2026 08:13:28 GMT\\r\\nETag: \"2d0-659118314a469\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 720\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "HEAD / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 80,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:22 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Wed, 11 Nov 2026 09:07:12 GMT\\r\\nETag: \"2aa6-65ffc85427956\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 10918\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.header_names",
+      "description": "header names, in the order sent, for HEAD /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.server",
+      "description": "Server header for HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.header_values",
+      "description": "other header values for HEAD / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.8571,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "720",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "10918",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.body",
+      "description": "body for HEAD /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.closes",
+      "description": "whether the server closes the connection after answering HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.status_line",
+      "description": "status line for OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "OPTIONS / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:05 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: OPTIONS,HEAD,GET,POST\\r\\nContent-Length: 0\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "OPTIONS / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:23 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: GET,POST,OPTIONS,HEAD\\r\\nContent-Length: 0\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.header_names",
+      "description": "header names, in the order sent, for OPTIONS /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.server",
+      "description": "Server header for OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.header_values",
+      "description": "other header values for OPTIONS / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "OPTIONS,HEAD,GET,POST",
+          "content-length": "0",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "GET,POST,OPTIONS,HEAD",
+          "content-length": "0",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.body",
+      "description": "body for OPTIONS /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.closes",
+      "description": "whether the server closes the connection after answering OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.status_line",
+      "description": "status line for POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "POST / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nContent-Length: 0\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:06 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Sat, 15 Aug 2026 08:13:28 GMT\\r\\nETag: \"2d0-659118314a469\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 720\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "POST / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nContent-Length: 0\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:25 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Wed, 11 Nov 2026 09:07:12 GMT\\r\\nETag: \"2aa6-65ffc85427956\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 10918\\r\\nVary: Accept-Encoding\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.header_names",
+      "description": "header names, in the order sent, for POST / with an empty body",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.server",
+      "description": "Server header for POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.header_values",
+      "description": "other header values for POST / with an empty body (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.8571,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "720",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "10918",
+          "vary": "Accept-Encoding",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.body",
+      "description": "body for POST / with an empty body",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9101,
+      "decoy": {
+        "value": {
+          "length": 720,
+          "sha256": "ba2f9bb29ac2dbe87a3152db7c2e0330bfaa189c9a27d52f5ed4bd18835a8fa5",
+          "text": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\\n      </div>\\n      <div class=\"content_section\">\\n        <h1>It works!</h1>\\n        <p>This is the default welcome page used to test the correct operation of the Apache2 server after installation on Ubuntu systems.</p>\\n      </div>\\n    </div>\\n  </body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 10918,
+          "sha256": "b663321ab439cc53a329ee352c1b855d9998d3af95524a05795a88b42a9acf07",
+          "text": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n    <style type=\"text/css\" media=\"screen\">\\n  * {\\n    margin: 0px 0px 0px 0px;\\n    padding: 0px 0px 0px 0px;\\n  }\\n\\n  body, html {\\n    padding: 3px 3px 3px 3px;\\n\\n    background-color: #D8DBE2;\\n\\n    font-family: Verdana, sans-serif;\\n    font-size: 11pt;\\n    text-align: center;\\n  }\\n\\n  div.main_page {\\n    position: relative;\\n    display: table;\\n\\n    width: 800px;\\n\\n    margin-bottom: 3px;\\n    margin-left: auto;\\n    margin-right: auto;\\n    padding: 0px 0px 0px 0px;\\n\\n    border-width: 2px;\\n    border-color: #212738;\\n    border-style: solid;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: center;\\n  }\\n\\n  div.page_header {\\n    height: 99px;\\n    width: 100%;\\n\\n    background-color: #F5F6F7;\\n  }\\n\\n  div.page_header span {\\n    margin: 15px 0px 0px 50px;\\n\\n    font-size: 180%;\\n    font-weight: bold;\\n  }\\n\\n  div.page_header img {\\n    margin: 3px 0px 0px 40px;\\n\\n    border: 0px 0px 0px;\\n  }\\n\\n  div.table_of_contents {\\n    clear: left;\\n\\n    min-width: 200px;\\n\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item {\\n    clear: left;\\n\\n    width: 100%;\\n\\n    margin: 4px 0px 0px 0px;\\n\\n    background-color: #FFFFFF;\\n\\n    color: #000000;\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item a {\\n    margin: 6px 0px 0px 6px;\\n  }\\n\\n  div.content_section {\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.content_section_text {\\n    padding: 4px 8px 4px 8px;\\n\\n    color: #000000;\\n    font-size: 100%;\\n  }\\n\\n  div.content_section_text pre {\\n    margin: 8px 0px 8px 0px;\\n    padding: 8px 8px 8px 8px;\\n\\n    border-width: 1px;\\n    border-style: dotted;\\n    border-color: #000000;\\n\\n    background-color: #F5F6F7;\\n\\n    font-style: italic;\\n  }\\n\\n  div.content_section_text p {\\n    margin-bottom: 6px;\\n  }\\n\\n  div.content_section_text ul, div.content_section_text li {\\n    padding: 4px 8px 4px 16px;\\n  }\\n\\n  div.section_header {\\n    padding: 3px 6px 3px 6px;\\n\\n    background-color: #8E9CB2;\\n\\n    color: #FFFFFF;\\n    font-weight: bold;\\n    font-size: 112%;\\n    text-align: center;\\n  }\\n\\n  div.section_header_red {\\n    background-color: #CD214F;\\n  }\\n\\n  div.section_header_grey {\\n    background-color: #9F9386;\\n  }\\n\\n  .floating_element {\\n    position: relative;\\n    float: left;\\n  }\\n\\n  div.table_of_contents_item a,\\n  div.content_section_text a {\\n    text-decoration: none;\\n    font-weight: bold;\\n  }\\n\\n  div.table_of_contents_item a:link,\\n  div.table_of_contents_item a:visited,\\n  div.table_of_contents_item a:active {\\n    color: #000000;\\n  }\\n\\n  div.table_of_contents_item a:hover {\\n    background-color: #000000;\\n\\n    color: #FFFFFF;\\n  }\\n\\n  div.content_section_text a:link,\\n  div.content_section_text a:visited,\\n   div.content_section_text a:active {\\n    background-color: #DCDFE6;\\n\\n    color: #000000;\\n  }\\n\\n  div.content_section_text a:hover {\\n    background-color: #000000;\\n\\n    color: #DCDFE6;\\n  }\\n\\n  div.validator {\\n  }\\n    </style>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header floating_element\">\\n        <img src=\"/icons/ubuntu-logo.png\" alt=\"Ubuntu Logo\" class=\"floating_element\"/>\\n        <span class=\"floating_element\">\\n          Apache2 Ubuntu Default Page\\n        </span>\\n      </div>\\n<!--      <div class=\"table_of_contents floating_element\">\\n        <div class=\"section_header section_header_grey\">\\n          TABLE OF CONTENTS\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#about\">About</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#changes\">Changes</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_elem",
+          "truncated": true
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.closes",
+      "description": "whether the server closes the connection after answering POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.status_line",
+      "description": "status line for DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 405 Method Not Allowed",
+        "evidence": {
+          "request": "DELETE / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 82,
+          "response_head": "HTTP/1.1 405 Method Not Allowed\\r\\nDate: Wed, 11 Nov 2026 12:01:08 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: OPTIONS,HEAD,GET,POST\\r\\nContent-Length: 298\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 405 Method Not Allowed",
+        "evidence": {
+          "request": "DELETE / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 82,
+          "response_head": "HTTP/1.1 405 Method Not Allowed\\r\\nDate: Wed, 11 Nov 2026 12:01:26 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: GET,POST,OPTIONS,HEAD\\r\\nContent-Length: 298\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.header_names",
+      "description": "header names, in the order sent, for DELETE /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.server",
+      "description": "Server header for DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.header_values",
+      "description": "other header values for DELETE / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "OPTIONS,HEAD,GET,POST",
+          "content-length": "298",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "GET,POST,OPTIONS,HEAD",
+          "content-length": "298",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.body",
+      "description": "body for DELETE /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 298,
+          "sha256": "09ad4b9c3baf18fa7020595df26d7b9501efffe23d408df00849d6427da1e0d0",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>405 Method Not Allowed</title>\\n</head><body>\\n<h1>Method Not Allowed</h1>\\n<p>The requested method DELETE is not allowed for this URL.</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 298,
+          "sha256": "09ad4b9c3baf18fa7020595df26d7b9501efffe23d408df00849d6427da1e0d0",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>405 Method Not Allowed</title>\\n</head><body>\\n<h1>Method Not Allowed</h1>\\n<p>The requested method DELETE is not allowed for this URL.</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.closes",
+      "description": "whether the server closes the connection after answering DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.status_line",
+      "description": "status line for a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 501 Not Implemented",
+        "evidence": {
+          "request": "FPAUDIT / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 501 Not Implemented\\r\\nDate: Wed, 11 Nov 2026 12:01:09 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: OPTIONS,HEAD,GET,POST\\r\\nContent-Length: 282\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 501 Not Implemented",
+        "evidence": {
+          "request": "FPAUDIT / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 501 Not Implemented\\r\\nDate: Wed, 11 Nov 2026 12:01:28 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nAllow: GET,POST,OPTIONS,HEAD\\r\\nContent-Length: 282\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.header_names",
+      "description": "header names, in the order sent, for a method that does not exist (FPAUDIT /)",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Allow",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.server",
+      "description": "Server header for a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.header_values",
+      "description": "other header values for a method that does not exist (FPAUDIT /) (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.8,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "OPTIONS,HEAD,GET,POST",
+          "content-length": "282",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "allow": "GET,POST,OPTIONS,HEAD",
+          "content-length": "282",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.body",
+      "description": "body for a method that does not exist (FPAUDIT /)",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 282,
+          "sha256": "f2a9e8f848b8bd2c80f305bf3ff8f69497e122a6bbd216acaa9d424ef8a77952",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>501 Not Implemented</title>\\n</head><body>\\n<h1>Not Implemented</h1>\\n<p>FPAUDIT  not supported for current URL.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 282,
+          "sha256": "f2a9e8f848b8bd2c80f305bf3ff8f69497e122a6bbd216acaa9d424ef8a77952",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>501 Not Implemented</title>\\n</head><body>\\n<h1>Not Implemented</h1>\\n<p>FPAUDIT  not supported for current URL.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at localhost Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.closes",
+      "description": "whether the server closes the connection after answering a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.status_line",
+      "description": "status line for a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "NOT-A-REQUEST\\r\\n\\r\\n",
+          "request_length": 17,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nDate: Wed, 11 Nov 2026 12:01:10 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 301\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "NOT-A-REQUEST\\r\\n\\r\\n",
+          "request_length": 17,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nDate: Wed, 11 Nov 2026 12:01:29 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 302\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.header_names",
+      "description": "header names, in the order sent, for a request line of one word",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.server",
+      "description": "Server header for a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.header_values",
+      "description": "other header values for a request line of one word (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "301",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "302",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.body",
+      "description": "body for a request line of one word",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9996,
+      "decoy": {
+        "value": {
+          "length": 301,
+          "sha256": "be1d604603f91beef39df7a88aca1dba0e517c362d6ad017cb13aadc677681da",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>400 Bad Request</title>\\n</head><body>\\n<h1>Bad Request</h1>\\n<p>Your browser sent a request that this server could not understand.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 127.0.1.1 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 302,
+          "sha256": "6acc85df3741cfe457d51d92873315f0207fbfa33b98aba904e74b480315997f",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>400 Bad Request</title>\\n</head><body>\\n<h1>Bad Request</h1>\\n<p>Your browser sent a request that this server could not understand.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 172.18.0.5 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.closes",
+      "description": "whether the server closes the connection after answering a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.status_line",
+      "description": "status line for a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": null,
+        "evidence": {
+          "request": "GET /\\r\\n\\r\\n",
+          "request_length": 9,
+          "response_head": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span c",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": null,
+        "evidence": {
+          "request": "GET /\\r\\n\\r\\n",
+          "request_length": 9,
+          "response_head": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apac",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.header_names",
+      "description": "header names, in the order sent, for a request line with no protocol version (GET /)",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.server",
+      "description": "Server header for a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.header_values",
+      "description": "other header values for a request line with no protocol version (GET /) (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {},
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {},
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.body",
+      "description": "body for a request line with no protocol version (GET /)",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9101,
+      "decoy": {
+        "value": {
+          "length": 720,
+          "sha256": "ba2f9bb29ac2dbe87a3152db7c2e0330bfaa189c9a27d52f5ed4bd18835a8fa5",
+          "text": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\\n      </div>\\n      <div class=\"content_section\">\\n        <h1>It works!</h1>\\n        <p>This is the default welcome page used to test the correct operation of the Apache2 server after installation on Ubuntu systems.</p>\\n      </div>\\n    </div>\\n  </body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 10918,
+          "sha256": "b663321ab439cc53a329ee352c1b855d9998d3af95524a05795a88b42a9acf07",
+          "text": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n    <style type=\"text/css\" media=\"screen\">\\n  * {\\n    margin: 0px 0px 0px 0px;\\n    padding: 0px 0px 0px 0px;\\n  }\\n\\n  body, html {\\n    padding: 3px 3px 3px 3px;\\n\\n    background-color: #D8DBE2;\\n\\n    font-family: Verdana, sans-serif;\\n    font-size: 11pt;\\n    text-align: center;\\n  }\\n\\n  div.main_page {\\n    position: relative;\\n    display: table;\\n\\n    width: 800px;\\n\\n    margin-bottom: 3px;\\n    margin-left: auto;\\n    margin-right: auto;\\n    padding: 0px 0px 0px 0px;\\n\\n    border-width: 2px;\\n    border-color: #212738;\\n    border-style: solid;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: center;\\n  }\\n\\n  div.page_header {\\n    height: 99px;\\n    width: 100%;\\n\\n    background-color: #F5F6F7;\\n  }\\n\\n  div.page_header span {\\n    margin: 15px 0px 0px 50px;\\n\\n    font-size: 180%;\\n    font-weight: bold;\\n  }\\n\\n  div.page_header img {\\n    margin: 3px 0px 0px 40px;\\n\\n    border: 0px 0px 0px;\\n  }\\n\\n  div.table_of_contents {\\n    clear: left;\\n\\n    min-width: 200px;\\n\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item {\\n    clear: left;\\n\\n    width: 100%;\\n\\n    margin: 4px 0px 0px 0px;\\n\\n    background-color: #FFFFFF;\\n\\n    color: #000000;\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item a {\\n    margin: 6px 0px 0px 6px;\\n  }\\n\\n  div.content_section {\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.content_section_text {\\n    padding: 4px 8px 4px 8px;\\n\\n    color: #000000;\\n    font-size: 100%;\\n  }\\n\\n  div.content_section_text pre {\\n    margin: 8px 0px 8px 0px;\\n    padding: 8px 8px 8px 8px;\\n\\n    border-width: 1px;\\n    border-style: dotted;\\n    border-color: #000000;\\n\\n    background-color: #F5F6F7;\\n\\n    font-style: italic;\\n  }\\n\\n  div.content_section_text p {\\n    margin-bottom: 6px;\\n  }\\n\\n  div.content_section_text ul, div.content_section_text li {\\n    padding: 4px 8px 4px 16px;\\n  }\\n\\n  div.section_header {\\n    padding: 3px 6px 3px 6px;\\n\\n    background-color: #8E9CB2;\\n\\n    color: #FFFFFF;\\n    font-weight: bold;\\n    font-size: 112%;\\n    text-align: center;\\n  }\\n\\n  div.section_header_red {\\n    background-color: #CD214F;\\n  }\\n\\n  div.section_header_grey {\\n    background-color: #9F9386;\\n  }\\n\\n  .floating_element {\\n    position: relative;\\n    float: left;\\n  }\\n\\n  div.table_of_contents_item a,\\n  div.content_section_text a {\\n    text-decoration: none;\\n    font-weight: bold;\\n  }\\n\\n  div.table_of_contents_item a:link,\\n  div.table_of_contents_item a:visited,\\n  div.table_of_contents_item a:active {\\n    color: #000000;\\n  }\\n\\n  div.table_of_contents_item a:hover {\\n    background-color: #000000;\\n\\n    color: #FFFFFF;\\n  }\\n\\n  div.content_section_text a:link,\\n  div.content_section_text a:visited,\\n   div.content_section_text a:active {\\n    background-color: #DCDFE6;\\n\\n    color: #000000;\\n  }\\n\\n  div.content_section_text a:hover {\\n    background-color: #000000;\\n\\n    color: #DCDFE6;\\n  }\\n\\n  div.validator {\\n  }\\n    </style>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header floating_element\">\\n        <img src=\"/icons/ubuntu-logo.png\" alt=\"Ubuntu Logo\" class=\"floating_element\"/>\\n        <span class=\"floating_element\">\\n          Apache2 Ubuntu Default Page\\n        </span>\\n      </div>\\n<!--      <div class=\"table_of_contents floating_element\">\\n        <div class=\"section_header section_header_grey\">\\n          TABLE OF CONTENTS\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#about\">About</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#changes\">Changes</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_elem",
+          "truncated": true
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.closes",
+      "description": "whether the server closes the connection after answering a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.status_line",
+      "description": "status line for HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nDate: Wed, 11 Nov 2026 12:01:12 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 301\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nDate: Wed, 11 Nov 2026 12:01:31 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 302\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.header_names",
+      "description": "header names, in the order sent, for HTTP/1.1 GET / with no Host header",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.server",
+      "description": "Server header for HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.header_values",
+      "description": "other header values for HTTP/1.1 GET / with no Host header (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "301",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "302",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.body",
+      "description": "body for HTTP/1.1 GET / with no Host header",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9996,
+      "decoy": {
+        "value": {
+          "length": 301,
+          "sha256": "be1d604603f91beef39df7a88aca1dba0e517c362d6ad017cb13aadc677681da",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>400 Bad Request</title>\\n</head><body>\\n<h1>Bad Request</h1>\\n<p>Your browser sent a request that this server could not understand.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 127.0.1.1 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 302,
+          "sha256": "6acc85df3741cfe457d51d92873315f0207fbfa33b98aba904e74b480315997f",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>400 Bad Request</title>\\n</head><body>\\n<h1>Bad Request</h1>\\n<p>Your browser sent a request that this server could not understand.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 172.18.0.5 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.closes",
+      "description": "whether the server closes the connection after answering HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.status_line",
+      "description": "status line for GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 414 Request-URI Too Long",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 9078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Long\\r\\nDate: Wed, 11 Nov 2026 12:01:13 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 323\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 414 Request-URI Too Long",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 9078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Long\\r\\nDate: Wed, 11 Nov 2026 12:01:32 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 324\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.header_names",
+      "description": "header names, in the order sent, for GET of a 9000-byte URI",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.server",
+      "description": "Server header for GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.header_values",
+      "description": "other header values for GET of a 9000-byte URI (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "323",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "324",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.body",
+      "description": "body for GET of a 9000-byte URI",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9996,
+      "decoy": {
+        "value": {
+          "length": 323,
+          "sha256": "d2531f4049ff0d2004d704788007bd96d1b20a4c37dec00e8e949f8c51111f29",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>414 Request-URI Too Long</title>\\n</head><body>\\n<h1>Request-URI Too Long</h1>\\n<p>The requested URL's length exceeds the capacity\\nlimit for this server.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 127.0.1.1 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 324,
+          "sha256": "ed598e89fbdaf667169589c7d09d423cf23809c3930e1aac4aa3f49c5cd59012",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>414 Request-URI Too Long</title>\\n</head><body>\\n<h1>Request-URI Too Long</h1>\\n<p>The requested URL's length exceeds the capacity\\nlimit for this server.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 172.18.0.5 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.closes",
+      "description": "whether the server closes the connection after answering GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.status_line",
+      "description": "status line for GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 414 Request-URI Too Long",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 70078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Long\\r\\nDate: Wed, 11 Nov 2026 12:01:15 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 323\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 414 Request-URI Too Long",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 70078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Long\\r\\nDate: Wed, 11 Nov 2026 12:01:33 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nContent-Length: 324\\r\\nConnection: close\\r\\nContent-Type: text/html; charset=iso-8859-1\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.header_names",
+      "description": "header names, in the order sent, for GET of a 70000-byte URI",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Content-Length",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.server",
+      "description": "Server header for GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.header_values",
+      "description": "other header values for GET of a 70000-byte URI (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.75,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "323",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-length": "324",
+          "connection": "close",
+          "content-type": "text/html; charset=iso-8859-1"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.body",
+      "description": "body for GET of a 70000-byte URI",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9996,
+      "decoy": {
+        "value": {
+          "length": 323,
+          "sha256": "d2531f4049ff0d2004d704788007bd96d1b20a4c37dec00e8e949f8c51111f29",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>414 Request-URI Too Long</title>\\n</head><body>\\n<h1>Request-URI Too Long</h1>\\n<p>The requested URL's length exceeds the capacity\\nlimit for this server.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 127.0.1.1 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 324,
+          "sha256": "ed598e89fbdaf667169589c7d09d423cf23809c3930e1aac4aa3f49c5cd59012",
+          "text": "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\\n<html><head>\\n<title>414 Request-URI Too Long</title>\\n</head><body>\\n<h1>Request-URI Too Long</h1>\\n<p>The requested URL's length exceeds the capacity\\nlimit for this server.<br />\\n</p>\\n<hr>\\n<address>Apache/2.4.41 (Ubuntu) Server at 172.18.0.5 Port 80</address>\\n</body></html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.closes",
+      "description": "whether the server closes the connection after answering GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.status_line",
+      "description": "status line for HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.0\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:16 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Sat, 15 Aug 2026 08:13:28 GMT\\r\\nETag: \"2d0-659118314a469\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 720\\r\\nVary: Accept-Encoding\\r\\nConnection: close\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.0\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:35 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Wed, 11 Nov 2026 09:07:12 GMT\\r\\nETag: \"2aa6-65ffc85427956\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 10918\\r\\nVary: Accept-Encoding\\r\\nConnection: close\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.header_names",
+      "description": "header names, in the order sent, for HTTP/1.0 GET / with no headers at all",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.server",
+      "description": "Server header for HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.header_values",
+      "description": "other header values for HTTP/1.0 GET / with no headers at all (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.875,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "720",
+          "vary": "Accept-Encoding",
+          "connection": "close",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "10918",
+          "vary": "Accept-Encoding",
+          "connection": "close",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.body",
+      "description": "body for HTTP/1.0 GET / with no headers at all",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9101,
+      "decoy": {
+        "value": {
+          "length": 720,
+          "sha256": "ba2f9bb29ac2dbe87a3152db7c2e0330bfaa189c9a27d52f5ed4bd18835a8fa5",
+          "text": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\\n      </div>\\n      <div class=\"content_section\">\\n        <h1>It works!</h1>\\n        <p>This is the default welcome page used to test the correct operation of the Apache2 server after installation on Ubuntu systems.</p>\\n      </div>\\n    </div>\\n  </body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 10918,
+          "sha256": "b663321ab439cc53a329ee352c1b855d9998d3af95524a05795a88b42a9acf07",
+          "text": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n    <style type=\"text/css\" media=\"screen\">\\n  * {\\n    margin: 0px 0px 0px 0px;\\n    padding: 0px 0px 0px 0px;\\n  }\\n\\n  body, html {\\n    padding: 3px 3px 3px 3px;\\n\\n    background-color: #D8DBE2;\\n\\n    font-family: Verdana, sans-serif;\\n    font-size: 11pt;\\n    text-align: center;\\n  }\\n\\n  div.main_page {\\n    position: relative;\\n    display: table;\\n\\n    width: 800px;\\n\\n    margin-bottom: 3px;\\n    margin-left: auto;\\n    margin-right: auto;\\n    padding: 0px 0px 0px 0px;\\n\\n    border-width: 2px;\\n    border-color: #212738;\\n    border-style: solid;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: center;\\n  }\\n\\n  div.page_header {\\n    height: 99px;\\n    width: 100%;\\n\\n    background-color: #F5F6F7;\\n  }\\n\\n  div.page_header span {\\n    margin: 15px 0px 0px 50px;\\n\\n    font-size: 180%;\\n    font-weight: bold;\\n  }\\n\\n  div.page_header img {\\n    margin: 3px 0px 0px 40px;\\n\\n    border: 0px 0px 0px;\\n  }\\n\\n  div.table_of_contents {\\n    clear: left;\\n\\n    min-width: 200px;\\n\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item {\\n    clear: left;\\n\\n    width: 100%;\\n\\n    margin: 4px 0px 0px 0px;\\n\\n    background-color: #FFFFFF;\\n\\n    color: #000000;\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item a {\\n    margin: 6px 0px 0px 6px;\\n  }\\n\\n  div.content_section {\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.content_section_text {\\n    padding: 4px 8px 4px 8px;\\n\\n    color: #000000;\\n    font-size: 100%;\\n  }\\n\\n  div.content_section_text pre {\\n    margin: 8px 0px 8px 0px;\\n    padding: 8px 8px 8px 8px;\\n\\n    border-width: 1px;\\n    border-style: dotted;\\n    border-color: #000000;\\n\\n    background-color: #F5F6F7;\\n\\n    font-style: italic;\\n  }\\n\\n  div.content_section_text p {\\n    margin-bottom: 6px;\\n  }\\n\\n  div.content_section_text ul, div.content_section_text li {\\n    padding: 4px 8px 4px 16px;\\n  }\\n\\n  div.section_header {\\n    padding: 3px 6px 3px 6px;\\n\\n    background-color: #8E9CB2;\\n\\n    color: #FFFFFF;\\n    font-weight: bold;\\n    font-size: 112%;\\n    text-align: center;\\n  }\\n\\n  div.section_header_red {\\n    background-color: #CD214F;\\n  }\\n\\n  div.section_header_grey {\\n    background-color: #9F9386;\\n  }\\n\\n  .floating_element {\\n    position: relative;\\n    float: left;\\n  }\\n\\n  div.table_of_contents_item a,\\n  div.content_section_text a {\\n    text-decoration: none;\\n    font-weight: bold;\\n  }\\n\\n  div.table_of_contents_item a:link,\\n  div.table_of_contents_item a:visited,\\n  div.table_of_contents_item a:active {\\n    color: #000000;\\n  }\\n\\n  div.table_of_contents_item a:hover {\\n    background-color: #000000;\\n\\n    color: #FFFFFF;\\n  }\\n\\n  div.content_section_text a:link,\\n  div.content_section_text a:visited,\\n   div.content_section_text a:active {\\n    background-color: #DCDFE6;\\n\\n    color: #000000;\\n  }\\n\\n  div.content_section_text a:hover {\\n    background-color: #000000;\\n\\n    color: #DCDFE6;\\n  }\\n\\n  div.validator {\\n  }\\n    </style>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header floating_element\">\\n        <img src=\"/icons/ubuntu-logo.png\" alt=\"Ubuntu Logo\" class=\"floating_element\"/>\\n        <span class=\"floating_element\">\\n          Apache2 Ubuntu Default Page\\n        </span>\\n      </div>\\n<!--      <div class=\"table_of_contents floating_element\">\\n        <div class=\"section_header section_header_grey\">\\n          TABLE OF CONTENTS\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#about\">About</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#changes\">Changes</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_elem",
+          "truncated": true
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.closes",
+      "description": "whether the server closes the connection after answering HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.status_line",
+      "description": "status line for GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+          "request_length": 98,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:17 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Sat, 15 Aug 2026 08:13:28 GMT\\r\\nETag: \"2d0-659118314a469\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 720\\r\\nVary: Accept-Encoding\\r\\nConnection: close\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+          "request_length": 98,
+          "response_head": "HTTP/1.1 200 OK\\r\\nDate: Wed, 11 Nov 2026 12:01:36 GMT\\r\\nServer: Apache/2.4.41 (Ubuntu)\\r\\nLast-Modified: Wed, 11 Nov 2026 09:07:12 GMT\\r\\nETag: \"2aa6-65ffc85427956\"\\r\\nAccept-Ranges: bytes\\r\\nContent-Length: 10918\\r\\nVary: Accept-Encoding\\r\\nConnection: close\\r\\nContent-Type: text/html\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.header_names",
+      "description": "header names, in the order sent, for GET / asking for Connection: close",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Date",
+          "Server",
+          "Last-Modified",
+          "ETag",
+          "Accept-Ranges",
+          "Content-Length",
+          "Vary",
+          "Connection",
+          "Content-Type"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.server",
+      "description": "Server header for GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "Apache/2.4.41 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.header_values",
+      "description": "other header values for GET / asking for Connection: close (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.875,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "720",
+          "vary": "Accept-Encoding",
+          "connection": "close",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "last-modified": "<http-date>",
+          "etag": "<etag>",
+          "accept-ranges": "bytes",
+          "content-length": "10918",
+          "vary": "Accept-Encoding",
+          "connection": "close",
+          "content-type": "text/html"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.body",
+      "description": "body for GET / asking for Connection: close",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9101,
+      "decoy": {
+        "value": {
+          "length": 720,
+          "sha256": "ba2f9bb29ac2dbe87a3152db7c2e0330bfaa189c9a27d52f5ed4bd18835a8fa5",
+          "text": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header\">\\n        <span class=\"floating_element\">Apache2 Ubuntu Default Page</span>\\n      </div>\\n      <div class=\"content_section\">\\n        <h1>It works!</h1>\\n        <p>This is the default welcome page used to test the correct operation of the Apache2 server after installation on Ubuntu systems.</p>\\n      </div>\\n    </div>\\n  </body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 10918,
+          "sha256": "b663321ab439cc53a329ee352c1b855d9998d3af95524a05795a88b42a9acf07",
+          "text": "\\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n  <!--\\n    Modified from the Debian original for Ubuntu\\n    Last updated: 2016-11-16\\n    See: https://launchpad.net/bugs/1288690\\n  -->\\n  <head>\\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\\n    <title>Apache2 Ubuntu Default Page: It works</title>\\n    <style type=\"text/css\" media=\"screen\">\\n  * {\\n    margin: 0px 0px 0px 0px;\\n    padding: 0px 0px 0px 0px;\\n  }\\n\\n  body, html {\\n    padding: 3px 3px 3px 3px;\\n\\n    background-color: #D8DBE2;\\n\\n    font-family: Verdana, sans-serif;\\n    font-size: 11pt;\\n    text-align: center;\\n  }\\n\\n  div.main_page {\\n    position: relative;\\n    display: table;\\n\\n    width: 800px;\\n\\n    margin-bottom: 3px;\\n    margin-left: auto;\\n    margin-right: auto;\\n    padding: 0px 0px 0px 0px;\\n\\n    border-width: 2px;\\n    border-color: #212738;\\n    border-style: solid;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: center;\\n  }\\n\\n  div.page_header {\\n    height: 99px;\\n    width: 100%;\\n\\n    background-color: #F5F6F7;\\n  }\\n\\n  div.page_header span {\\n    margin: 15px 0px 0px 50px;\\n\\n    font-size: 180%;\\n    font-weight: bold;\\n  }\\n\\n  div.page_header img {\\n    margin: 3px 0px 0px 40px;\\n\\n    border: 0px 0px 0px;\\n  }\\n\\n  div.table_of_contents {\\n    clear: left;\\n\\n    min-width: 200px;\\n\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item {\\n    clear: left;\\n\\n    width: 100%;\\n\\n    margin: 4px 0px 0px 0px;\\n\\n    background-color: #FFFFFF;\\n\\n    color: #000000;\\n    text-align: left;\\n  }\\n\\n  div.table_of_contents_item a {\\n    margin: 6px 0px 0px 6px;\\n  }\\n\\n  div.content_section {\\n    margin: 3px 3px 3px 3px;\\n\\n    background-color: #FFFFFF;\\n\\n    text-align: left;\\n  }\\n\\n  div.content_section_text {\\n    padding: 4px 8px 4px 8px;\\n\\n    color: #000000;\\n    font-size: 100%;\\n  }\\n\\n  div.content_section_text pre {\\n    margin: 8px 0px 8px 0px;\\n    padding: 8px 8px 8px 8px;\\n\\n    border-width: 1px;\\n    border-style: dotted;\\n    border-color: #000000;\\n\\n    background-color: #F5F6F7;\\n\\n    font-style: italic;\\n  }\\n\\n  div.content_section_text p {\\n    margin-bottom: 6px;\\n  }\\n\\n  div.content_section_text ul, div.content_section_text li {\\n    padding: 4px 8px 4px 16px;\\n  }\\n\\n  div.section_header {\\n    padding: 3px 6px 3px 6px;\\n\\n    background-color: #8E9CB2;\\n\\n    color: #FFFFFF;\\n    font-weight: bold;\\n    font-size: 112%;\\n    text-align: center;\\n  }\\n\\n  div.section_header_red {\\n    background-color: #CD214F;\\n  }\\n\\n  div.section_header_grey {\\n    background-color: #9F9386;\\n  }\\n\\n  .floating_element {\\n    position: relative;\\n    float: left;\\n  }\\n\\n  div.table_of_contents_item a,\\n  div.content_section_text a {\\n    text-decoration: none;\\n    font-weight: bold;\\n  }\\n\\n  div.table_of_contents_item a:link,\\n  div.table_of_contents_item a:visited,\\n  div.table_of_contents_item a:active {\\n    color: #000000;\\n  }\\n\\n  div.table_of_contents_item a:hover {\\n    background-color: #000000;\\n\\n    color: #FFFFFF;\\n  }\\n\\n  div.content_section_text a:link,\\n  div.content_section_text a:visited,\\n   div.content_section_text a:active {\\n    background-color: #DCDFE6;\\n\\n    color: #000000;\\n  }\\n\\n  div.content_section_text a:hover {\\n    background-color: #000000;\\n\\n    color: #DCDFE6;\\n  }\\n\\n  div.validator {\\n  }\\n    </style>\\n  </head>\\n  <body>\\n    <div class=\"main_page\">\\n      <div class=\"page_header floating_element\">\\n        <img src=\"/icons/ubuntu-logo.png\" alt=\"Ubuntu Logo\" class=\"floating_element\"/>\\n        <span class=\"floating_element\">\\n          Apache2 Ubuntu Default Page\\n        </span>\\n      </div>\\n<!--      <div class=\"table_of_contents floating_element\">\\n        <div class=\"section_header section_header_grey\">\\n          TABLE OF CONTENTS\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#about\">About</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_element\">\\n          <a href=\"#changes\">Changes</a>\\n        </div>\\n        <div class=\"table_of_contents_item floating_elem",
+          "truncated": true
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.closes",
+      "description": "whether the server closes the connection after answering GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.keep_alive.second_request_answered",
+      "description": "whether a second request on the same connection is answered",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "first_connection_header": null,
+          "second_status_line": "HTTP/1.1 404 Not Found"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "first_connection_header": null,
+          "second_status_line": "HTTP/1.1 404 Not Found"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.keep_alive.connection_header",
+      "description": "Connection header on a response to a request that did not ask to close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.response_latency",
+      "description": "median seconds from sending a request to the first byte of its response",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.2,
+      "decoy": {
+        "value": 0.005,
+        "evidence": {
+          "samples": 14,
+          "min": 0.003,
+          "max": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": 0.001,
+        "evidence": {
+          "samples": 14,
+          "min": 0.0,
+          "max": 0.001
+        },
+        "error": null
+      }
+    }
+  ]
+}
