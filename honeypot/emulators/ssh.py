@@ -203,11 +203,22 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         if self._expiry is not None:
             self._expiry.cancel()
             self._expiry = None
+        was_admitted = self.admitted
         if self.admitted:
             rate_limiter.release(self.source_ip)
             self.admitted = False
         if self._conn is not None:
             self._emulator.untrack(self._conn)
+        if self.state.session_id is None and was_admitted:
+            # Connected, perhaps exchanged keys, and left without trying to
+            # log in: a banner grab or a scanner's probe. The session used to
+            # be opened only when authentication began, so these left nothing
+            # at all, while the same visit to the Telnet or FTP decoy was
+            # recorded. Found by the controlled-traffic check, where six
+            # banner grabs produced no record.
+            task = asyncio.create_task(self._record_unauthenticated())
+            _close_tasks.add(task)
+            task.add_done_callback(_close_tasks.discard)
         if self.state.session_id:
             # connection_lost is synchronous; hand the close off to the loop.
             # The shell state is taken *now*, before anything else can drop
@@ -217,6 +228,29 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
             task = asyncio.create_task(_close_session(self.state.session_id, shell))
             _close_tasks.add(task)
             task.add_done_callback(_close_tasks.discard)
+
+    async def _record_unauthenticated(self) -> None:
+        """A session for a connection that ended before it tried to log in."""
+        try:
+            if not await self._emulator.rate_limit_ok(self.source_ip):
+                return
+            session_id = await session_manager.create_session(
+                "ssh", self.source_ip, self.source_port,
+                {"protocol_version": "SSH-2.0", "closed_before_auth": True},
+                flow=self.flow,
+            )
+            self.state.session_id = session_id
+            banner = self._client_version()
+            if banner != "unknown":
+                await session_manager.record_network_event(
+                    session_id, "ssh_client_banner", {"banner": banner},
+                )
+            await self._record_fingerprints()
+            await _close_session(session_id, shell_states.pop(session_id))
+        except Exception:
+            # Never let bookkeeping for a connection that is already gone
+            # disturb the ones that are not.
+            logger.warning("Could not record an unauthenticated SSH connection", exc_info=True)
 
     def seconds_left(self) -> float:
         """Time remaining before the connection hits the session cap."""

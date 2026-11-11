@@ -90,7 +90,9 @@ What still misses in run 2:
 
 `ssh-banner-grab` ran six times in each run and left no session: a client
 that connects to the SSH decoy, reads the banner and leaves is not recorded
-at all. That is a gap in capture, found by this check, and it is open.
+at all. That was a gap in capture, found by this check. It has since been
+closed: such a connection is now recorded as a session with no commands and
+no credentials. The two runs above predate that fix.
 
 ## Limits
 

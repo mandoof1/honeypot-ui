@@ -410,3 +410,21 @@ async def test_refusals_become_bounded_minimal_records(ingested):
     assert await refusal_log.flush() == MAX_RECORDS_PER_FLUSH
     assert refusal_log.suppressed == 500 + MAX_TRACKED - MAX_RECORDS_PER_FLUSH
     refusal_log.reset()
+
+
+async def test_a_connection_that_never_logs_in_is_still_recorded(ssh, ingested):
+    """A banner grab left nothing: the session was opened only when
+    authentication began. Six of them produced no record in the controlled
+    traffic check, while the same visit to Telnet or FTP was stored."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
+    banner = await asyncio.wait_for(reader.readline(), timeout=5)
+    assert banner.startswith(b"SSH-2.0-")
+    writer.write(b"SSH-2.0-BannerGrab_1.0\r\n")
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+    payload = await asyncio.wait_for(ingested.get(), timeout=10)
+    assert payload["protocol"] == "ssh"
+    assert payload["commands"] == [] and payload["credentials"] == []
+    assert payload["attacker_port"] != 0, "a visit, not a refusal"
