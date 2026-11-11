@@ -12,23 +12,14 @@ anything else is refused before a connection is made.
 
 ## Status
 
-- The tool is tested against small fake servers that run inside the test
-  process, and it has been run end to end with the engine as both the decoy
-  and the reference, which proves the probes run and nothing more.
-- **The reference images in `reference/` have never been built or run with
-  Docker.** They were written without a Docker daemon available. Expect to
-  fix things on the first build.
-- **No comparison between a decoy and a real daemon has been run yet.**
-  There are no results, and nothing in this directory says how close or far
-  the decoys are.
-
-What is known about the references: an earlier revision of
-`reference/provision.sh` was run once in a chroot of the
-`ubuntu:focal-20231003` image, outside Docker. Its `sources` and `install`
-steps completed for the six Ubuntu services with the package versions listed
-below, and the sshd started that way sent
-`SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.9`. The script has changed since, the
-Debian image was never built, and the other five daemons were never started.
+- The six Ubuntu reference images build and run (first built on the
+  deployment server, 11 November 2026). The Debian image (`sshd-bullseye`)
+  has still never been built.
+- The first comparison of the decoys with the real daemons is recorded in
+  [docs/evaluation/fingerprint](../../docs/evaluation/fingerprint/README.md),
+  with every result file.
+- The tool itself is tested against small fake servers that run inside the
+  test process.
 
 ## Reference daemons
 

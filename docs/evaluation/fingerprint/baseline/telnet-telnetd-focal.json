@@ -1,0 +1,409 @@
+{
+  "schema": "honeysentinel.fingerprint-audit/1",
+  "generated_at": "2026-11-11T09:21:25Z",
+  "tool": {
+    "name": "tools.fingerprint_audit",
+    "git_revision": "fd2d146",
+    "git_revision_source": "GIT_REVISION",
+    "uncommitted_changes": null,
+    "python": "3.12.15"
+  },
+  "environment": {
+    "network": "both targets were reached at loopback addresses from the process that ran the audit, so both ran on the same machine",
+    "kernel": "6.12.116+deb13-amd64"
+  },
+  "protocol": "telnet",
+  "decoy": {
+    "address": "127.0.0.1:42323",
+    "description": "engine fd2d146 in a throwaway container, identity seed 8, node controlled-test-node",
+    "probe_errors": {}
+  },
+  "reference": {
+    "address": "127.0.0.1:42123",
+    "description": "telnetd-focal: service: telnetd;os: Ubuntu 20.04.6 LTS;apt_archive: snapshot.ubuntu.com 20231115T000000Z (focal, focal-updates, focal-security);package: telnetd 0.17-41.2build1;package: openbsd-inetd 0.20160825-4build1;package: netbase 6.1;package: login 1:4.8.1-1ubuntu5.20.04.4;package: base-files 11ubuntu5.7;config_sha256: /etc/inetd.conf 1e73506cfe8176f50b1b347366cc77e915c1ff1cade35e4f43ebb33639c84fb0;config_sha256: /etc/issue.net d7fef0db871cc555bbd009590ef8acc043d14e082329942adc9568294f522ecf;reports: inetd runs telnet stream tcp nowait telnetd /usr/sbin/tcpd /usr/sbin/in.telnetd;",
+    "probe_errors": {}
+  },
+  "settings": {
+    "timeout": 10.0,
+    "delay": 1.1,
+    "quiet": 1.5,
+    "idle_cap": 15.0,
+    "login_attempts": 8,
+    "ftp_user": "test",
+    "ftp_password": "test"
+  },
+  "summary": {
+    "checks": 10,
+    "matches": 3,
+    "mismatches": 7,
+    "informational_timing_rows": 2,
+    "timing_rows_outside_tolerance": 1,
+    "rows_with_probe_errors": 0
+  },
+  "checks": [
+    {
+      "id": "telnet.silent.negotiation",
+      "description": "commands sent to a client that answers nothing",
+      "comparison": "ordered",
+      "informational": false,
+      "match": false,
+      "similarity": 0.0,
+      "decoy": {
+        "value": [
+          "WILL ECHO",
+          "WILL SUPPRESS-GO-AHEAD",
+          "DO SUPPRESS-GO-AHEAD"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "DO TERMINAL-TYPE",
+          "DO TERMINAL-SPEED",
+          "DO X-DISPLAY-LOCATION",
+          "DO NEW-ENVIRON"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.silent.text",
+      "description": "text sent to a client that answers nothing",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.0,
+      "decoy": {
+        "value": {
+          "length": 40,
+          "sha256": "e332d796bf7cacfd67c496ba823837d39f9bf0d468d7c8b261256f9f5f0191f3",
+          "text": "\\r\\nUbuntu 20.04.6 LTS\\r\\n<hostname> login: ",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "\\r\\nUbuntu 20.04.6 LTS\\r\\nsrv-01 login: "
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": ""
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.silent.first_byte_delay",
+      "description": "seconds from connect to the server's first byte",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.3333,
+      "decoy": {
+        "value": 0.001,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": 0.003,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.refusing.negotiation",
+      "description": "every command sent to a client that refuses each option: the server's requests, then its reaction to the refusals",
+      "comparison": "ordered",
+      "informational": false,
+      "match": false,
+      "similarity": 0.1333,
+      "decoy": {
+        "value": [
+          "WILL ECHO",
+          "WILL SUPPRESS-GO-AHEAD",
+          "DO SUPPRESS-GO-AHEAD",
+          "DONT SUPPRESS-GO-AHEAD"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "DO TERMINAL-TYPE",
+          "DO TERMINAL-SPEED",
+          "DO X-DISPLAY-LOCATION",
+          "DO NEW-ENVIRON",
+          "WILL SUPPRESS-GO-AHEAD",
+          "DO ECHO",
+          "DO NAWS",
+          "WILL STATUS",
+          "DO REMOTE-FLOW-CONTROL",
+          "WILL SUPPRESS-GO-AHEAD",
+          "WILL ECHO"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.refusing.login_banner",
+      "description": "text up to the first login prompt, hostname masked",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9864,
+      "decoy": {
+        "value": {
+          "length": 40,
+          "sha256": "e332d796bf7cacfd67c496ba823837d39f9bf0d468d7c8b261256f9f5f0191f3",
+          "text": "\\r\\nUbuntu 20.04.6 LTS\\r\\n<hostname> login: ",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "\\r\\nUbuntu 20.04.6 LTS\\r\\nsrv-01 login: ",
+          "hostname": "srv-01"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 38,
+          "sha256": "4ad3da5d9679a4553b713ed6d4e751e793f39153410fa1e6f95cf23d14dc4d95",
+          "text": "Ubuntu 20.04.6 LTS\\r\\n<hostname> login: ",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "Ubuntu 20.04.6 LTS\\r\\nref-focal login: ",
+          "hostname": "ref-focal"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.option.client_will_unknown",
+      "description": "reply to IAC WILL 99 (client offers an unassigned option)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "commands": [
+            "DONT OPTION-99"
+          ],
+          "text": ""
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "commands": [
+            "DONT OPTION-99"
+          ],
+          "text": ""
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.option.client_do_unknown",
+      "description": "reply to IAC DO 99 (client requests an unassigned option)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "commands": [
+            "WONT OPTION-99"
+          ],
+          "text": ""
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "commands": [
+            "WONT OPTION-99"
+          ],
+          "text": ""
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.login.after_username",
+      "description": "what the server sends after a username line (echo, password prompt)",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.8492,
+      "decoy": {
+        "value": {
+          "length": 10,
+          "sha256": "79a7c1f4f967151a775b8468756306770ccd6d3801734f866c64c135ca68e22e",
+          "text": "Password: ",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 16,
+          "sha256": "f32ea6685ba3c69d5baa6356b7c472e62cf2fc42d0d22095b6639485733dc7e7",
+          "text": "root\\r\\nPassword: ",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.login.after_wrong_password",
+      "description": "what the server sends after a wrong password, up to the next prompt",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 39,
+          "sha256": "28ab65503883a10cc8ed1648c1c175d9efb99415105fadabbb784c83cb23e751",
+          "text": "\\r\\n\\r\\nLogin incorrect\\r\\n<hostname> login: ",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 39,
+          "sha256": "28ab65503883a10cc8ed1648c1c175d9efb99415105fadabbb784c83cb23e751",
+          "text": "\\r\\n\\r\\nLogin incorrect\\r\\n<hostname> login: ",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.login.failed_login_delay",
+      "description": "seconds from a wrong password to the next login prompt",
+      "comparison": "timing",
+      "informational": true,
+      "match": false,
+      "similarity": 0.3477,
+      "decoy": {
+        "value": 1.003,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": 2.885,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.login.wrong_passwords.root",
+      "description": "how repeated wrong passwords for root end, and after how many",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.0,
+      "decoy": {
+        "value": {
+          "wrong_passwords_sent": 4,
+          "ended": "logged-in"
+        },
+        "evidence": {
+          "attempt_limit": 8,
+          "final_text": "\\r\\nWelcome to Ubuntu 20.04.6 LTS (GNU/Linux 5.4.0-156-generic x86_64)\\r\\n\\r\\n * Documentation:  https://help.ubuntu.com\\r\\n * Management:     https://landscape.canonical.com\\r\\n * Support:        https://ubuntu.com/advantage\\r\\n\\r\\nLast login: Thu Nov 05 15:37:19 2026 from 10.0.1.9\\r\\nroot@<hostname>:~# ",
+          "seconds_per_attempt": [
+            1.003,
+            1.002,
+            1.002,
+            0.001
+          ]
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "wrong_passwords_sent": 5,
+          "ended": "closed-by-server"
+        },
+        "evidence": {
+          "attempt_limit": 8,
+          "final_text": "\\r\\n\\r\\nLogin incorrect\\r\\nMaximum number of tries exceeded (5)\\r\\n",
+          "seconds_per_attempt": [
+            2.885,
+            2.503,
+            2.916,
+            3.036,
+            2.856
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "telnet.login.wrong_passwords.unknown_user",
+      "description": "how repeated wrong passwords for fpaudit-nouser end, and after how many",
+      "comparison": "exact",
+      "informational": false,
+      "match": false,
+      "similarity": 0.5,
+      "decoy": {
+        "value": {
+          "wrong_passwords_sent": 6,
+          "ended": "closed-by-server"
+        },
+        "evidence": {
+          "attempt_limit": 8,
+          "final_text": "\\r\\n\\r\\nLogin incorrect\\r\\n<hostname> login: \\r\\nMaximum number of tries exceeded (6)\\r\\n",
+          "seconds_per_attempt": [
+            1.003,
+            1.002,
+            1.002,
+            1.002,
+            1.002,
+            1.003
+          ]
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "wrong_passwords_sent": 5,
+          "ended": "closed-by-server"
+        },
+        "evidence": {
+          "attempt_limit": 8,
+          "final_text": "\\r\\n\\r\\nLogin incorrect\\r\\nMaximum number of tries exceeded (5)\\r\\n",
+          "seconds_per_attempt": [
+            3.27,
+            2.592,
+            3.004,
+            2.62,
+            3.24
+          ]
+        },
+        "error": null
+      }
+    }
+  ]
+}

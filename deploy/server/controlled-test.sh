@@ -68,6 +68,7 @@ docker run -d --name hs-test --network "$NET" \
   --cap-drop ALL --security-opt no-new-privileges:true --dns 127.0.0.1 \
   -e HONEYPOT_CONTAINER=true -e HONEYPOT_NODE_NAME="$NODE" \
   -e HONEYPOT_PROTOCOLS=ssh,http -e HONEYPOT_CONTROL_BIND=127.0.0.1 \
+  -e HONEYPOT_HTTP_SESSION_IDLE=2 \
   -e HONEYPOT_CAPTURE_DIR=/app/data/sessions -e HONEYPOT_FILE_CAPTURE_DIR=/app/data/uploads \
   -e HONEYPOT_LOG_DIR=/app/data/logs \
   -e BACKEND_API_URL=http://ingest:8000/api/v1 \

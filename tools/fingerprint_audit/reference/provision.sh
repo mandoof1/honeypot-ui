@@ -133,7 +133,10 @@ cmd_install() {
         add_ftp_account
         ;;
     telnetd)
-        install_packages openbsd-inetd telnetd
+        # netbase provides /etc/services. A stock server has it; the
+        # container base image does not, and without it inetd cannot
+        # look up "telnet" and listens on nothing.
+        install_packages netbase openbsd-inetd telnetd
         ;;
     *)
         die "unknown service: $service"
@@ -181,7 +184,7 @@ packages_for() {
     nginx) echo "nginx nginx-core nginx-common" ;;
     vsftpd) echo "vsftpd libpam-modules" ;;
     proftpd) echo "proftpd-basic" ;;
-    telnetd) echo "telnetd openbsd-inetd login base-files" ;;
+    telnetd) echo "telnetd openbsd-inetd netbase login base-files" ;;
     esac
 }
 
