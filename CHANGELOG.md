@@ -15,6 +15,21 @@
 - The Telnet reference image lacked `/etc/services` and listened on nothing;
   the controlled test removed its engine before the web session was
   delivered. Both fixed.
+- The differences that comparison found are fixed where they are the server's
+  behaviour: the SSH decoy pads unencrypted packets with zeros, answers a
+  malformed client identification and a bad first packet as OpenSSH does,
+  advertises OpenSSH's signature algorithms and pauses after a wrong
+  password; the Telnet decoy negotiates options, prints its banner, echoes
+  and pauses as telnetd does; the FTP decoy's replies, limits and failed
+  logins follow vsftpd and ProFTPD; HTTP/0.9 requests, `POST` to a static
+  page and the 501 page follow Apache and nginx. Left as they are, on
+  purpose: the decoy still lets a client in after a few wrong passwords, and
+  it serves its own page rather than the distribution's default one.
+- Backup, restore and key rotation have now been run on the reference
+  server: a fresh backup restored into a throwaway database with matching
+  row counts, a transcript that decrypts with the key from the same set, and
+  the trained models; `rotate_key` re-sealed the 209 blobs written before
+  binding existed.
 
 ## 1.0.0
 
