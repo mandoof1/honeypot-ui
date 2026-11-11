@@ -98,7 +98,7 @@ _FTP_SERVERS = [
     ("vsftpd", "220 (vsFTPd 3.0.3)"),
     # No version: the packaged ProFTPD greets with "ProFTPD Server (Debian)".
     # "ProFTPD 1.3.6c Server" was this file's guess, and the first comparison
-    # with the real daemon (docs/evaluation/fingerprint/baseline/
+    # with the real daemon (docs/evaluation/fingerprint/1-baseline/
     # ftp-proftpd-focal.json, ftp.greeting) showed it was wrong.
     ("proftpd", "220 ProFTPD Server (Debian) [::ffff:{ip}]"),
 ]

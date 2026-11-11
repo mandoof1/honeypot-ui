@@ -25,6 +25,13 @@
   page and the 501 page follow Apache and nginx. Left as they are, on
   purpose: the decoy still lets a client in after a few wrong passwords, and
   it serves its own page rather than the distribution's default one.
+- Measured again after those fixes, against the same real daemons: OpenSSH
+  36 of 38, telnetd 9 of 10, vsftpd 29 of 29, ProFTPD 27 of 29, Apache 65 of
+  86, nginx 86 of 86. What remains is the deliberate let-in after wrong
+  passwords, the host's own name and address in two FTP replies and the
+  Apache error pages, the size of the decoy's own page, and the order of
+  methods in Apache's `Allow` header. Both runs are in
+  `docs/evaluation/fingerprint/`.
 - Backup, restore and key rotation have now been run on the reference
   server: a fresh backup restored into a throwaway database with matching
   row counts, a transcript that decrypts with the key from the same set, and

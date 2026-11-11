@@ -1,7 +1,7 @@
 """The SSH decoy answers pre-authentication probes the way OpenSSH 8.2p1 did.
 
 Every expected value here is copied from the reference side of
-docs/evaluation/fingerprint/baseline/ssh-sshd-focal.json — the first
+docs/evaluation/fingerprint/1-baseline/ssh-sshd-focal.json — the first
 probe-by-probe comparison of the decoy with a real sshd (openssh-server
 1:8.2p1-4ubuntu0.9) — and each test sends what the named probe sent
 (tools/fingerprint_audit/ssh_probes.py and ssh_auth.py). The check id is in

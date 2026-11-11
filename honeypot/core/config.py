@@ -203,7 +203,7 @@ class HoneypotConfig:
     #: Seconds each decoy waits before it refuses a wrong password, while
     #: HONEYPOT_ANTI_FINGERPRINT is on. The defaults are what the daemons
     #: they imitate took in the first fingerprint comparison (docs/
-    #: evaluation/fingerprint/baseline): OpenSSH 8.2p1 2.175 s, login(1)
+    #: evaluation/fingerprint/1-baseline): OpenSSH 8.2p1 2.175 s, login(1)
     #: behind telnetd 2.885 s, vsftpd 3.031 s. ProFTPD refused at once, so
     #: the FTP value applies to the vsftpd identity only. See
     #: honeypot/core/login_delay.py.

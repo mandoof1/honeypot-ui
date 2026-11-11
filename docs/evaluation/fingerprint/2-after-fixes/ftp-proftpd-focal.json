@@ -1,0 +1,1017 @@
+{
+  "schema": "honeysentinel.fingerprint-audit/1",
+  "generated_at": "2026-11-11T12:01:39Z",
+  "tool": {
+    "name": "tools.fingerprint_audit",
+    "git_revision": "f250174",
+    "git_revision_source": "GIT_REVISION",
+    "uncommitted_changes": null,
+    "python": "3.12.15"
+  },
+  "environment": {
+    "network": "both targets were reached at loopback addresses from the process that ran the audit, so both ran on the same machine",
+    "kernel": "6.12.116+deb13-amd64"
+  },
+  "protocol": "ftp",
+  "decoy": {
+    "address": "127.0.0.1:42121",
+    "description": "engine f250174 in a throwaway container, identity seed 75, node controlled-test-node",
+    "probe_errors": {}
+  },
+  "reference": {
+    "address": "127.0.0.1:42026",
+    "description": "proftpd-focal: service: proftpd;os: Ubuntu 20.04.6 LTS;apt_archive: snapshot.ubuntu.com 20231115T000000Z (focal, focal-updates, focal-security);package: proftpd-basic 1.3.6c-2;config_sha256: /etc/proftpd/proftpd.conf e935a3de07b3521f0cc0e10ca0d4c7be7c0f7ae9dd552f8e7f2197dee28d5b48;reports: ProFTPD Version 1.3.6c;",
+    "probe_errors": {}
+  },
+  "settings": {
+    "timeout": 10.0,
+    "delay": 1.1,
+    "quiet": 1.5,
+    "idle_cap": 15.0,
+    "login_attempts": 8,
+    "ftp_user": "test",
+    "ftp_password": "test"
+  },
+  "summary": {
+    "checks": 29,
+    "matches": 27,
+    "mismatches": 2,
+    "informational_timing_rows": 3,
+    "timing_rows_outside_tolerance": 0,
+    "rows_with_probe_errors": 0
+  },
+  "checks": [
+    {
+      "id": "ftp.greeting",
+      "description": "greeting sent on connect",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 43,
+          "sha256": "3fb5429bc69c737921469bf8a92c03bc6ba082bcfc11ca281b87a69bde8de646",
+          "text": "220 ProFTPD Server (Debian) [::ffff:<ip>]\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "220 ProFTPD Server (Debian) [::ffff:192.168.10.187]\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 43,
+          "sha256": "3fb5429bc69c737921469bf8a92c03bc6ba082bcfc11ca281b87a69bde8de646",
+          "text": "220 ProFTPD Server (Debian) [::ffff:<ip>]\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "220 ProFTPD Server (Debian) [::ffff:172.18.0.4]\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.greeting.delay",
+      "description": "seconds from connect to the greeting",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.75,
+      "decoy": {
+        "value": 0.004,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": 0.003,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.syst",
+      "description": "reply to SYST before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 19,
+          "sha256": "2fc6b59245e099eb2ec6e0691d13b07c14dd72232cfcb0166cb2fc0d5b6cd4c8",
+          "text": "215 UNIX Type: L8\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "215 UNIX Type: L8\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 19,
+          "sha256": "2fc6b59245e099eb2ec6e0691d13b07c14dd72232cfcb0166cb2fc0d5b6cd4c8",
+          "text": "215 UNIX Type: L8\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "215 UNIX Type: L8\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.feat",
+      "description": "reply to FEAT before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 379,
+          "sha256": "cf22bcc8e00c22b70a56d27ea8b9b9443923b1a79904ce9720ffee897fdb6141",
+          "text": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 379,
+          "sha256": "cf22bcc8e00c22b70a56d27ea8b9b9443923b1a79904ce9720ffee897fdb6141",
+          "text": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.help",
+      "description": "reply to HELP before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9999,
+      "decoy": {
+        "value": {
+          "length": 591,
+          "sha256": "b5f35e6d23ad48c01370b3f31903f38a6de0108d5ed2aadfb83a2a98cb615e65",
+          "text": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@store-09.lan\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@store-09.lan\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 588,
+          "sha256": "49544adda6f16dcce6bc574788a4b133a96824c59e331101236ece3aa1a02add",
+          "text": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@ref-focal\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@ref-focal\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.stat",
+      "description": "reply to STAT before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 37,
+          "sha256": "b3b95839f20128352d0c0e66f9595a878f76775304993dc767fe5440ba04b43d",
+          "text": "530 Please login with USER and PASS\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Please login with USER and PASS\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 37,
+          "sha256": "b3b95839f20128352d0c0e66f9595a878f76775304993dc767fe5440ba04b43d",
+          "text": "530 Please login with USER and PASS\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Please login with USER and PASS\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.noop",
+      "description": "reply to NOOP before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 29,
+          "sha256": "31089140191afd5d5e154bb42ab75cb4019c3c502e73394791f7e2c2fb65420b",
+          "text": "200 NOOP command successful\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "200 NOOP command successful\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 29,
+          "sha256": "31089140191afd5d5e154bb42ab75cb4019c3c502e73394791f7e2c2fb65420b",
+          "text": "200 NOOP command successful\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "200 NOOP command successful\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.pasv",
+      "description": "reply to PASV before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 37,
+          "sha256": "b3b95839f20128352d0c0e66f9595a878f76775304993dc767fe5440ba04b43d",
+          "text": "530 Please login with USER and PASS\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Please login with USER and PASS\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 37,
+          "sha256": "b3b95839f20128352d0c0e66f9595a878f76775304993dc767fe5440ba04b43d",
+          "text": "530 Please login with USER and PASS\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Please login with USER and PASS\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.unknown_command",
+      "description": "reply to FPAUDIT before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 28,
+          "sha256": "bbec40a45d71002c86a63d115a5526a21742b61e6163fc5adbdeeca22b729c1c",
+          "text": "500 FPAUDIT not understood\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "500 FPAUDIT not understood\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 28,
+          "sha256": "bbec40a45d71002c86a63d115a5526a21742b61e6163fc5adbdeeca22b729c1c",
+          "text": "500 FPAUDIT not understood\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "500 FPAUDIT not understood\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.pass_before_user",
+      "description": "reply to PASS sent before any USER",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 27,
+          "sha256": "a5ce1fa5dd288462ab62061ffb7cea72e040c0b5828b30c4362e39f56c71dc83",
+          "text": "503 Login with USER first\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "503 Login with USER first\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 27,
+          "sha256": "a5ce1fa5dd288462ab62061ffb7cea72e040c0b5828b30c4362e39f56c71dc83",
+          "text": "503 Login with USER first\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "503 Login with USER first\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.quit",
+      "description": "reply to QUIT before login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 14,
+          "sha256": "717e6d313952e29309cd8b63a657b76bd25a25a998e6408d8023556c243af8f2",
+          "text": "221 Goodbye.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "221 Goodbye.\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 14,
+          "sha256": "717e6d313952e29309cd8b63a657b76bd25a25a998e6408d8023556c243af8f2",
+          "text": "221 Goodbye.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "221 Goodbye.\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.before_login.quit.closes",
+      "description": "whether the server closes the connection after QUIT before login",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.login.unknown_user.user",
+      "description": "reply to USER fpaudit-nouser",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 42,
+          "sha256": "038b7456f38b185691838bb1c9a19d4c0ebe6515ee38087f9d660756174d9d97",
+          "text": "331 Password required for fpaudit-nouser\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "331 Password required for fpaudit-nouser\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 42,
+          "sha256": "038b7456f38b185691838bb1c9a19d4c0ebe6515ee38087f9d660756174d9d97",
+          "text": "331 Password required for fpaudit-nouser\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "331 Password required for fpaudit-nouser\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.login.unknown_user.pass",
+      "description": "reply to a wrong PASS for that user",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 22,
+          "sha256": "0b1b89bb8f62678ecce63e90c271d0784c885301a4e1a7d0878c3e84d7666ef1",
+          "text": "530 Login incorrect.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Login incorrect.\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 22,
+          "sha256": "0b1b89bb8f62678ecce63e90c271d0784c885301a4e1a7d0878c3e84d7666ef1",
+          "text": "530 Login incorrect.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "530 Login incorrect.\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.login.failed_pass_delay",
+      "description": "seconds the server takes to reject the wrong PASS",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.0,
+      "decoy": {
+        "value": 0.005,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": 0.0,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.login.repeated_wrong_password",
+      "description": "replies to repeated wrong passwords for test, and how it ends",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "pass_replies": [
+            "530 Login incorrect.\r\n",
+            "530 Login incorrect.\r\n",
+            "530 Login incorrect.\r\n"
+          ],
+          "ended": "closed-by-server"
+        },
+        "evidence": {
+          "attempt_limit": 8
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "pass_replies": [
+            "530 Login incorrect.\r\n",
+            "530 Login incorrect.\r\n",
+            "530 Login incorrect.\r\n"
+          ],
+          "ended": "closed-by-server"
+        },
+        "evidence": {
+          "attempt_limit": 8
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.user",
+      "description": "reply to USER test",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 32,
+          "sha256": "0aceb5737f2087466865f97de6d46304f41824f2b9fa76424adee9308e6a1f3b",
+          "text": "331 Password required for test\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "331 Password required for test\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 32,
+          "sha256": "0aceb5737f2087466865f97de6d46304f41824f2b9fa76424adee9308e6a1f3b",
+          "text": "331 Password required for test\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "331 Password required for test\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.pass",
+      "description": "reply to the correct PASS",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 25,
+          "sha256": "c2340092f7ab4f966809a892686caece2ad95d667f149d9b46023b14bac59a18",
+          "text": "230 User test logged in\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "230 User test logged in\\r\\n",
+          "logged_in": true
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 25,
+          "sha256": "c2340092f7ab4f966809a892686caece2ad95d667f149d9b46023b14bac59a18",
+          "text": "230 User test logged in\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "230 User test logged in\\r\\n",
+          "logged_in": true
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.syst",
+      "description": "reply to SYST after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 19,
+          "sha256": "2fc6b59245e099eb2ec6e0691d13b07c14dd72232cfcb0166cb2fc0d5b6cd4c8",
+          "text": "215 UNIX Type: L8\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "215 UNIX Type: L8\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 19,
+          "sha256": "2fc6b59245e099eb2ec6e0691d13b07c14dd72232cfcb0166cb2fc0d5b6cd4c8",
+          "text": "215 UNIX Type: L8\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "215 UNIX Type: L8\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.feat",
+      "description": "reply to FEAT after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 379,
+          "sha256": "cf22bcc8e00c22b70a56d27ea8b9b9443923b1a79904ce9720ffee897fdb6141",
+          "text": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 379,
+          "sha256": "cf22bcc8e00c22b70a56d27ea8b9b9443923b1a79904ce9720ffee897fdb6141",
+          "text": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Features:\\r\\n211-CLNT\\r\\n211-EPRT\\r\\n211-EPSV\\r\\n211-HOST\\r\\n211-LANG en-US*\\r\\n211-MDTM\\r\\n211-MFF modify;UNIX.group;UNIX.mode;\\r\\n211-MFMT\\r\\n211-MLST modify*;perm*;size*;type*;unique*;UNIX.group*;UNIX.groupname*;UNIX.mode*;UNIX.owner*;UNIX.ownername*;\\r\\n211-REST STREAM\\r\\n211-SITE COPY\\r\\n211-SITE MKDIR\\r\\n211-SITE RMDIR\\r\\n211-SITE SYMLINK\\r\\n211-SITE UTIME\\r\\n211-SIZE\\r\\n211-TVFS\\r\\n211-UTF8\\r\\n211 End\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.help",
+      "description": "reply to HELP after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": false,
+      "similarity": 0.9999,
+      "decoy": {
+        "value": {
+          "length": 591,
+          "sha256": "b5f35e6d23ad48c01370b3f31903f38a6de0108d5ed2aadfb83a2a98cb615e65",
+          "text": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@store-09.lan\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@store-09.lan\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 588,
+          "sha256": "49544adda6f16dcce6bc574788a4b133a96824c59e331101236ece3aa1a02add",
+          "text": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@ref-focal\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "214-The following commands are recognized (* =>'s unimplemented):\\r\\n214-CWD     XCWD    CDUP    XCUP    SMNT*   QUIT    PORT    PASV    \\r\\n214-EPRT    EPSV    ALLO*   RNFR    RNTO    DELE    MDTM    RMD     \\r\\n214-XRMD    MKD     XMKD    PWD     XPWD    SIZE    SYST    HELP    \\r\\n214-NOOP    FEAT    OPTS    HOST    CLNT    AUTH*   CCC*    CONF*   \\r\\n214-ENC*    MIC*    PBSZ*   PROT*   TYPE    STRU    MODE    RETR    \\r\\n214-STOR    STOU    APPE    REST    ABOR    USER    PASS    ACCT*   \\r\\n214-REIN*   LIST    NLST    STAT    SITE    MLSD    MLST    \\r\\n214 Direct comments to root@ref-focal\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.stat",
+      "description": "reply to STAT after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 170,
+          "sha256": "cdea1cfd7ec93139b933c62f94309434f53b04b8c078d6ec7227c0784cc5c6b4",
+          "text": "211-Status of 'Debian'\\r\\n211-Connected from <ip> (<ip>)\\r\\n211-Logged in as test\\r\\n211-TYPE: ASCII, STRUcture: File, Mode: Stream\\r\\n211-No data connection\\r\\n211 End of status\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Status of 'Debian'\\r\\n211-Connected from 172.17.0.1 (172.17.0.1)\\r\\n211-Logged in as test\\r\\n211-TYPE: ASCII, STRUcture: File, Mode: Stream\\r\\n211-No data connection\\r\\n211 End of status\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 170,
+          "sha256": "cdea1cfd7ec93139b933c62f94309434f53b04b8c078d6ec7227c0784cc5c6b4",
+          "text": "211-Status of 'Debian'\\r\\n211-Connected from <ip> (<ip>)\\r\\n211-Logged in as test\\r\\n211-TYPE: ASCII, STRUcture: File, Mode: Stream\\r\\n211-No data connection\\r\\n211 End of status\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "211-Status of 'Debian'\\r\\n211-Connected from 172.18.0.1 (172.18.0.1)\\r\\n211-Logged in as test\\r\\n211-TYPE: ASCII, STRUcture: File, Mode: Stream\\r\\n211-No data connection\\r\\n211 End of status\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.noop",
+      "description": "reply to NOOP after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 29,
+          "sha256": "31089140191afd5d5e154bb42ab75cb4019c3c502e73394791f7e2c2fb65420b",
+          "text": "200 NOOP command successful\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "200 NOOP command successful\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 29,
+          "sha256": "31089140191afd5d5e154bb42ab75cb4019c3c502e73394791f7e2c2fb65420b",
+          "text": "200 NOOP command successful\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "200 NOOP command successful\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.pasv",
+      "description": "reply to PASV after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 50,
+          "sha256": "829b4458756042a9f3e466a28b43436a5c58a6e68dc43b0b88bb11ec8a73cf18",
+          "text": "227 Entering Passive Mode (<h1,h2,h3,h4,p1,p2>).\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "227 Entering Passive Mode (172,17,0,2,195,99).\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 50,
+          "sha256": "829b4458756042a9f3e466a28b43436a5c58a6e68dc43b0b88bb11ec8a73cf18",
+          "text": "227 Entering Passive Mode (<h1,h2,h3,h4,p1,p2>).\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "227 Entering Passive Mode (172,18,0,4,176,217).\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.unknown_command",
+      "description": "reply to FPAUDIT after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 28,
+          "sha256": "bbec40a45d71002c86a63d115a5526a21742b61e6163fc5adbdeeca22b729c1c",
+          "text": "500 FPAUDIT not understood\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "500 FPAUDIT not understood\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 28,
+          "sha256": "bbec40a45d71002c86a63d115a5526a21742b61e6163fc5adbdeeca22b729c1c",
+          "text": "500 FPAUDIT not understood\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "500 FPAUDIT not understood\\r\\n",
+          "on_fresh_connection": false
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.quit",
+      "description": "reply to QUIT after login",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 14,
+          "sha256": "717e6d313952e29309cd8b63a657b76bd25a25a998e6408d8023556c243af8f2",
+          "text": "221 Goodbye.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "221 Goodbye.\\r\\n"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 14,
+          "sha256": "717e6d313952e29309cd8b63a657b76bd25a25a998e6408d8023556c243af8f2",
+          "text": "221 Goodbye.\\r\\n",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "221 Goodbye.\\r\\n"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.after_login.quit.closes",
+      "description": "whether the server closes the connection after QUIT after login",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.overlong.user_5000",
+      "description": "reply to USER with a 5000-byte argument",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "",
+          "sent_length": 5007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "",
+          "sent_length": 5007
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.overlong.user_5000.closes",
+      "description": "whether the server closes the connection after USER with a 5000-byte argument",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.overlong.line_70000",
+      "description": "reply to a 70000-byte line",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "",
+          "sent_length": 70002
+        },
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {
+          "raw": "",
+          "sent_length": 70002
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.overlong.line_70000.closes",
+      "description": "whether the server closes the connection after a 70000-byte line",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "ftp.reply_latency",
+      "description": "median seconds between a command and its reply (login commands excluded)",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.0,
+      "decoy": {
+        "value": 0.005,
+        "evidence": {
+          "samples": 15,
+          "min": 0.003,
+          "max": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": 0.0,
+        "evidence": {
+          "samples": 15,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "error": null
+      }
+    }
+  ]
+}

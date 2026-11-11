@@ -1,0 +1,2323 @@
+{
+  "schema": "honeysentinel.fingerprint-audit/1",
+  "generated_at": "2026-11-11T12:02:23Z",
+  "tool": {
+    "name": "tools.fingerprint_audit",
+    "git_revision": "f250174",
+    "git_revision_source": "GIT_REVISION",
+    "uncommitted_changes": null,
+    "python": "3.12.15"
+  },
+  "environment": {
+    "network": "both targets were reached at loopback addresses from the process that ran the audit, so both ran on the same machine",
+    "kernel": "6.12.116+deb13-amd64"
+  },
+  "protocol": "http",
+  "decoy": {
+    "address": "127.0.0.1:48080",
+    "description": "engine f250174 in a throwaway container, identity seed 75, node controlled-test-node",
+    "probe_errors": {}
+  },
+  "reference": {
+    "address": "127.0.0.1:42081",
+    "description": "nginx-focal: service: nginx;os: Ubuntu 20.04.6 LTS;apt_archive: snapshot.ubuntu.com 20231115T000000Z (focal, focal-updates, focal-security);package: nginx 1.18.0-0ubuntu1.4;package: nginx-core 1.18.0-0ubuntu1.4;package: nginx-common 1.18.0-0ubuntu1.4;config_sha256: /etc/nginx/nginx.conf 5e0b6c325d313dae7a3ec352503a39fa9319d1690946e89337fd7085727041c4;config_sha256: /etc/nginx/sites-enabled/default de6561b787412a46782cda0e20886d4e29ac5025a713c36535ffb28e58b7aa55;reports: nginx version: nginx/1.18.0 (Ubuntu);",
+    "probe_errors": {}
+  },
+  "settings": {
+    "timeout": 10.0,
+    "delay": 1.1,
+    "quiet": 1.5,
+    "idle_cap": 15.0,
+    "login_attempts": 8,
+    "ftp_user": "test",
+    "ftp_password": "test"
+  },
+  "summary": {
+    "checks": 86,
+    "matches": 86,
+    "mismatches": 0,
+    "informational_timing_rows": 1,
+    "timing_rows_outside_tolerance": 0,
+    "rows_with_probe_errors": 0
+  },
+  "checks": [
+    {
+      "id": "http.get_root.status_line",
+      "description": "status line for GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 79,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:23 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 08 Oct 2025 16:49:55 GMT\\r\\nConnection: keep-alive\\r\\nETag: \"68e69633-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 79,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:43 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 11 Nov 2026 09:10:48 GMT\\r\\nConnection: keep-alive\\r\\nETag: \"6af43118-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.header_names",
+      "description": "header names, in the order sent, for GET /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.server",
+      "description": "Server header for GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.header_values",
+      "description": "other header values for GET / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "keep-alive",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "keep-alive",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.body",
+      "description": "body for GET /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_root.closes",
+      "description": "whether the server closes the connection after answering GET /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.status_line",
+      "description": "status line for GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 404 Not Found",
+        "evidence": {
+          "request": "GET /fpaudit-no-such-page HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 404 Not Found\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:25 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 162\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 404 Not Found",
+        "evidence": {
+          "request": "GET /fpaudit-no-such-page HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 404 Not Found\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:44 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 162\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.header_names",
+      "description": "header names, in the order sent, for GET of a path that does not exist",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.server",
+      "description": "Server header for GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.header_values",
+      "description": "other header values for GET of a path that does not exist (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "162",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "162",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.body",
+      "description": "body for GET of a path that does not exist",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 162,
+          "sha256": "340c8464c2007ce3f80682e15dfafa4180b641d53c14201b929906b7b0284d87",
+          "text": "<html>\\r\\n<head><title>404 Not Found</title></head>\\r\\n<body>\\r\\n<center><h1>404 Not Found</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 162,
+          "sha256": "340c8464c2007ce3f80682e15dfafa4180b641d53c14201b929906b7b0284d87",
+          "text": "<html>\\r\\n<head><title>404 Not Found</title></head>\\r\\n<body>\\r\\n<center><h1>404 Not Found</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.get_missing.closes",
+      "description": "whether the server closes the connection after answering GET of a path that does not exist",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.status_line",
+      "description": "status line for HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "HEAD / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 80,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:26 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 08 Oct 2025 16:49:55 GMT\\r\\nConnection: keep-alive\\r\\nETag: \"68e69633-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "HEAD / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 80,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:46 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 11 Nov 2026 09:10:48 GMT\\r\\nConnection: keep-alive\\r\\nETag: \"6af43118-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.header_names",
+      "description": "header names, in the order sent, for HEAD /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.server",
+      "description": "Server header for HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.header_values",
+      "description": "other header values for HEAD / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "keep-alive",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "keep-alive",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.body",
+      "description": "body for HEAD /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "text": "",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.head_root.closes",
+      "description": "whether the server closes the connection after answering HEAD /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.status_line",
+      "description": "status line for OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "OPTIONS / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:28 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "OPTIONS / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:47 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.header_names",
+      "description": "header names, in the order sent, for OPTIONS /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.server",
+      "description": "Server header for OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.header_values",
+      "description": "other header values for OPTIONS / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.body",
+      "description": "body for OPTIONS /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.options_root.closes",
+      "description": "whether the server closes the connection after answering OPTIONS /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.status_line",
+      "description": "status line for POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "POST / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nContent-Length: 0\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:29 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "POST / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nContent-Length: 0\\r\\n\\r\\n",
+          "request_length": 99,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:49 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.header_names",
+      "description": "header names, in the order sent, for POST / with an empty body",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.server",
+      "description": "Server header for POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.header_values",
+      "description": "other header values for POST / with an empty body (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.body",
+      "description": "body for POST / with an empty body",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.post_root.closes",
+      "description": "whether the server closes the connection after answering POST / with an empty body",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.status_line",
+      "description": "status line for DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "DELETE / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 82,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:31 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "DELETE / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 82,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:50 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.header_names",
+      "description": "header names, in the order sent, for DELETE /",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.server",
+      "description": "Server header for DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.header_values",
+      "description": "other header values for DELETE / (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.body",
+      "description": "body for DELETE /",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.delete_root.closes",
+      "description": "whether the server closes the connection after answering DELETE /",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.status_line",
+      "description": "status line for a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "FPAUDIT / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:32 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 405 Not Allowed",
+        "evidence": {
+          "request": "FPAUDIT / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\n\\r\\n",
+          "request_length": 83,
+          "response_head": "HTTP/1.1 405 Not Allowed\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:52 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: keep-alive\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.header_names",
+      "description": "header names, in the order sent, for a method that does not exist (FPAUDIT /)",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.server",
+      "description": "Server header for a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.header_values",
+      "description": "other header values for a method that does not exist (FPAUDIT /) (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "keep-alive"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.body",
+      "description": "body for a method that does not exist (FPAUDIT /)",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "11f4864b57acc22316998d012efc32274ea8c3f3230acab7bc8ee576c594b203",
+          "text": "<html>\\r\\n<head><title>405 Not Allowed</title></head>\\r\\n<body>\\r\\n<center><h1>405 Not Allowed</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.unknown_method.closes",
+      "description": "whether the server closes the connection after answering a method that does not exist (FPAUDIT /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      },
+      "reference": {
+        "value": false,
+        "evidence": {
+          "closed": null,
+          "closed_after_seconds": null
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.status_line",
+      "description": "status line for a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "NOT-A-REQUEST\\r\\n\\r\\n",
+          "request_length": 17,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:34 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.003
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "NOT-A-REQUEST\\r\\n\\r\\n",
+          "request_length": 17,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:53 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.header_names",
+      "description": "header names, in the order sent, for a request line of one word",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.server",
+      "description": "Server header for a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.header_values",
+      "description": "other header values for a request line of one word (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.body",
+      "description": "body for a request line of one word",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "a783b9c187c2177ce3a44c19f53b338134329b8995e4049b10fe204fc7cb1ae0",
+          "text": "<html>\\r\\n<head><title>400 Bad Request</title></head>\\r\\n<body>\\r\\n<center><h1>400 Bad Request</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "a783b9c187c2177ce3a44c19f53b338134329b8995e4049b10fe204fc7cb1ae0",
+          "text": "<html>\\r\\n<head><title>400 Bad Request</title></head>\\r\\n<body>\\r\\n<center><h1>400 Bad Request</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.malformed_request_line.closes",
+      "description": "whether the server closes the connection after answering a request line of one word",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.status_line",
+      "description": "status line for a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": null,
+        "evidence": {
+          "request": "GET /\\r\\n\\r\\n",
+          "request_length": 9,
+          "response_head": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and su",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": null,
+        "evidence": {
+          "request": "GET /\\r\\n\\r\\n",
+          "request_length": 9,
+          "response_head": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and su",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.header_names",
+      "description": "header names, in the order sent, for a request line with no protocol version (GET /)",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.server",
+      "description": "Server header for a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": null,
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.header_values",
+      "description": "other header values for a request line with no protocol version (GET /) (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {},
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {},
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.body",
+      "description": "body for a request line with no protocol version (GET /)",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http09_request.closes",
+      "description": "whether the server closes the connection after answering a request line with no protocol version (GET /)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.status_line",
+      "description": "status line for HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:36 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 400 Bad Request",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 400 Bad Request\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:55 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 166\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.header_names",
+      "description": "header names, in the order sent, for HTTP/1.1 GET / with no Host header",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.server",
+      "description": "Server header for HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.header_values",
+      "description": "other header values for HTTP/1.1 GET / with no Host header (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "166",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.body",
+      "description": "body for HTTP/1.1 GET / with no Host header",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 166,
+          "sha256": "a783b9c187c2177ce3a44c19f53b338134329b8995e4049b10fe204fc7cb1ae0",
+          "text": "<html>\\r\\n<head><title>400 Bad Request</title></head>\\r\\n<body>\\r\\n<center><h1>400 Bad Request</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 166,
+          "sha256": "a783b9c187c2177ce3a44c19f53b338134329b8995e4049b10fe204fc7cb1ae0",
+          "text": "<html>\\r\\n<head><title>400 Bad Request</title></head>\\r\\n<body>\\r\\n<center><h1>400 Bad Request</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.no_host_http11.closes",
+      "description": "whether the server closes the connection after answering HTTP/1.1 GET / with no Host header",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.004
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.status_line",
+      "description": "status line for GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 414 Request-URI Too Large",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 9078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Large\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:37 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 186\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 414 Request-URI Too Large",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 9078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Large\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:57 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 186\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.header_names",
+      "description": "header names, in the order sent, for GET of a 9000-byte URI",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.server",
+      "description": "Server header for GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.header_values",
+      "description": "other header values for GET of a 9000-byte URI (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "186",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "186",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.body",
+      "description": "body for GET of a 9000-byte URI",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 186,
+          "sha256": "f949261945a21a8e0a7d6654adc511ff2bbda274027274f46770807023de7cc1",
+          "text": "<html>\\r\\n<head><title>414 Request-URI Too Large</title></head>\\r\\n<body>\\r\\n<center><h1>414 Request-URI Too Large</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 186,
+          "sha256": "f949261945a21a8e0a7d6654adc511ff2bbda274027274f46770807023de7cc1",
+          "text": "<html>\\r\\n<head><title>414 Request-URI Too Large</title></head>\\r\\n<body>\\r\\n<center><h1>414 Request-URI Too Large</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_9000.closes",
+      "description": "whether the server closes the connection after answering GET of a 9000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.status_line",
+      "description": "status line for GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 414 Request-URI Too Large",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 70078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Large\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:38 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 186\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.008
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 414 Request-URI Too Large",
+        "evidence": {
+          "request": "GET /AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+          "request_length": 70078,
+          "response_head": "HTTP/1.1 414 Request-URI Too Large\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:58 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 186\\r\\nConnection: close\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.header_names",
+      "description": "header names, in the order sent, for GET of a 70000-byte URI",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Connection"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.server",
+      "description": "Server header for GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.header_values",
+      "description": "other header values for GET of a 70000-byte URI (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "186",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "186",
+          "connection": "close"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.body",
+      "description": "body for GET of a 70000-byte URI",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 186,
+          "sha256": "f949261945a21a8e0a7d6654adc511ff2bbda274027274f46770807023de7cc1",
+          "text": "<html>\\r\\n<head><title>414 Request-URI Too Large</title></head>\\r\\n<body>\\r\\n<center><h1>414 Request-URI Too Large</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 186,
+          "sha256": "f949261945a21a8e0a7d6654adc511ff2bbda274027274f46770807023de7cc1",
+          "text": "<html>\\r\\n<head><title>414 Request-URI Too Large</title></head>\\r\\n<body>\\r\\n<center><h1>414 Request-URI Too Large</h1></center>\\r\\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\\r\\n</body>\\r\\n</html>\\r\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.uri_70000.closes",
+      "description": "whether the server closes the connection after answering GET of a 70000-byte URI",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.008
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.status_line",
+      "description": "status line for HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.0\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:39 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 08 Oct 2025 16:49:55 GMT\\r\\nConnection: close\\r\\nETag: \"68e69633-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.006
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.0\\r\\n\\r\\n",
+          "request_length": 18,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:59 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 11 Nov 2026 09:10:48 GMT\\r\\nConnection: close\\r\\nETag: \"6af43118-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.header_names",
+      "description": "header names, in the order sent, for HTTP/1.0 GET / with no headers at all",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.server",
+      "description": "Server header for HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.header_values",
+      "description": "other header values for HTTP/1.0 GET / with no headers at all (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "close",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "close",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.body",
+      "description": "body for HTTP/1.0 GET / with no headers at all",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.http10_no_headers.closes",
+      "description": "whether the server closes the connection after answering HTTP/1.0 GET / with no headers at all",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.007
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.status_line",
+      "description": "status line for GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+          "request_length": 98,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:02:40 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 08 Oct 2025 16:49:55 GMT\\r\\nConnection: close\\r\\nETag: \"68e69633-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": "HTTP/1.1 200 OK",
+        "evidence": {
+          "request": "GET / HTTP/1.1\\r\\nHost: localhost\\r\\nUser-Agent: fingerprint-audit\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n",
+          "request_length": 98,
+          "response_head": "HTTP/1.1 200 OK\\r\\nServer: nginx/1.18.0 (Ubuntu)\\r\\nDate: Wed, 11 Nov 2026 12:03:00 GMT\\r\\nContent-Type: text/html\\r\\nContent-Length: 612\\r\\nLast-Modified: Wed, 11 Nov 2026 09:10:48 GMT\\r\\nConnection: close\\r\\nETag: \"6af43118-264\"\\r\\nAccept-Ranges: bytes\\r\\n\\r\\n",
+          "seconds_to_first_byte": 0.0
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.header_names",
+      "description": "header names, in the order sent, for GET / asking for Connection: close",
+      "comparison": "ordered",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": [
+          "Server",
+          "Date",
+          "Content-Type",
+          "Content-Length",
+          "Last-Modified",
+          "Connection",
+          "ETag",
+          "Accept-Ranges"
+        ],
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.server",
+      "description": "Server header for GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "nginx/1.18.0 (Ubuntu)",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.header_values",
+      "description": "other header values for GET / asking for Connection: close (dates and entity tags reduced to their format)",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "close",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "date": "<http-date>",
+          "content-type": "text/html",
+          "content-length": "612",
+          "last-modified": "<http-date>",
+          "connection": "close",
+          "etag": "<etag>",
+          "accept-ranges": "bytes"
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.body",
+      "description": "body for GET / asking for Connection: close",
+      "comparison": "bytes",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": {
+          "length": 612,
+          "sha256": "38ffd4972ae513a0c79a8be4573403edcd709f0f572105362b08ff50cf6de521",
+          "text": "<!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!</title>\\n<style>\\n    body {\\n        width: 35em;\\n        margin: 0 auto;\\n        font-family: Tahoma, Verdana, Arial, sans-serif;\\n    }\\n</style>\\n</head>\\n<body>\\n<h1>Welcome to nginx!</h1>\\n<p>If you see this page, the nginx web server is successfully installed and\\nworking. Further configuration is required.</p>\\n\\n<p>For online documentation and support please refer to\\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\\nCommercial support is available at\\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\\n\\n<p><em>Thank you for using nginx.</em></p>\\n</body>\\n</html>\\n",
+          "truncated": false
+        },
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.connection_close.closes",
+      "description": "whether the server closes the connection after answering GET / asking for Connection: close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.005
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "closed": "eof",
+          "closed_after_seconds": 0.001
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.keep_alive.second_request_answered",
+      "description": "whether a second request on the same connection is answered",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": true,
+        "evidence": {
+          "first_connection_header": "keep-alive",
+          "second_status_line": "HTTP/1.1 404 Not Found"
+        },
+        "error": null
+      },
+      "reference": {
+        "value": true,
+        "evidence": {
+          "first_connection_header": "keep-alive",
+          "second_status_line": "HTTP/1.1 404 Not Found"
+        },
+        "error": null
+      }
+    },
+    {
+      "id": "http.keep_alive.connection_header",
+      "description": "Connection header on a response to a request that did not ask to close",
+      "comparison": "exact",
+      "informational": false,
+      "match": true,
+      "similarity": 1.0,
+      "decoy": {
+        "value": "keep-alive",
+        "evidence": {},
+        "error": null
+      },
+      "reference": {
+        "value": "keep-alive",
+        "evidence": {},
+        "error": null
+      }
+    },
+    {
+      "id": "http.response_latency",
+      "description": "median seconds from sending a request to the first byte of its response",
+      "comparison": "timing",
+      "informational": true,
+      "match": true,
+      "similarity": 0.0,
+      "decoy": {
+        "value": 0.005,
+        "evidence": {
+          "samples": 14,
+          "min": 0.003,
+          "max": 0.008
+        },
+        "error": null
+      },
+      "reference": {
+        "value": 0.0,
+        "evidence": {
+          "samples": 14,
+          "min": 0.0,
+          "max": 0.001
+        },
+        "error": null
+      }
+    }
+  ]
+}
