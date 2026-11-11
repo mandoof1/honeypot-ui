@@ -22,7 +22,7 @@ from honeypot.core.session import session_manager
 from honeypot.core.shell_state import shell_states
 from honeypot.emulators import ssh as ssh_module
 from honeypot.emulators.ssh import SSHHoneypot, hassh, kexinit_name_lists
-from honeypot.emulators.telnet import IAC, DO, WILL, OPT_ECHO, OPT_SGA, TelnetHoneypot, TelnetLineReader
+from honeypot.emulators.telnet import IAC, DO, WILL, WONT, OPT_ECHO, OPT_SGA, TelnetHoneypot, TelnetLineReader
 from honeypot.security.rate_limiter import RateLimiter
 from honeypot.security.refusals import MAX_RECORDS_PER_FLUSH, MAX_TRACKED, refusal_log
 
@@ -360,6 +360,13 @@ async def test_telnet_frees_its_shell_state_and_records_the_option_sequence(inge
         before = len(shell_states)
         reader, writer = await asyncio.open_connection("127.0.0.1", TELNET_PORT)
         writer.write(bytes([IAC, DO, OPT_ECHO, IAC, DO, OPT_SGA, IAC, WILL, OPT_SGA, IAC, WILL, 24]))
+        # telnetd waits for an answer to each of its opening requests before
+        # it prints the banner: the terminal type is answered above, these
+        # refuse the speed, the X display and the environment, and then the
+        # window size once it has been asked for.
+        writer.write(bytes([IAC, WONT, 32, IAC, WONT, 35, IAC, WONT, 39]))
+        await _read_until_bytes(reader, bytes([IAC, DO, 31]))
+        writer.write(bytes([IAC, WONT, 31]))
         await _read_until_bytes(reader, b"login: ")
         writer.write(b"root\r")
         await _read_until_bytes(reader, b"Password: ")
@@ -373,7 +380,9 @@ async def test_telnet_frees_its_shell_state_and_records_the_option_sequence(inge
     finally:
         await honeypot.stop()
     assert len(shell_states) == before
-    assert payload["fingerprints"]["telnet_options"] == ["DO 1", "DO 3", "WILL 3", "WILL 24"]
+    assert payload["fingerprints"]["telnet_options"] == [
+        "DO 1", "DO 3", "WILL 3", "WILL 24", "WONT 32", "WONT 35", "WONT 39", "WONT 31",
+    ]
     assert payload["uploads"][0]["remote_path"] == "/tmp/x"
 
 
