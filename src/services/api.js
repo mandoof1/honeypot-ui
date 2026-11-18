@@ -320,7 +320,7 @@ export const REPORT_WAIT_MS = 20 * 60 * 1000
 
 /**
  * Ask for an investigation report, wait for the model to write it, and
- * download it. `onProgress({ status, message, sessionCount })` is called for
+ * download it. `onProgress({ status, message, sessionCount, threat, reportId })` is called for
  * every state the job reports. Aborting `signal` stops the waiting and clears
  * the timer; the job on the server is unaffected and can be asked for again.
  */
@@ -330,6 +330,10 @@ async function investigationReport(params, { onProgress, signal, pollMs = REPORT
     status: job.status,
     message: job.message || '',
     sessionCount: typeof job.session_count === 'number' ? job.session_count : null,
+    // Computed from the evidence as soon as the job is accepted, so the
+    // level is known while the model is still writing.
+    threat: job.threat || null,
+    reportId: job.report_id || null,
   })
 
   let job = await request(`/export/reports?${toQuery(filters)}`, { method: 'POST', signal })

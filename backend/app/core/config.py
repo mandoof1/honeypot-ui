@@ -277,6 +277,28 @@ class Settings(BaseSettings):
     #: progress and a margin.
     REPORT_MODEL_WAIT_SECONDS: float = 420.0
 
+    # -- investigation report front matter --------------------------------
+    # Printed on the cover, in document control and in the transmittal memo.
+    # Empty values are left out of the report rather than replaced with
+    # placeholder names.
+    #: Organisation line under the report title, e.g. a university and college.
+    REPORT_ORGANISATION: str = ""
+    #: Project or programme the deployment belongs to.
+    REPORT_PROJECT: str = ""
+    #: Who the report is for, as a role or body, e.g. "Capstone review committee".
+    REPORT_PREPARED_FOR: str = ""
+    #: Memo recipients: "Name <address>; Name <address>". Also listed in the
+    #: review-and-approval table.
+    REPORT_RECIPIENTS: str = ""
+    #: Memo copy list, same format.
+    REPORT_CC: str = ""
+    #: Point of contact printed on the report. Empty: the address of the user
+    #: who requested it.
+    REPORT_CONTACT_EMAIL: str = ""
+    #: Marking override. Empty: TLP:AMBER for the redacted analyst export and
+    #: TLP:RED for the administrator export with original credentials.
+    REPORT_CLASSIFICATION: str = ""
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value):

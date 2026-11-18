@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
 from collections import Counter
 from datetime import datetime, timezone
+from time import perf_counter
 
 import httpx
 
@@ -294,6 +294,8 @@ def validate_reply(content, packet):
         )
     by_ref = {c["reference"]: c for c in packet["cases"]}
     allowed_ips = set(re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", json.dumps(packet)))
+    #: How many items each gate examined, printed in the report's validation table.
+    checked = {"addresses": 0, "urls": 0, "references": 0, "citations": 0}
 
     def clean(value, limit=7000):
         if not isinstance(value, str) or not value.strip():
@@ -305,14 +307,15 @@ def validate_reply(content, packet):
             raise NarrativeUnavailable(
                 "The local model exceeded the report content limit."
             )
-        if any(
-            ip not in allowed_ips
-            for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", value)
-        ):
+        addresses = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", value)
+        checked["addresses"] += len(addresses)
+        if any(ip not in allowed_ips for ip in addresses):
             raise NarrativeUnavailable(
                 "The model introduced an address absent from the selected evidence. Please retry."
             )
-        for url in re.findall(r"https?://[^\s\"<>]+", value):
+        urls = re.findall(r"https?://[^\s\"<>]+", value)
+        checked["urls"] += len(urls)
+        for url in urls:
             if url.rstrip(".,;)") not in json.dumps(packet, ensure_ascii=False):
                 raise NarrativeUnavailable(
                     "The model introduced a URL absent from the selected evidence. Please retry."
@@ -337,6 +340,7 @@ def validate_reply(content, packet):
                 "A report finding cited a line outside the captured evidence. Please retry."
             )
         ids = list(dict.fromkeys(ids))[:4]
+        checked["citations"] += len(ids)
         refs = list(dict.fromkeys(key.split(".")[0] for key in ids))
         quote = "\n".join(lines[key] for key in ids)
         result["findings"].append(
@@ -359,20 +363,62 @@ def validate_reply(content, packet):
         permitted = set(by_ref) | {
             key for case in packet["cases"] for key in case["activity_lines"]
         }
-        if any(
-            ref not in permitted
-            for ref in re.findall(r"\[(E\d+(?:\.[LA]\d+)?)\]", value)
-        ):
+        found = re.findall(r"\[(E\d+(?:\.[LA]\d+)?)\]", value)
+        if any(ref not in permitted for ref in found):
             raise NarrativeUnavailable(
                 "The report contains an unknown evidence reference."
             )
+        checked["references"] += len(found)
+    result["validation"] = {**checked, "findings": len(result["findings"])}
     result["scope"] = packet["scope"]
     result["reviewed_references"] = list(by_ref)
     return result
 
 
+async def model_card(client, base) -> dict:
+    """What the model server says about the loaded model. Best effort.
+
+    llama.cpp answers ``/props`` and ``/v1/models``; another OpenAI-compatible
+    server may answer neither, and the report then says "not reported".
+    """
+    card = {}
+    root = base.removesuffix("/v1")
+    try:
+        props = await client.get(root + "/props", timeout=5)
+        if props.status_code == 200:
+            data = props.json()
+            card.update(
+                alias=data.get("model_alias"),
+                quantization=data.get("model_ftype"),
+                file=str(data.get("model_path") or "").rsplit("/", 1)[-1] or None,
+                runtime_build=data.get("build_info"),
+                context_deployed=data.get("n_ctx")
+                or (data.get("default_generation_settings") or {}).get("n_ctx"),
+            )
+    except (httpx.HTTPError, ValueError, AttributeError):
+        pass
+    try:
+        models = await client.get(base + "/models", timeout=5)
+        if models.status_code == 200:
+            entries = models.json().get("data") or []
+            meta = (entries[0].get("meta") or {}) if entries else {}
+            card.update(
+                parameters=meta.get("n_params"),
+                size_bytes=meta.get("size"),
+                context_trained=meta.get("n_ctx_train"),
+                vocabulary=meta.get("n_vocab"),
+            )
+            card.setdefault("quantization", meta.get("ftype"))
+            if not card.get("context_deployed"):
+                card["context_deployed"] = meta.get("n_ctx")
+    except (httpx.HTTPError, ValueError, AttributeError, IndexError):
+        pass
+    return {key: value for key, value in card.items() if value not in (None, "")}
+
+
 async def generate_narrative(records):
     settings = get_settings()
+    started = perf_counter()
     if not settings.CHIMERA_URL:
         raise NarrativeUnavailable(
             "Our local analysis model is not configured. No generic report was substituted."
@@ -404,6 +450,8 @@ async def generate_narrative(records):
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
             base = settings.CHIMERA_URL.rstrip("/")
+            card = await model_card(client, base)
+            cases_supplied = len(packet["cases"])
             # Check the real tokenizer so citations, timestamps and command punctuation fit
             # the deployed 4096-token context alongside the generation budget.
             while True:
@@ -426,6 +474,7 @@ async def generate_narrative(records):
                         "The local tokenizer returned an invalid context response."
                     )
                 if len(tokens) <= 2500:
+                    packet_tokens = len(tokens)
                     break
                 if len(packet["cases"]) <= 1:
                     raise NarrativeUnavailable(
@@ -487,6 +536,8 @@ async def generate_narrative(records):
                     "The local model response was cut short. Narrow the selected sessions and retry."
                 )
             result = validate_reply(choice["message"].get("content"), packet)
+            timings = body.get("timings") if isinstance(body.get("timings"), dict) else {}
+            usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
         raise NarrativeUnavailable(
             "The local model did not finish the investigation. Please retry; no template narrative was substituted."
@@ -495,5 +546,21 @@ async def generate_narrative(records):
         model=settings.CHIMERA_MODEL,
         generated_at=datetime.now(timezone.utc).isoformat(),
         usage=body.get("usage"),
+        model_card=card,
+        decoding={"temperature": payload["temperature"], "max_tokens": payload["max_tokens"]},
+        prompt_sha256=hashlib.sha256(PROMPT.encode()).hexdigest(),
+        telemetry={
+            "packet_tokens": packet_tokens,
+            "cases": len(packet["cases"]),
+            "cases_dropped": cases_supplied - len(packet["cases"]),
+            "prompt_tokens": usage.get("prompt_tokens") or timings.get("prompt_n"),
+            "completion_tokens": usage.get("completion_tokens") or timings.get("predicted_n"),
+            "prompt_ms": timings.get("prompt_ms"),
+            "predicted_ms": timings.get("predicted_ms"),
+            "prompt_per_second": timings.get("prompt_per_second"),
+            "predicted_per_second": timings.get("predicted_per_second"),
+            "finish_reason": choice.get("finish_reason"),
+            "wall_ms": (perf_counter() - started) * 1000,
+        },
     )
     return result

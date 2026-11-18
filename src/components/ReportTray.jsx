@@ -1,6 +1,7 @@
 import { Loader2, X } from 'lucide-react'
 import { useNow } from '../hooks/useNow'
 import { formatDuration } from '../lib/format'
+import { SeverityRail } from './Severity'
 
 /*
  * The reports being written, and how each one ended.
@@ -43,6 +44,16 @@ function Job({ job, now, onCancel, onDismiss }) {
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-medium text-paper">
           {HEADING[job.status]}: {job.label}
+          {job.threat && (
+            <span
+              className="ml-2 inline-flex items-center gap-1.5 align-middle"
+              data-testid="report-threat"
+              title="Threat level of the selected evidence, as printed on the report's cover"
+            >
+              <SeverityRail level={job.threat.level} />
+              <span className="readout text-[12px] text-paper-2">{job.threat.index}/100</span>
+            </span>
+          )}
           {job.sensitive && (
             <span className="tag ml-2 align-middle" style={{ color: 'var(--color-s3)' }}>
               includes original credentials
@@ -59,6 +70,12 @@ function Job({ job, now, onCancel, onDismiss }) {
         {working && (
           <p className="readout mt-0.5 text-[12px] text-paper-3">
             {formatDuration(elapsed)} so far. The rest of the console stays usable; leaving this page stops the wait.
+          </p>
+        )}
+        {job.reportId && (
+          <p className="readout mt-0.5 text-[12px] text-paper-3">
+            Report {job.reportId}
+            {!working && job.finishedAt ? `, ready in ${formatDuration(elapsed)}` : ''}
           </p>
         )}
       </div>
