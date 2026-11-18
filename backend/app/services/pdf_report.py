@@ -53,7 +53,9 @@ from app.services import report_graphics as g
 from app.services.report_analytics import (
     LEVELS,
     SCALE,
+    ATTACK_VERSION,
     TACTIC_NAMES,
+    TACTICS,
     analytic_confidence,
     distinct,
     format_ms,
@@ -133,7 +135,8 @@ def _styles():
             spaceAfter=0, textColor=PAPER,
         ),
         "cell_mono": ParagraphStyle("cell_mono", parent=base, fontName="HS-Mono", fontSize=7.3, leading=10, spaceAfter=0),
-        "cell_mono_small": ParagraphStyle("cell_mono_small", parent=base, fontName="HS-Mono", fontSize=6.4, leading=9, spaceAfter=0),
+        # Fits a 36-character session UUID on one line in the inventory.
+        "cell_mono_small": ParagraphStyle("cell_mono_small", parent=base, fontName="HS-Mono", fontSize=6.1, leading=9, spaceAfter=0),
         "term": ParagraphStyle(
             "term", parent=base, fontName="HS-Mono", fontSize=7.3, leading=10.2, spaceAfter=0,
             textColor=PAPER,
@@ -856,14 +859,15 @@ def _metrics_section(b):
     items = [
         ("Sessions", m["sessions"], f"{m['enriched']} with AI explanation"),
         ("Unique sources", m["sources"], f"{len(m['countries'])} countr{'y' if len(m['countries']) == 1 else 'ies'}"),
-        ("Protocols", ", ".join(sorted(m["protocols"])) or "n/a", f"{len(m['sensors'])} sensor(s)"),
+        ("Protocols", ", ".join(sorted(m["protocols"])) if len(m["protocols"]) <= 2 else len(m["protocols"]),
+         (", ".join(sorted(m["protocols"])) if len(m["protocols"]) > 2 else f"{len(m['sensors'])} sensor(s)")),
         ("Observation window", format_span(m["span_seconds"]) if m["span_seconds"] is not None else "n/a",
          format_time(m["first"], False) if m["first"] else ""),
         ("Commands captured", m["commands"], f"{m['keystrokes']} keystrokes recorded"),
         ("Credential attempts", m["credential_attempts"], f"{m['decoy_accepts']} accepted by the decoy"),
         ("Indicators", len(m["iocs"]), f"{m['uploads']} upload record(s)"),
         ("ATT&CK techniques", f"{confirmed} / {len(m['techniques'])}", "confirmed / proposed"),
-        ("ATT&CK tactics", len(a["tactics"]), "of 14 in the kill chain"),
+        ("ATT&CK tactics", len(a["tactics"]), f"of {len(TACTICS)} in ATT&CK"),
         ("Highest severity", a["name"], f"{a['distribution']['high'] + a['distribution']['critical']} session(s) high or above"),
         ("Pipeline latency", format_ms(latency["mean"]) if latency["mean"] is not None else "n/a",
          f"mean per session, max {format_ms(latency['max'])}" if latency["max"] is not None else "not recorded"),
@@ -1027,6 +1031,7 @@ def _attack_section(b):
     ctx, m = b.ctx, b.ctx.metrics
     b.h1("MITRE ATT&CK mapping")
     b.p(
+        f"MITRE ATT&CK Enterprise{' ' + ATTACK_VERSION if ATTACK_VERSION else ''}, {len(TACTICS)} tactics. "
         "Tactics are lit where at least one technique was detected by a rule or proposed by the model and supported "
         "by the checker; the number is the count of session observations. Unconfirmed proposals are listed but not lit.",
         "muted",
@@ -1347,11 +1352,14 @@ def _case_appendix(b):
         for s in group["sessions"]:
             if s.get("evidence_error"):
                 b.p(f"Session {s['uuid']}: {s['evidence_error']}", "small")
-        if group.get("iocs"):
+        # The stored rows repeat an indicator once per session (with its own
+        # timestamp); the case lists each type and value once.
+        case_iocs = distinct((str(x.get("type")), str(x.get("value"))) for x in group.get("iocs") or [])
+        if case_iocs:
             b.label("Recorded indicators")
-            b.grid([["Type", "Observed value"]] + [[x.get("type"), x.get("value")] for x in group["iocs"][:40]],
+            b.grid([["Type", "Observed value"]] + [list(x) for x in case_iocs[:40]],
                    [70, CONTENT_W - 70], mono=(1,))
-            if len(group["iocs"]) > 40:
+            if len(case_iocs) > 40:
                 b.p("Indicator excerpt shortened to the first 40 values.", "small")
         prints = []
         for s, _ in ctx.records:

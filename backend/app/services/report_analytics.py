@@ -79,15 +79,17 @@ SCALE = {
     },
 }
 
-#: Enterprise ATT&CK tactics in kill-chain order.
-TACTICS = [
+#: Enterprise ATT&CK tactics in kill-chain order, as of the bundled catalog's
+#: release (20.1). Used only if the catalog file cannot be read.
+_FALLBACK_TACTICS = [
     ("TA0043", "Reconnaissance"),
     ("TA0042", "Resource Development"),
     ("TA0001", "Initial Access"),
     ("TA0002", "Execution"),
     ("TA0003", "Persistence"),
     ("TA0004", "Privilege Escalation"),
-    ("TA0005", "Defense Evasion"),
+    ("TA0005", "Stealth"),
+    ("TA0112", "Defense Impairment"),
     ("TA0006", "Credential Access"),
     ("TA0007", "Discovery"),
     ("TA0008", "Lateral Movement"),
@@ -96,6 +98,28 @@ TACTICS = [
     ("TA0010", "Exfiltration"),
     ("TA0040", "Impact"),
 ]
+
+
+def _catalog_tactics():
+    """The tactics of the ATT&CK catalog the mapper itself uses.
+
+    Read from the catalog rather than written out here, so a catalog update
+    (ATT&CK 18 split Defense Evasion into Stealth and Defense Impairment)
+    reaches the report too.
+    """
+    try:
+        from app.ai.attack_catalog import catalog
+
+        catalog.load()
+        tactics = [(t["id"], t["name"]) for t in catalog.tactics if t.get("id") and t.get("name")]
+        if tactics:
+            return tactics, catalog.version or None
+    except Exception:  # noqa: BLE001 - the report must render without it
+        pass
+    return list(_FALLBACK_TACTICS), None
+
+
+TACTICS, ATTACK_VERSION = _catalog_tactics()
 TACTIC_NAMES = dict(TACTICS)
 
 #: Indicator types that point at attacker infrastructure.

