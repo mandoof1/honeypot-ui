@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- The investigation report (PDF and Word) is rebuilt. Its cover carries a
+  threat level gauge in the console's four colours (low green, medium
+  yellow, high orange, critical red), a 0-100 threat index, the
+  classification (TLP:AMBER, or TLP:RED for the administrator export), the
+  report ID, when it was generated, how long it took, and a QR code with the
+  report ID and the SHA-256 of the evidence snapshot. The level is the most
+  severe session's console severity; the index places the report inside
+  that level's band from six factors, each printed with its points.
+- New front matter for review: document control, a transmittal memo (to,
+  from, copy, subject), handling note, contents with page numbers and PDF
+  bookmarks, and a review-and-approval table with signature lines. Names and
+  addresses come from the new `REPORT_*` settings; the contact defaults to
+  the requesting user's address.
+- New sections: key metrics with charts (timeline, categories, protocols,
+  sources, usernames, analysis-quality rates), ATT&CK tactic coverage,
+  consolidated indicators, the narrative model's card read from the model
+  server (file, quantization, parameters, context, runtime build),
+  generation telemetry (tokens, tokens/s, model time), the validation gates
+  with what each checked, the analysis modules as they stand on the
+  selected sessions, methodology, limitations and a glossary. A final page
+  records the time of each step: evidence snapshot, model queue, AI
+  analysis, document rendering, and the total.
+- Fixed in the report: the inventory's case and protocol columns wrapped a
+  letter per line; timestamps were raw ISO strings; the page header showed
+  the rendering time beside a different generation time; the report never
+  said when the selection had been cut to the newest 100 sessions; Word
+  left a blank page when a section ended at the bottom of a page.
+- The console's report tray shows the threat level and the report ID as
+  soon as the report is accepted.
+
 - 1.0.0 is deployed on the reference server: the installer, the image
   builds, the migrations on the existing data and the firewall probe all
   passed on the first run, and the controlled end-to-end test stores sessions

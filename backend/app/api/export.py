@@ -7,6 +7,7 @@ import csv
 import io
 import json
 from collections import Counter
+from time import perf_counter
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clientip import client_ip
 from app.core.database import get_db
 from app.core.security import require_role
-from app.models import AuditLog, HoneypotSession, IndicatorOfCompromise
+from app.models import AuditLog, HoneypotNode, HoneypotSession, IndicatorOfCompromise, User
 from app.services.report_generator import report_generator
 from app.services.session_filters import session_filters, without_blobs
 from app.services.pdf_report import generate_pdf_report, MAX_PDF_SESSIONS
@@ -190,6 +191,7 @@ async def export_sessions(
     # viewer capability.
     current_user: dict = Depends(require_role("analyst")),
 ):
+    started = perf_counter()
     is_report = format in {"pdf", "docx"}
     limit = MAX_PDF_SESSIONS if is_report else MAX_EXPORT_SESSIONS
     if session_ids and len(session_ids) > limit:
@@ -209,12 +211,13 @@ async def export_sessions(
                 status_code=404, detail="No sessions match this investigation report."
             )
         iocs = await load_iocs(db, sessions)
-        records = _report_snapshot(sessions, iocs, include_sensitive)
+        records = _report_snapshot(sessions, iocs, include_sensitive, await _node_names(db, sessions))
+        meta = await _report_meta(db, current_user, truncated, started)
         count = len(sessions)
         # Release the database connection while CPU-model inference is pending.
         await db.commit()
         try:
-            job = report_jobs.submit(current_user["id"], records, include_sensitive)
+            job = report_jobs.submit(current_user["id"], records, include_sensitive, meta)
             await asyncio.shield(job["task"])
             content = await report_jobs.render(job, format)
         except JobsFull as exc:
@@ -270,7 +273,48 @@ def _sensitive_permission(user, include_sensitive):
         )
 
 
-def _report_snapshot(sessions, iocs, include_sensitive=False):
+async def _node_names(db: AsyncSession, sessions) -> dict[int, str]:
+    """Sensor names for the sessions' nodes, for the report's inventory."""
+    ids = {s.node_id for s in sessions if getattr(s, "node_id", None) is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(select(HoneypotNode.id, HoneypotNode.name).where(HoneypotNode.id.in_(ids)))).all()
+    return {row.id: row.name for row in rows}
+
+
+async def _report_meta(db: AsyncSession, current_user: dict, truncated: bool, started: float) -> dict:
+    """Who asked for a report, and what the request itself cost."""
+    user = (
+        await db.execute(select(User.name, User.email).where(User.id == current_user["id"]))
+    ).first()
+    return {
+        "requester": {
+            "name": user.name if user else None,
+            "email": (user.email if user else None) or current_user.get("email"),
+            "role": current_user.get("role"),
+        },
+        "truncated": truncated,
+        "snapshot_ms": (perf_counter() - started) * 1000,
+    }
+
+
+def _pipeline_fields(session) -> dict:
+    """What the analysis pipeline stored about a session, for the report's metrics."""
+    triage = session.triage if isinstance(session.triage, dict) else {}
+    keep = (
+        "model", "p_compromise", "category", "operator", "agrees_with_rules", "ms",
+        "severity", "route",
+    )
+    return {
+        "analysis_ms": session.analysis_ms,
+        "triage": {k: triage[k] for k in keep if k in triage} or None,
+        "cluster_id": session.cluster_id,
+        "cluster_is_outlier": session.cluster_is_outlier,
+        "keystroke_count": session.keystroke_count or 0,
+    }
+
+
+def _report_snapshot(sessions, iocs, include_sensitive=False, nodes=None):
     """The evidence a report is written from, fixed at the moment of asking.
 
     Without ``include_sensitive`` (administrators only) every piece of
@@ -281,7 +325,9 @@ def _report_snapshot(sessions, iocs, include_sensitive=False):
     records = []
     for session in sessions:
         data = _session_to_dict(session)
+        data["node"] = (nodes or {}).get(getattr(session, "node_id", None))
         analysis = _session_to_analysis(session, iocs.get(session.id))
+        analysis.update(_pipeline_fields(session))
         if not include_sensitive:
             analysis["command_summary"] = redact(session.command_summary or "") or None
         analysis["evidence_source"] = "stored command summary"
@@ -377,6 +423,7 @@ async def prepare_investigation_report(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_role("analyst")),
 ):
+    started = perf_counter()
     _sensitive_permission(current_user, include_sensitive)
     if session_ids and len(session_ids) > MAX_PDF_SESSIONS:
         raise HTTPException(
@@ -389,9 +436,10 @@ async def prepare_investigation_report(
             detail="No sessions match this report. Change the filters or select a session.",
         )
     iocs = await load_iocs(db, sessions)
-    records = _report_snapshot(sessions, iocs, include_sensitive)
+    records = _report_snapshot(sessions, iocs, include_sensitive, await _node_names(db, sessions))
+    meta = await _report_meta(db, current_user, truncated, started)
     try:
-        job = report_jobs.submit(current_user["id"], records, include_sensitive)
+        job = report_jobs.submit(current_user["id"], records, include_sensitive, meta)
     except JobsFull as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     job["truncated"] = truncated

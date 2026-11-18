@@ -45,7 +45,7 @@ async def test_pdf_and_word_contain_only_the_selected_session(client,auth_header
         if fmt=='pdf':
             assert response.headers['content-type']=='application/pdf'
             text=' '.join(page.extract_text() for page in PdfReader(BytesIO(response.content)).pages)
-            for expected in ['192.0.2.20','What happened','Demonstration explanation','SIMULATED DEMONSTRATION']:assert expected in text
+            for expected in ['192.0.2.20','Findings','Threat level assessment','Demonstration explanation','SIMULATED DEMONSTRATION']:assert expected in text
             assert '192.0.2.21' not in text
         else:
             from docx import Document

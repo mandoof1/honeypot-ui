@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import json
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from starlette.concurrency import run_in_threadpool
@@ -37,6 +38,7 @@ from app.services.investigation_narrative import (
     NarrativeUnavailable,
 )
 from app.services.pdf_report import generate_pdf_report
+from app.services.report_analytics import threat_assessment
 
 
 class JobsFull(Exception):
@@ -61,7 +63,10 @@ class ReportJobs:
             if job["task"].done() and now - job["touched"] > self.TTL:
                 self.jobs.pop(key, None)
 
-    def submit(self, owner, records, sensitive=False):
+    def submit(self, owner, records, sensitive=False, meta=None):
+        """Start (or reuse) a job. ``meta`` describes the request for the
+        report's front matter: who asked, whether the selection was cut, and
+        how long the evidence snapshot took."""
         self.prune()
         sensitive = bool(sensitive)
         signature = hashlib.sha256(
@@ -99,8 +104,12 @@ class ReportJobs:
             if not completed:
                 raise JobsFull("Report generation is busy. Please retry shortly.")
             self.jobs.pop(min(completed, key=lambda j: j["touched"])["id"])
+        identity = str(uuid4())
+        requested = datetime.now(timezone.utc)
+        assessment = threat_assessment(records)
+        meta = dict(meta or {})
         job = {
-            "id": str(uuid4()),
+            "id": identity,
             "owner": owner,
             "signature": signature,
             "records": records,
@@ -111,6 +120,15 @@ class ReportJobs:
             "narrative": None,
             "files": {},
             "touched": time.monotonic(),
+            "submitted": time.monotonic(),
+            "meta": {
+                **meta,
+                "report_id": f"HS-IR-{requested:%Y%m%d}-{identity[:8].upper()}",
+                "requested_at": requested,
+                "evidence_sha256": signature,
+                "timings": {"snapshot_ms": meta.get("snapshot_ms")},
+            },
+            "threat": {"level": assessment["level"], "index": assessment["index"], "name": assessment["name"]},
         }
         self.jobs[job["id"]] = job
         job["task"] = asyncio.create_task(
@@ -127,11 +145,14 @@ class ReportJobs:
                     "session it is analysing."
                 )
             async with model_slot.hold("report", wait=wait):
+                job["meta"]["timings"]["queue_ms"] = (time.monotonic() - job["submitted"]) * 1000
+                writing = time.monotonic()
                 job.update(
                     status="analysing",
                     message="Our local model is writing findings from the selected evidence. This can take several minutes.",
                 )
                 job["narrative"] = await generate_narrative(job["records"])
+                job["meta"]["timings"]["narrative_ms"] = (time.monotonic() - writing) * 1000
                 job.update(
                     status="complete", message="The investigation is ready to download."
                 )
@@ -176,6 +197,8 @@ class ReportJobs:
             "session_count": len(job["records"]),
             "include_sensitive": job["sensitive"],
             "model": (job.get("narrative") or {}).get("model"),
+            "report_id": job["meta"]["report_id"],
+            "threat": job["threat"],
         }
 
     async def render(self, job, format):
@@ -192,6 +215,7 @@ class ReportJobs:
                         format,
                         job["narrative"],
                         job["sensitive"],
+                        job["meta"],
                     )
         return job["files"][format]
 

@@ -121,6 +121,15 @@ x-backend-env: &backend_env
   ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
   WEBHOOK_URL: ${WEBHOOK_URL:-}
   WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+  # Investigation report front matter (cover, document control, transmittal
+  # memo, approval table). Empty values are left out of the report.
+  REPORT_ORGANISATION: ${REPORT_ORGANISATION:-}
+  REPORT_PROJECT: ${REPORT_PROJECT:-}
+  REPORT_PREPARED_FOR: ${REPORT_PREPARED_FOR:-}
+  REPORT_RECIPIENTS: ${REPORT_RECIPIENTS:-}
+  REPORT_CC: ${REPORT_CC:-}
+  REPORT_CONTACT_EMAIL: ${REPORT_CONTACT_EMAIL:-}
+  REPORT_CLASSIFICATION: ${REPORT_CLASSIFICATION:-}
 
 # The two model servers: llama.cpp on the CPU, one client (the backend), no
 # way out. The image is pinned to the build running on the reference server;

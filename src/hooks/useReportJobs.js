@@ -66,7 +66,8 @@ export function useReportJobs() {
     api.export
       .sessions(params, {
         signal: controller.signal,
-        onProgress: ({ message }) => patch(id, { message }),
+        onProgress: ({ message, threat, reportId }) =>
+          patch(id, { message, ...(threat ? { threat } : {}), ...(reportId ? { reportId } : {}) }),
       })
       .then(({ blob, filename, count, truncated }) => {
         if (controller.signal.aborted) return
