@@ -400,9 +400,9 @@ def timeline_chart(timeline, width, height=118):
 
 
 def tactic_strip(tactic_counts, width, colour, height=74):
-    """The fourteen ATT&CK tactics in kill-chain order, lit where observed."""
+    """The ATT&CK tactics in kill-chain order, two rows, lit where observed."""
     d = Drawing(width, height)
-    columns = 7
+    columns = math.ceil(len(TACTICS) / 2)
     gap = 4
     w = (width - (columns - 1) * gap) / columns
     h = (height - gap) / 2
