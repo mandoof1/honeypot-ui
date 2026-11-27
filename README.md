@@ -30,15 +30,9 @@ A self-hosted honeypot for capturing suspicious sessions, analyzing activity loc
 
 [**Watch or download the MP4**](docs/images/honeysentinel-tour.mp4?raw=true) · 18 seconds, silent. The tour uses the console screenshot with synthetic demo data.
 
-| Explore the console | Run HoneySentinel | Review the results |
-| --- | --- | --- |
-| [Open the hosted demo](https://honeypot-ui-psi.vercel.app/) or see the [dashboard screenshot](#console-preview). | [Start with Docker Compose](#quick-start) or review [self-hosted deployment](#self-hosted-deployment). | See the [data flow](#architecture) and [validation record](#what-is-and-is-not-yet-validated). |
+[Open the hosted console](https://honeypot-ui-psi.vercel.app/) · [See the full-size screenshot](#console-preview) · [Run locally](#quick-start)
 
 ## From session to evidence
-
-HoneySentinel records interactions and flow metadata for SSH, Telnet, FTP, HTTP,
-and HTTPS. Analysts can filter sessions, inspect transcripts and ATT&CK mappings,
-and share or export matching records.
 
 <p align="center">
   <a href="#what-you-can-do"><img src="docs/images/honeysentinel-feature-capture.svg" width="275" alt="Capture sessions and per-connection telemetry"></a>
@@ -46,13 +40,14 @@ and share or export matching records.
   <a href="#investigation-workspace"><img src="docs/images/honeysentinel-feature-investigate.svg" width="275" alt="Search, inspect, share, and export investigation evidence"></a>
 </p>
 
-**Project status.** Version 1.0.0 documents a capstone system exercised with
-controlled traffic before public exposure. Its evaluation uses a public
-dataset, synthetic transcripts and controlled test traffic. See the
-[validation record](#what-is-and-is-not-yet-validated) for measured results
-and remaining gaps.
+**Project status.** Version 1.0.0 is a capstone tested on controlled traffic. See [validation and limits](#what-is-and-is-not-yet-validated).
 
 ## What you can do
+
+![Five emulated protocols feed session interactions and connection telemetry into evidence storage.](docs/images/honeysentinel-capture-map.svg)
+
+<details>
+<summary>All capabilities</summary>
 
 | Area | Capabilities |
 | --- | --- |
@@ -64,7 +59,10 @@ and remaining gaps.
 | Access control | Use role-based accounts, optional TOTP, and audit logs for supported operations. |
 | Self-hosting | Run a local demo or a contained deployment. See [deployment](#self-hosted-deployment) and the [threat model](docs/THREAT_MODEL.md). |
 
+</details>
+
 ## Quick start
+
 For the complete local stack, install **Docker Engine with Compose v2**, **Git**, and **Python 3**.
 Docker builds the application dependencies for you.
 
@@ -78,6 +76,9 @@ The startup script creates `.env` when absent and generates separate signing,
 encryption, and ingest secrets. Compose starts PostgreSQL, the API, frontend, and engine.
 The local Compose configuration enables demo seeding for an empty database.
 
+<details>
+<summary>Local ports and service URLs</summary>
+
 | Service | Local address |
 |---|---|
 | Dashboard | http://localhost:5173 |
@@ -86,13 +87,16 @@ The local Compose configuration enables demo seeding for an empty database.
 | SSH / FTP / Telnet emulation | `localhost:2222` / `localhost:2121` / `localhost:2323` |
 | HTTP / HTTPS emulation | http://localhost:8080 / https://localhost:8443 |
 
+</details>
+
 Retrieve the generated demo admin credentials from the backend startup log:
 
 ```bash
 docker compose logs backend
 ```
 
-Keep those credentials private. To stop the stack while retaining its named volumes:
+Open the [local dashboard](http://localhost:5173) and keep those credentials private.
+To stop the stack while retaining its named volumes:
 
 ```bash
 ./stop.sh
@@ -118,7 +122,12 @@ where the host firewall stops every container from opening a connection.
 
 [![Animated investigation workflow showing Filter, Inspect, Share, and Export](docs/images/honeysentinel-workflow.gif)](docs/images/honeysentinel-workflow.svg)
 
-*Illustrated workflow. The steps below describe the dashboard actions.*
+Export matching records as **CSV, JSON, CEF, or STIX**. The newest **5,000** matches
+are included at most. Analyst or administrator access is required.
+
+<details>
+<summary>Investigation steps, export formats, and limits</summary>
+
 1. **Narrow the activity.** Search an address, session UUID, or command summary. Combine
    protocol, country, category, status, anomaly, scanner, and date filters.
 2. **Read the evidence.** Select a session to inspect its verdict, tools, transcript, and
@@ -143,7 +152,14 @@ Searches cancel superseded requests, downloads recover expired access tokens, an
 **Refresh** reloads the current investigation. Research scanners can be excluded from
 views without deleting their recorded activity.
 
+</details>
+
 ## Local analysis
+
+![Flow features go to Random Forest. Signature rules can queue selected transcripts for optional local review by Kev and Wolfram.](docs/images/honeysentinel-analysis-map.svg)
+
+<details>
+<summary>Analysis stages and model information</summary>
 
 The pipeline combines fast flow analysis and signature rules with optional
 transcript review. The models are served inside the operator's deployment
@@ -159,8 +175,14 @@ when configured.
 See [Evaluation](#evaluation) for the datasets, controlled measurements,
 and known gaps.
 
+</details>
+
 ## Architecture
+
 ![HoneySentinel data flow from protocol emulation through ingest, PostgreSQL, and the investigation console](docs/images/honeysentinel-architecture.svg)
+
+<details>
+<summary>Component stack, containment, and connection measurements</summary>
 
 The engine submits sessions to authenticated ingest. The analysis pipeline writes
 evidence and results to PostgreSQL, which the investigation console accesses
@@ -189,7 +211,10 @@ payload bytes and data packets in each direction, the largest packet each way, a
 inter-arrival times. For SSH this is below the encryption. These are the
 classifier's inputs, defined once and shared by training and inference.
 
+</details>
+
 ## Self-hosted deployment
+
 [`deploy/server/`](deploy/server/README.md) runs the whole system on one Linux machine:
 database, API, dashboard and engine. This is how the project's own server runs it.
 
@@ -197,6 +222,9 @@ database, API, dashboard and engine. This is how the project's own server runs i
 sudo git clone https://github.com/mandoof1/honeypot-ui.git /opt/honeysentinel
 sudo bash /opt/honeysentinel/deploy/server/install.sh
 ```
+
+<details>
+<summary>What the installer configures and which scripts to use</summary>
 
 The installer is idempotent, and sets up:
 
@@ -236,12 +264,20 @@ Scripts beside it cover the rest of the lifecycle:
 | `node_tokens.py` | Issue and revoke the ingest token of a remote sensor |
 | `reset-shop.sh` | The nightly website job, on demand: back up the live copy, regenerate the decoy copy |
 
+</details>
+
 Before any port is forwarded to it, follow the
 [exposure runbook](docs/EXPOSURE_RUNBOOK.md). To put a decoy on a separate
 public address instead, use the [sensor kit](deploy/node/README.md).
 
 ## What is and is not yet validated
-Stated plainly, because a honeypot's numbers are easy to overstate.
+
+The reference deployment passed its containment probe. The capture pipeline
+was exercised with controlled traffic. **No internet attack has been recorded.**
+The flow classifier and decision model still need validation on captured sessions.
+
+<details>
+<summary>Validation by component and remaining gaps</summary>
 
 | | Status |
 |---|---|
@@ -255,7 +291,20 @@ Stated plainly, because a honeypot's numbers are easy to overstate.
 | **Latency (NFR-2)** | Verdict within 200 ms of session end up to 10 concurrent sessions on the reference host, with a load generator on the same host. |
 | **Availability, usability, comparison with Cowrie, fingerprint audit, AI-canary and injection robustness** | **Not yet measured.** The protocol for each is fixed in advance in the [evaluation plan](docs/EVALUATION_PLAN.md). |
 
+</details>
+
 ## Evaluation
+
+Measured on the project's reference server and documented in the
+[evaluation records](docs/evaluation/README.md).
+
+![Held-out CIC-IDS2017 F1 scores were 0.998 for benign, 0.993 for exploitation, 0.993 for reconnaissance, and 0.598 for exfiltration. All five controlled deployment attack sessions were labelled benign.](docs/images/honeysentinel-classifier-results.svg)
+
+![Within 200 ms, the reported share was 100% at one, 10, and 20 sessions and 82% in the 500-session burst. At 20 concurrent sessions, the maximum was 337 ms.](docs/images/honeysentinel-latency-results.svg)
+
+<details>
+<summary>Measurement methods, full tables, and decision-model results</summary>
+
 Measured on the reference server (8 cores) on 2026-10-05 and 2026-10-08.
 Every figure comes from a JSON file in
 [`docs/evaluation/`](docs/evaluation/README.md), which also lists the threats
@@ -309,7 +358,10 @@ pipeline deploys.
   reconnaissance, which happened once. The human-or-bot answer is not
   validated and is labelled so in the UI.
 
+</details>
+
 ## A real website behind the decoys
+
 By default the HTTP and HTTPS decoys answer with their own pages. Pointed at a web
 application, they front it instead: each request is recorded as before (transcript,
 logins as credentials, uploads, probe detection, with card numbers and security codes
@@ -325,6 +377,9 @@ flowchart LR
     Engine -->|once the client gives itself away| Copy[Decoy copy: same public pages, invented private data]
     Engine -->|bait paths: /.env, /wp-login.php, ...| Bait[Built-in bait pages]
 ```
+
+<details>
+<summary>Diversion behavior, reference deployment, and known limits</summary>
 
 A client moves to the decoy copy on a signal a real visitor never produces: a request
 for a bait path, an attack pattern in the path, query or body (SQL injection, XSS,
@@ -353,8 +408,14 @@ and so does everything an attacker sends before the first request that gives the
 away. A client signed in on the live copy appears signed out once diverted, and an
 engine restart forgets which clients were diverted.
 
+</details>
+
 ## Model and data limitations
+
 This is a capstone platform, **not a validated production detection system**.
+
+<details>
+<summary>Model, retention, network, and detection limitations</summary>
 
 - The trained classifier (86 MB) is not committed; `deploy/server/train-model.sh`
   produces it. Without it, the API falls back to a synthetic bootstrap model and labels
@@ -392,10 +453,16 @@ See the [technical reference](docs/TECHNICAL_REFERENCE.md) for the analysis pipe
 security model, API routes, and detailed limitations. See [model training](backend/ml/README.md)
 for evaluation and dataset caveats.
 
+</details>
+
 ## Configuration and deployment
+
 Every setting, with its default and the component that reads it, is in one place:
 the **[configuration reference](docs/CONFIGURATION.md)**. `.env.example` is the starting
 set for local development; the self-hosted installer writes its own `.env`.
+
+<details>
+<summary>Deployment, security, evaluation, and integration guides</summary>
 
 | Guide | Use it for |
 |---|---|
@@ -412,10 +479,16 @@ set for local development; the self-hosted installer writes its own `.env`.
 | [Technical reference](docs/TECHNICAL_REFERENCE.md) | Analysis internals, security controls, the API route table. |
 | [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) | Reporting a vulnerability; what changed in 1.0.0. |
 
+</details>
+
 An engine needs a host that accepts raw TCP on its ports. A web-only hosting service is
 insufficient for SSH, Telnet and FTP capture.
 
 ## Troubleshooting
+
+<details>
+<summary>Startup, connectivity, sign-in, and export fixes</summary>
+
 | Symptom | Check |
 |---|---|
 | “Cannot reach the API” | Backend health, `VITE_API_URL`, and allowed CORS origins. |
@@ -428,8 +501,14 @@ insufficient for SSH, Telnet and FTP capture.
 | Mode saved but "engine could not be reached" | The engine adopts the saved mode the next time it registers, at startup. |
 | `model_source: "synthetic"` on verdicts | No trained model is installed; run `deploy/server/train-model.sh`. |
 
+</details>
+
 ## Development
+
 Use **Node.js 22** and **Python 3.12**, the versions the images and CI use.
+
+<details>
+<summary>Frontend, backend, and CI commands</summary>
 
 ### Frontend
 
@@ -476,10 +555,14 @@ the firewall's address plan. Dependency audits, Dockerfile lint, a secret scan a
 firewall's connection test run as report-only jobs for now. After changing a
 `requirements.txt`, run `bash scripts/lock-requirements.sh`.
 
+</details>
+
 ## Contributing
+
 For changes: use a feature branch, describe the behavior before and after, and run the
 checks relevant to the change. Use synthetic fixtures in tests and screenshots.
 Never commit `.env` files, access tokens, or captured credentials.
 
 ## License
+
 MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="716" height="429" viewBox="0 0 716 429" role="img" aria-labelledby="title description">
+<title id="title">Verdict latency under load</title>
+<desc id="description">Reported share within 200 ms: 100% at one, 10, and 20 sessions, and 82% at 500 concurrent sessions. The 20-session run had a 337 ms maximum. All sessions in the 500-session burst were captured.</desc>
+<defs>
+  <linearGradient id="surface" x2="1" y2="1">
+    <stop stop-color="#101724"/><stop offset="1" stop-color="#291a2b"/>
+  </linearGradient>
+  <pattern id="grid" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#72566c" opacity=".43"/>
+  </pattern>
+  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+</defs>
+<rect x="1" y="1" width="714" height="427" rx="20" fill="url(#surface)" stroke="#594358"/>
+<rect x="2" y="2" width="712" height="425" rx="20" fill="url(#grid)" stroke="none"/>
+<text x="28" y="50" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="29" font-weight="700" text-anchor="start">Verdict latency under load</text>
+<text x="28" y="83" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start">Share of sessions within 200 ms on the reference host</text>
+<text x="28" y="120" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="14" font-weight="700" text-anchor="start">LOAD</text>
+<text x="214" y="120" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="14" font-weight="700" text-anchor="start">WITHIN TARGET</text>
+<text x="686" y="120" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="14" font-weight="700" text-anchor="end">P50 / MAX</text>
+<rect x="26" y="139" width="664" height="42" rx="8" fill="#171e2b" stroke="#594358"/>
+<text x="40" y="166" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">One at a time</text>
+<rect x="214" y="155" width="192" height="10" rx="4" fill="#384052" stroke="none"/>
+<rect x="214" y="155" width="192" height="10" rx="4" fill="#8dcdf0" stroke="none"/>
+<text x="473" y="166" fill="#8dcdf0" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" text-anchor="end">100%</text>
+<text x="678" y="166" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="400" text-anchor="end">33 / 43 ms</text>
+<rect x="26" y="190" width="664" height="42" rx="8" fill="#171e2b" stroke="#594358"/>
+<text x="40" y="217" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">10 concurrent</text>
+<rect x="214" y="206" width="192" height="10" rx="4" fill="#384052" stroke="none"/>
+<rect x="214" y="206" width="192" height="10" rx="4" fill="#8dcdf0" stroke="none"/>
+<text x="473" y="217" fill="#8dcdf0" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" text-anchor="end">100%</text>
+<text x="678" y="217" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="400" text-anchor="end">38 / 138 ms</text>
+<rect x="26" y="241" width="664" height="42" rx="8" fill="#171e2b" stroke="#594358"/>
+<text x="40" y="268" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">20 concurrent</text>
+<rect x="214" y="257" width="192" height="10" rx="4" fill="#384052" stroke="none"/>
+<rect x="214" y="257" width="192" height="10" rx="4" fill="#ff858c" stroke="none"/>
+<text x="473" y="268" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" text-anchor="end">100%</text>
+<text x="678" y="268" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="400" text-anchor="end">55 / 337 ms</text>
+<rect x="26" y="292" width="664" height="42" rx="8" fill="#171e2b" stroke="#594358"/>
+<text x="40" y="319" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">500 at once</text>
+<rect x="214" y="308" width="192" height="10" rx="4" fill="#384052" stroke="none"/>
+<rect x="214" y="308" width="157" height="10" rx="4" fill="#ff858c" stroke="none"/>
+<text x="473" y="319" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" text-anchor="end">82%</text>
+<text x="678" y="319" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="400" text-anchor="end">4.2 / 8.0 s</text>
+<text x="28" y="374" fill="#ff858c" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="700" text-anchor="start">The 20-session run exceeded 200 ms at its worst.</text>
+<text x="28" y="403" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Same-host load generator. All 500 burst sessions were captured.</text>
+</svg>

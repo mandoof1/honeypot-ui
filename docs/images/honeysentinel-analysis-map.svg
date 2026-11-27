@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="716" height="425" viewBox="0 0 716 425" role="img" aria-labelledby="title description">
+<title id="title">How sessions are analyzed</title>
+<desc id="description">Random Forest scores flow features. Signature rules match activity and can queue transcripts for optional local review by Kev and Wolfram.</desc>
+<defs>
+  <linearGradient id="surface" x2="1" y2="1">
+    <stop stop-color="#101724"/><stop offset="1" stop-color="#291a2b"/>
+  </linearGradient>
+  <pattern id="grid" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#72566c" opacity=".43"/>
+  </pattern>
+  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+</defs>
+<rect x="1" y="1" width="714" height="423" rx="20" fill="url(#surface)" stroke="#594358"/>
+<rect x="2" y="2" width="712" height="421" rx="20" fill="url(#grid)" stroke="none"/>
+<text x="28" y="49" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="29" font-weight="700" text-anchor="start">How sessions are analyzed</text>
+<text x="30" y="82" fill="#8dcdf0" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="14" font-weight="700" text-anchor="start">CONNECTION METADATA</text>
+<text x="369" y="82" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="14" font-weight="700" text-anchor="start">SESSION TRANSCRIPT</text>
+<rect x="28" y="102" width="321" height="77" rx="12" fill="#141d2b" stroke="#594358"/>
+<rect x="41" y="120" width="3" height="42" rx="1" fill="#8dcdf0" stroke="#8dcdf0"/>
+<text x="55" y="134" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="21" font-weight="700" text-anchor="start">Random Forest</text>
+<text x="55" y="160" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Scores flow features</text>
+<rect x="367" y="102" width="321" height="77" rx="12" fill="#141d2b" stroke="#594358"/>
+<rect x="380" y="120" width="3" height="42" rx="1" fill="#ff858c" stroke="#ff858c"/>
+<text x="394" y="134" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="21" font-weight="700" text-anchor="start">Signature rules</text>
+<text x="394" y="160" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Match known patterns</text>
+<rect x="367" y="211" width="321" height="77" rx="12" fill="#141d2b" stroke="#594358"/>
+<rect x="380" y="229" width="3" height="42" rx="1" fill="#ff858c" stroke="#ff858c"/>
+<text x="394" y="243" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="21" font-weight="700" text-anchor="start">Kev</text>
+<text x="394" y="269" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Triages queued sessions</text>
+<rect x="367" y="320" width="321" height="77" rx="12" fill="#141d2b" stroke="#594358"/>
+<rect x="380" y="338" width="3" height="42" rx="1" fill="#ff858c" stroke="#ff858c"/>
+<text x="394" y="352" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="21" font-weight="700" text-anchor="start">Wolfram</text>
+<text x="394" y="378" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Reviews selected transcripts</text>
+<path d="M487 179V210m-5-7 5 7 5-7 M487 288V319m-5-7 5 7 5-7" stroke="#ff858c" stroke-width="1.5" fill="none"/>
+<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
+  <animateMotion path="M487 181V209" begin="0s" dur="2.5s" repeatCount="indefinite"/>
+  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="0s" dur="2.5s" repeatCount="indefinite"/>
+</circle>
+<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
+  <animateMotion path="M487 289V318" begin="0.7s" dur="2.5s" repeatCount="indefinite"/>
+  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="0.7s" dur="2.5s" repeatCount="indefinite"/>
+</circle>
+<rect x="28" y="225" width="321" height="142" rx="12" fill="#141d2b" stroke="#594358"/>
+<text x="50" y="260" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="700" text-anchor="start">Optional local review</text>
+<text x="50" y="293" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start">Configured deployments can</text>
+<text x="50" y="321" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start">queue selected transcripts</text>
+<text x="50" y="349" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start">for model review.</text>
+</svg>
