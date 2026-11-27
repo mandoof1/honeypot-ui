@@ -372,21 +372,12 @@ pipeline deploys.
 
 ## A real website behind the decoys
 
-By default the HTTP and HTTPS decoys answer with their own pages. Pointed at a web
-application, they front it instead: each request is recorded as before (transcript,
-logins as credentials, uploads, probe detection, with card numbers and security codes
-masked in everything stored) and then answered by the application.
+The HTTP and HTTPS decoys serve their own pages by default. When they front a web app,
+the engine records requests, including transcripts, login credentials, uploads, and
+detected probes. It masks card numbers and security codes before storing the records.
+With a decoy copy configured, requests can take three routes.
 
-With a second, decoy copy of the application configured, the engine also decides per
-request which copy answers:
-
-```mermaid
-flowchart LR
-    Client[Client] --> Engine[HTTP/HTTPS decoy: records every request]
-    Engine -->|ordinary visitors| Live[Live application]
-    Engine -->|once the client gives itself away| Copy[Decoy copy: same public pages, invented private data]
-    Engine -->|bait paths: /.env, /wp-login.php, ...| Bait[Built-in bait pages]
-```
+![HTTP and HTTPS routing. The engine records each request, sends ordinary traffic to the live application, routes flagged clients to the decoy copy, and serves built-in pages for bait paths.](docs/images/honeysentinel-web-routing.svg)
 
 <details>
 <summary>Diversion behavior, reference deployment, and known limits</summary>
