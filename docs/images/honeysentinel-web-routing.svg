@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="422" viewBox="0 0 780 422" role="img" aria-labelledby="title description">
+  <title id="title">HTTP and HTTPS request routing</title>
+  <desc id="description">The decoy records incoming web requests. With a live app and decoy copy configured, ordinary traffic reaches the live app, flagged clients are routed to the decoy copy, and bait paths receive built-in pages.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M1 1l7 4-7 4" fill="none" stroke="#8eabc1" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="778" height="420" rx="17" fill="#101a28" stroke="#36516a"/>
+
+  <g fill="none" stroke="#8eabc1" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M390 86v32"/>
+    <path d="M390 195v34H143v42"/>
+    <path d="M390 195v76"/>
+    <path d="M390 195v34h247v42"/>
+  </g>
+
+  <g stroke-width="1">
+    <rect x="230" y="28" width="320" height="58" rx="10" fill="#172638" stroke="#45647d"/>
+    <rect x="230" y="119" width="320" height="76" rx="10" fill="#172638" stroke="#45647d"/>
+    <rect x="26" y="273" width="234" height="120" rx="10" fill="#122720" stroke="#447860"/>
+    <rect x="273" y="273" width="234" height="120" rx="10" fill="#2b2219" stroke="#8a6a44"/>
+    <rect x="520" y="273" width="234" height="120" rx="10" fill="#2b202f" stroke="#815475"/>
+  </g>
+
+  <g font-family="DejaVu Sans, Arial, sans-serif" text-anchor="middle">
+    <g fill="#ecf5ff" font-size="21" font-weight="700">
+      <text x="390" y="64">Incoming web request</text>
+      <text x="390" y="151">HTTP / HTTPS decoy</text>
+      <text x="143" y="344">Live application</text>
+      <text x="390" y="344">Decoy copy</text>
+      <text x="637" y="344">Built-in bait page</text>
+    </g>
+    <g fill="#b8cadd" font-size="17">
+      <text x="390" y="176">Records every request</text>
+      <text x="143" y="369">Serves ordinary traffic</text>
+      <text x="390" y="369">Synthetic private data</text>
+      <text x="637" y="369">Served by the engine</text>
+    </g>
+    <g font-family="DejaVu Sans Mono, Consolas, monospace" font-size="15" font-weight="700">
+      <text x="143" y="310" fill="#90efbf">ORDINARY TRAFFIC</text>
+      <text x="390" y="310" fill="#ffd080">FLAGGED CLIENT</text>
+      <text x="637" y="310" fill="#f5a8da">BAIT PATH</text>
+    </g>
+  </g>
+</svg>

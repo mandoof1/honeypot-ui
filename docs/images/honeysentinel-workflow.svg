@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1140" height="217" viewBox="0 0 1140 217" role="img" aria-labelledby="title description">
+  <title id="title">HoneySentinel investigation workflow</title>
+  <desc id="description">Four stages in the investigation console: filter, inspect, share and export.</desc>
+  <defs>
+    <linearGradient id="surface" x2="1" y2="1">
+      <stop stop-color="#0c141f"/><stop offset="1" stop-color="#281723"/>
+    </linearGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#476278" stroke-opacity=".27"/>
+    </pattern>
+  </defs>
+  <rect x="1" y="1" width="1138" height="215" rx="18" fill="url(#surface)" stroke="#563742"/><text x="28" y="39" fill="#ff797d" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="1.2" text-anchor="start">INVESTIGATION WORKFLOW</text><rect x="28" y="66" width="252" height="105" rx="12" fill="#271d29" stroke="#ff797d"/><text x="43" y="105" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0" text-anchor="start">Filter</text><text x="43" y="138" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">Narrow the session list</text><path d="M280 117h24" stroke="#995867" stroke-width="2"/><circle cx="284.00" cy="117.00" r="3.2" fill="#ff797d" opacity="1"/><rect x="304" y="66" width="252" height="105" rx="12" fill="#151d2a" stroke="#343449"/><text x="319" y="105" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0" text-anchor="start">Inspect</text><text x="319" y="138" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">Read the session evidence</text><path d="M556 117h24" stroke="#995867" stroke-width="2"/><rect x="580" y="66" width="252" height="105" rx="12" fill="#151d2a" stroke="#343449"/><text x="595" y="105" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0" text-anchor="start">Share</text><text x="595" y="138" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">Copy the investigation link</text><path d="M832 117h24" stroke="#995867" stroke-width="2"/><rect x="856" y="66" width="252" height="105" rx="12" fill="#151d2a" stroke="#343449"/><text x="871" y="105" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0" text-anchor="start">Export</text><text x="871" y="138" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">Download the matching records</text><text x="28" y="198" fill="#bcc7d7" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="11" font-weight="400" letter-spacing="0.8" text-anchor="start">ILLUSTRATED WORKFLOW</text>
+  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+  <g class="motion" fill="none" stroke="#ff858c" stroke-width="2">
+    <rect x="28" y="66" width="252" height="105" rx="12" opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.21;.26;1" begin="0.0s" dur="4.8s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="304" y="66" width="252" height="105" rx="12" opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.21;.26;1" begin="1.2s" dur="4.8s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="580" y="66" width="252" height="105" rx="12" opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.21;.26;1" begin="2.4s" dur="4.8s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="856" y="66" width="252" height="105" rx="12" opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.04;.21;.26;1" begin="3.6s" dur="4.8s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+</svg>

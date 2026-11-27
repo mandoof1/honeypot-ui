@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest a change to HoneySentinel or its documentation.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe your workflow and where you get stuck.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: Describe the outcome you want and any workarounds you tried. Use synthetic examples.
+    validations:
+      required: true

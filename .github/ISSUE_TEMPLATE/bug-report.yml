@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a problem you can reproduce in HoneySentinel.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected vulnerability, follow the [security policy](https://github.com/mandoof1/honeypot-ui/blob/master/SECURITY.md#how-to-report).
+        Use synthetic data and remove secrets and real session records from attachments.
+  - type: input
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Include the release or commit and where you ran it, such as local Compose, self-hosted server, or remote sensor. Add the browser and OS for UI issues.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe how to reproduce the problem on your own installation with synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Share only what helps explain the issue.
