@@ -560,9 +560,9 @@ firewall's connection test run as report-only jobs for now. After changing a
 
 ## Contributing
 
-For changes: use a feature branch, describe the behavior before and after, and run the
-checks relevant to the change. Use synthetic fixtures in tests and screenshots.
-Never commit `.env` files, access tokens, or captured credentials.
+[Contribution guide](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) ·
+[Open an issue](https://github.com/mandoof1/honeypot-ui/issues/new/choose) ·
+[Security policy](SECURITY.md)
 
 ## License
 
