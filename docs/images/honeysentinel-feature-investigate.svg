@@ -10,4 +10,9 @@
     </pattern>
   </defs>
   <rect x="1" y="1" width="342" height="143" rx="14" fill="#0c121c" stroke="#5d4250"/><path d="M18 16H63" stroke="#a2d6dc" stroke-width="2"/><text x="18" y="40" fill="#a2d6dc" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="0.8" text-anchor="start">REVIEW</text><text x="18" y="76" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="25" font-weight="700" letter-spacing="0" text-anchor="start">Build an investigation</text><text x="18" y="105" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">Search, inspect, and share</text><text x="18" y="126" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="400" letter-spacing="0" text-anchor="start">or export matching evidence.</text><path d="M304 50l9 9m-11-9a8 8 0 1 1 2-11 8 8 0 0 1-2 11Z" stroke="#a2d6dc" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+  <circle class="motion" cx="19" cy="16" r="2.5" fill="#fff4f2" opacity="0">
+    <animate attributeName="cx" values="19;19;63;63" keyTimes="0;.12;.56;1" begin="0.8s" dur="2.6s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.16;.48;.61;1" begin="0.8s" dur="2.6s" repeatCount="indefinite"/>
+  </circle>
 </svg>

@@ -10,4 +10,23 @@
     </pattern>
   </defs>
   <rect x="1" y="1" width="1138" height="277" rx="18" fill="url(#surface)" stroke="#563742"/><text x="28" y="42" fill="#ff797d" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="1.2" text-anchor="start">SELF-HOSTED DATA FLOW</text><rect x="28" y="75" width="230" height="76" rx="12" fill="#151d2a" stroke="#674450"/><text x="42" y="107" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="0" text-anchor="start">Protocol emulators</text><text x="42" y="132" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="0" text-anchor="start">Interactions and flow metadata</text><rect x="313" y="75" width="230" height="76" rx="12" fill="#151d2a" stroke="#674450"/><text x="327" y="107" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="0" text-anchor="start">Ingest + analysis</text><text x="327" y="132" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="0" text-anchor="start">Authenticated session intake</text><rect x="598" y="75" width="230" height="76" rx="12" fill="#151d2a" stroke="#674450"/><text x="612" y="107" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="0" text-anchor="start">PostgreSQL</text><text x="612" y="132" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="0" text-anchor="start">Session and evidence storage</text><rect x="883" y="75" width="230" height="76" rx="12" fill="#151d2a" stroke="#674450"/><text x="897" y="107" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="0" text-anchor="start">Console + API</text><text x="897" y="132" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="0" text-anchor="start">Role-checked dashboard access</text><path d="M258 114h53m-8-5 8 5-8 5" stroke="#ff797d" fill="none" stroke-width="2"/><path d="M543 114h53m-8-5 8 5-8 5" stroke="#ff797d" fill="none" stroke-width="2"/><path d="M828 114h53m-8-5 8 5-8 5m-45-5 8-5m-8 5 8 5" stroke="#ff797d" fill="none" stroke-width="2"/><path d="M428 151v35m-5-7 5 7 5-7" stroke="#a98a99" fill="none" stroke-width="2" stroke-dasharray="4 3"/><rect x="313" y="186" width="515" height="65" rx="12" fill="#151d2a" stroke="#674450"/><text x="327" y="214" fill="#fff3f1" font-family="DejaVu Sans, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="0" text-anchor="start">Local analysis</text><text x="327" y="237" fill="#bcc7d7" font-family="DejaVu Sans, Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="0" text-anchor="start">Flow classifier, signature rules and optional model enrichment</text>
+  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+  <g class="motion" fill="#fff4f2" stroke="#ff858c" stroke-width="1.5">
+    <circle cx="265" cy="114" r="4" opacity="0">
+      <animate attributeName="cx" values="265;265;303;303" keyTimes="0;.12;.61;1" begin="0s" dur="1.8s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.16;.51;.65;1" begin="0s" dur="1.8s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="550" cy="114" r="4" opacity="0">
+      <animate attributeName="cx" values="550;550;589;589" keyTimes="0;.12;.61;1" begin="0.44s" dur="1.8s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.16;.51;.65;1" begin="0.44s" dur="1.8s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="873" cy="114" r="4" opacity="0">
+      <animate attributeName="cx" values="873;873;837;837" keyTimes="0;.12;.61;1" begin="0.88s" dur="1.8s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.16;.51;.65;1" begin="0.88s" dur="1.8s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="428" cy="155" r="3" opacity="0">
+      <animate attributeName="cy" values="155;155;180;180" keyTimes="0;.12;.61;1" begin=".72s" dur="2.2s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.16;.51;.65;1" begin=".72s" dur="2.2s" repeatCount="indefinite"/>
+    </circle>
+  </g>
 </svg>

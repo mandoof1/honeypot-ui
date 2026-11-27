@@ -11,6 +11,7 @@
 
 A self-hosted honeypot for capturing suspicious sessions, analyzing activity locally, and investigating encrypted evidence in a web console.
 
+[**Project tour**](#project-tour) ·
 [**View demo**](https://honeypot-ui-psi.vercel.app/) ·
 [**Quick start**](#quick-start) ·
 [Investigation](#investigation-workspace) ·
@@ -23,19 +24,21 @@ A self-hosted honeypot for capturing suspicious sessions, analyzing activity loc
 
 </div>
 
-## About
+## Project tour
 
-HoneySentinel combines protocol emulators, local analysis and a session review
-console. The engine records interactions and flow metadata. Investigators can
-narrow sessions by time or protocol, inspect transcripts and ATT&CK mappings,
-share the current investigation, and export matching records. The project
-supports SSH, Telnet, FTP, HTTP, and HTTPS emulation.
+[![Animated tour of session capture, the investigation console, and evidence export. Open to watch the MP4.](docs/images/honeysentinel-tour.gif)](docs/images/honeysentinel-tour.mp4?raw=true)
 
-**Project status.** Version 1.0.0 documents a capstone system exercised with
-controlled traffic before public exposure. Its evaluation uses a public
-dataset, synthetic transcripts and controlled test traffic. See the
-[validation record](#what-is-and-is-not-yet-validated) for measured results
-and remaining gaps.
+[**Watch or download the MP4**](docs/images/honeysentinel-tour.mp4?raw=true) · 18 seconds, silent. The tour uses the console screenshot with synthetic demo data.
+
+| Explore the console | Run HoneySentinel | Review the results |
+| --- | --- | --- |
+| [Open the hosted demo](https://honeypot-ui-psi.vercel.app/) or see the [dashboard screenshot](#console-preview). | [Start with Docker Compose](#quick-start) or review [self-hosted deployment](#self-hosted-deployment). | See the [data flow](#architecture) and [validation record](#what-is-and-is-not-yet-validated). |
+
+## From session to evidence
+
+HoneySentinel records interactions and flow metadata for SSH, Telnet, FTP, HTTP,
+and HTTPS. Analysts can filter sessions, inspect transcripts and ATT&CK mappings,
+and share or export matching records.
 
 <p align="center">
   <a href="#what-you-can-do"><img src="docs/images/honeysentinel-feature-capture.svg" width="275" alt="Capture sessions and per-connection telemetry"></a>
@@ -43,11 +46,11 @@ and remaining gaps.
   <a href="#investigation-workspace"><img src="docs/images/honeysentinel-feature-investigate.svg" width="275" alt="Search, inspect, share, and export investigation evidence"></a>
 </p>
 
-## Console preview
-
-[![HoneySentinel investigation console with session filters, export controls, and evidence detail](docs/images/investigation-desktop.png)](https://honeypot-ui-psi.vercel.app/)
-
-*Dashboard screenshot with synthetic demo data. [Open the demo](https://honeypot-ui-psi.vercel.app/) or [view its API docs](https://honeysentinel-api.onrender.com/docs).*
+**Project status.** Version 1.0.0 documents a capstone system exercised with
+controlled traffic before public exposure. Its evaluation uses a public
+dataset, synthetic transcripts and controlled test traffic. See the
+[validation record](#what-is-and-is-not-yet-validated) for measured results
+and remaining gaps.
 
 ## What you can do
 
@@ -102,6 +105,16 @@ deployment that faces the internet, use [the self-hosted deployment](#self-hoste
 where the host firewall stops every container from opening a connection.
 
 ## Investigation workspace
+
+<a name="console-preview"></a>
+<details>
+<summary>Console preview at full size</summary>
+
+[![HoneySentinel investigation console with session filters, export controls, and evidence detail](docs/images/investigation-desktop.png)](https://honeypot-ui-psi.vercel.app/)
+
+*Dashboard screenshot with synthetic demo data. [Open the demo](https://honeypot-ui-psi.vercel.app/) or [view its API docs](https://honeysentinel-api.onrender.com/docs).*
+
+</details>
 
 [![Animated investigation workflow showing Filter, Inspect, Share, and Export](docs/images/honeysentinel-workflow.gif)](docs/images/honeysentinel-workflow.svg)
 
