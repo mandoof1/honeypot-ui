@@ -44,7 +44,12 @@ A self-hosted honeypot for capturing suspicious sessions, analyzing activity loc
 
 ## What you can do
 
-![Five emulated protocols feed session interactions and connection telemetry into evidence storage.](docs/images/honeysentinel-capture-map.svg)
+<a href="docs/images/honeysentinel-capture-map.svg">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/honeysentinel-capture-map.svg">
+    <img src="docs/images/honeysentinel-capture-map.gif" width="760" alt="Animated signal radar for SSH, Telnet, FTP, HTTP and HTTPS capture. Recorded evidence includes session interactions and connection telemetry.">
+  </picture>
+</a>
 
 <details>
 <summary>All capabilities</summary>
@@ -156,7 +161,12 @@ views without deleting their recorded activity.
 
 ## Local analysis
 
-![Flow features go to Random Forest. Signature rules can queue selected transcripts for optional local review by Kev and Wolfram.](docs/images/honeysentinel-analysis-map.svg)
+<a href="docs/images/honeysentinel-analysis-map.svg">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/honeysentinel-analysis-map.svg">
+    <img src="docs/images/honeysentinel-analysis-map.gif" width="760" alt="Animated terminal showing flow features going to Random Forest and signature rules routing selected transcripts for optional review by Kev and Wolfram.">
+  </picture>
+</a>
 
 <details>
 <summary>Analysis stages and model information</summary>

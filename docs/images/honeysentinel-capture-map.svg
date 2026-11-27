@@ -1,63 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="716" height="344" viewBox="0 0 716 344" role="img" aria-labelledby="title description">
-<title id="title">What HoneySentinel captures</title>
-<desc id="description">SSH, Telnet, FTP, HTTP, and HTTPS emulation records session interactions and connection telemetry.</desc>
-<defs>
-  <linearGradient id="surface" x2="1" y2="1">
-    <stop stop-color="#101724"/><stop offset="1" stop-color="#291a2b"/>
-  </linearGradient>
-  <pattern id="grid" width="22" height="22" patternUnits="userSpaceOnUse">
-    <circle cx="1" cy="1" r="1" fill="#72566c" opacity=".43"/>
-  </pattern>
-  <style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
-</defs>
-<rect x="1" y="1" width="714" height="342" rx="20" fill="url(#surface)" stroke="#594358"/>
-<rect x="2" y="2" width="712" height="340" rx="20" fill="url(#grid)" stroke="none"/>
-<text x="28" y="50" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="29" font-weight="700" text-anchor="start">What HoneySentinel captures</text>
-<text x="29" y="89" fill="#ff858c" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="15" font-weight="700" text-anchor="start">EMULATED PROTOCOLS</text>
-<path d="M259 120V291" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<rect x="28" y="106" width="132" height="34" rx="8" fill="#141d2b" stroke="#594358"/>
-<text x="45" y="129" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="18" font-weight="700" text-anchor="start">SSH</text>
-<path d="M160 123H259" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
-  <animateMotion path="M162 123H259V211H332" begin="0.0s" dur="2.8s" repeatCount="indefinite"/>
-  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="0.0s" dur="2.8s" repeatCount="indefinite"/>
-</circle>
-<rect x="28" y="148" width="132" height="34" rx="8" fill="#141d2b" stroke="#594358"/>
-<text x="45" y="171" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="18" font-weight="700" text-anchor="start">Telnet</text>
-<path d="M160 165H259" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
-  <animateMotion path="M162 165H259V211H332" begin="0.39s" dur="2.8s" repeatCount="indefinite"/>
-  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="0.39s" dur="2.8s" repeatCount="indefinite"/>
-</circle>
-<rect x="28" y="190" width="132" height="34" rx="8" fill="#141d2b" stroke="#594358"/>
-<text x="45" y="213" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="18" font-weight="700" text-anchor="start">FTP</text>
-<path d="M160 207H259" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
-  <animateMotion path="M162 207H259V211H332" begin="0.78s" dur="2.8s" repeatCount="indefinite"/>
-  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="0.78s" dur="2.8s" repeatCount="indefinite"/>
-</circle>
-<rect x="28" y="232" width="132" height="34" rx="8" fill="#141d2b" stroke="#594358"/>
-<text x="45" y="255" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="18" font-weight="700" text-anchor="start">HTTP</text>
-<path d="M160 249H259" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
-  <animateMotion path="M162 249H259V211H332" begin="1.17s" dur="2.8s" repeatCount="indefinite"/>
-  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="1.17s" dur="2.8s" repeatCount="indefinite"/>
-</circle>
-<rect x="28" y="274" width="132" height="34" rx="8" fill="#141d2b" stroke="#594358"/>
-<text x="45" y="297" fill="#fff4f2" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="18" font-weight="700" text-anchor="start">HTTPS</text>
-<path d="M160 291H259" stroke="#a35c71" stroke-width="1.5" fill="none"/>
-<circle class="motion" r="3.7" fill="#ff858c" opacity="0">
-  <animateMotion path="M162 291H259V211H332" begin="1.56s" dur="2.8s" repeatCount="indefinite"/>
-  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.09;.84;1" begin="1.56s" dur="2.8s" repeatCount="indefinite"/>
-</circle>
-<path d="M259 211H335m-8-6 8 6-8 6" stroke="#ff858c" stroke-width="2" fill="none"/>
-<circle cx="259" cy="211" r="7" fill="#ff858c" stroke="#fff4f2" stroke-width="1.5"/>
-<rect x="336" y="105" width="351" height="211" rx="17" fill="#161f2d" stroke="#835569"/>
-<text x="359" y="146" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="23" font-weight="700" text-anchor="start">Recorded evidence</text>
-<path d="M359 164H664" stroke="#594358" stroke-width="1.5" fill="none"/>
-<text x="359" y="194" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="start">Session interactions</text>
-<text x="359" y="222" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Commands and transcripts</text>
-<path d="M359 237H664" stroke="#594358" stroke-width="1.5" fill="none"/>
-<text x="359" y="268" fill="#fff4f2" font-family="DejaVu Sans, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="start">Connection telemetry</text>
-<text x="359" y="296" fill="#c2cedd" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Bytes, packet sizes and timing</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="365" viewBox="0 0 760 365" role="img" aria-labelledby="title description">
+<title id="title">Protocol capture</title>
+<desc id="description">Illustrated radar panel for SSH, Telnet, FTP, HTTP, and HTTPS emulation. It shows recorded session interactions and connection telemetry.</desc>
+<style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+<rect x="1" y="1" width="758" height="363" fill="#101e1e" stroke="#396351" rx="15"/>
+<text x="27" y="44" fill="#eaf4ef" font-family="DejaVu Sans, Arial, sans-serif" font-size="28" font-weight="700">Protocol capture</text>
+<text x="28" y="83" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="15" font-weight="700">EMULATED SERVICES</text>
+<text x="508" y="83" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="15" font-weight="700">RECORDED EVIDENCE</text>
+<path d="M28 58H732" fill="none" stroke="#284941" stroke-width="1"/>
+<rect x="28" y="108" width="151" height="38" fill="#172c29" stroke="#284941" rx="9"/>
+<text x="43" y="133" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="17" font-weight="700">SSH</text>
+<path d="M179 127H200L219 224" fill="none" stroke="#39725f" stroke-width="1"/>
+<rect x="28" y="157" width="151" height="38" fill="#172c29" stroke="#284941" rx="9"/>
+<text x="43" y="182" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="17" font-weight="700">Telnet</text>
+<path d="M179 176H200L219 224" fill="none" stroke="#39725f" stroke-width="1"/>
+<rect x="28" y="206" width="151" height="38" fill="#172c29" stroke="#284941" rx="9"/>
+<text x="43" y="231" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="17" font-weight="700">FTP</text>
+<path d="M179 225H200L219 224" fill="none" stroke="#39725f" stroke-width="1"/>
+<rect x="28" y="255" width="151" height="38" fill="#172c29" stroke="#284941" rx="9"/>
+<text x="43" y="280" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="17" font-weight="700">HTTP</text>
+<path d="M179 274H200L219 224" fill="none" stroke="#39725f" stroke-width="1"/>
+<rect x="28" y="304" width="151" height="38" fill="#172c29" stroke="#284941" rx="9"/>
+<text x="43" y="329" fill="#80fbc5" font-family="DejaVu Sans Mono, Consolas, monospace" font-size="17" font-weight="700">HTTPS</text>
+<path d="M179 323H200L219 224" fill="none" stroke="#39725f" stroke-width="1"/>
+<circle cx="332" cy="224" r="111" fill="#0b1819" stroke="#56977d"/>
+<circle cx="332" cy="224" r="29" fill="none" stroke="#284941"/>
+<circle cx="332" cy="224" r="56" fill="none" stroke="#284941"/>
+<circle cx="332" cy="224" r="83" fill="none" stroke="#284941"/>
+<path d="M221 224H443M332 113V335" fill="none" stroke="#284941" stroke-width="1"/>
+<path d="M443 224H489m-8-6 8 6-8 6" fill="none" stroke="#549478" stroke-width="1.5"/>
+<g class="motion"><animateTransform attributeName="transform" type="rotate" from="0 332 224" to="360 332 224" dur="5.4s" repeatCount="indefinite"/><path d="M332 224L332 115A109 109 0 0 1 410.41 148.28Z" fill="#80fbc5" opacity="0.11"/><path d="M332 224L332 115A109 109 0 0 1 388.14 130.57Z" fill="#80fbc5" opacity="0.14"/><path d="M332 224L332 115A109 109 0 0 1 360.21 118.71Z" fill="#80fbc5" opacity="0.23"/><path d="M332 224V115" fill="none" stroke="#80fbc5" stroke-width="1.5"/></g>
+<circle cx="305" cy="178" r="7" fill="none" stroke="#3b8067"/>
+<circle cx="305" cy="178" r="3" fill="#80fbc5" stroke="none"/>
+<circle cx="393" cy="252" r="7" fill="none" stroke="#3b8067"/>
+<circle cx="393" cy="252" r="3" fill="#80fbc5" stroke="none"/>
+<circle cx="298" cy="278" r="7" fill="none" stroke="#3b8067"/>
+<circle cx="298" cy="278" r="3" fill="#80fbc5" stroke="none"/>
+<circle cx="332" cy="224" r="4" fill="#80fbc5" stroke="none"/>
+<rect x="488" y="109" width="243" height="230" fill="#152824" stroke="#396351" rx="13"/>
+<text x="507" y="153" fill="#eaf4ef" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700">Session interactions</text>
+<text x="507" y="180" fill="#a6c6bb" font-family="DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400">Commands and transcripts</text>
+<path d="M507 221H714" fill="none" stroke="#284941" stroke-width="1"/>
+<text x="507" y="265" fill="#eaf4ef" font-family="DejaVu Sans, Arial, sans-serif" font-size="17" font-weight="700">Connection telemetry</text>
+<text x="507" y="293" fill="#a6c6bb" font-family="DejaVu Sans, Arial, sans-serif" font-size="15" font-weight="400">Bytes, sizes and timing</text>
 </svg>
