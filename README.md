@@ -2,12 +2,7 @@
 
 # HoneySentinel AI
 
-<a href="docs/images/honeysentinel-banner.svg">
-  <picture>
-    <source media="(max-width: 580px)" srcset="docs/images/honeysentinel-banner-mobile.gif">
-    <img src="docs/images/honeysentinel-banner.gif" width="100%" alt="HoneySentinel AI. Animated evidence pipeline showing capture, storage, and review.">
-  </picture>
-</a>
+![HoneySentinel animated investigation workspace](docs/images/honeysentinel-banner.svg)
 
 A self-hosted honeypot for capturing suspicious sessions, analyzing activity locally, and investigating encrypted evidence in a web console.
 
